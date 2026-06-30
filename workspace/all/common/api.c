@@ -231,7 +231,7 @@ void GFX_sync(void) {
 
 FALLBACK_IMPLEMENTATION int PLAT_supportsOverscan(void) { return 0; }
 FALLBACK_IMPLEMENTATION void PLAT_setEffectColor(int next_color) { }
-FALLBACK_IMPLEMENTATION void PLAT_setCPUFreq(int khz) { } // platforms without a closed-loop freq write: no-op
+FALLBACK_IMPLEMENTATION void PLAT_setCPUMaxFreq(int khz) { } // platforms without a cpufreq cap: no-op
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding) {
 	int text_width;

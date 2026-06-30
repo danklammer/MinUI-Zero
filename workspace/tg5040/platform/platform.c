@@ -542,24 +542,26 @@ void PLAT_powerOff(void) {
 
 ///////////////////////////////
 
-#define GOVERNOR_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed"
+// Hybrid governor: boot.sh selects the `schedutil` kernel governor; all CPU control
+// here sets the frequency *ceiling* (scaling_max_freq) and lets the kernel pick beneath
+// it. The kernel snaps to the nearest supported OPP, so an out-of-ladder kHz is coerced,
+// never an error. NOTE: 2.0GHz is an overclock — PERFORMANCE caps at the 1.8GHz stock max.
+#define MAX_FREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
 void PLAT_setCPUSpeed(int speed) {
 	int freq = 0;
 	switch (speed) {
 		case CPU_SPEED_MENU: 		freq =  600000; break;
 		case CPU_SPEED_POWERSAVE:	freq = 1200000; break;
 		case CPU_SPEED_NORMAL: 		freq = 1608000; break;
-		case CPU_SPEED_PERFORMANCE: freq = 2000000; break;
+		case CPU_SPEED_PERFORMANCE: freq = 1800000; break; // stock max, NOT 2000000 (OC)
 	}
-	putInt(GOVERNOR_PATH, freq);
+	putInt(MAX_FREQ_PATH, freq);
 }
 
-// Closed-loop governor: write an explicit clock (kHz) to the userspace cpufreq
-// setspeed node. boot.sh already selects the `userspace` governor; we keep it and
-// just drive scaling_setspeed dynamically. The kernel snaps the value to the
-// nearest supported OPP, so an out-of-ladder kHz is coerced, never an error.
-void PLAT_setCPUFreq(int khz) {
-	putInt(GOVERNOR_PATH, khz);
+// Closed-loop governor: set the cpufreq ceiling (kHz) via scaling_max_freq; schedutil
+// picks the instantaneous frequency beneath it.
+void PLAT_setCPUMaxFreq(int khz) {
+	putInt(MAX_FREQ_PATH, khz);
 }
 
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"

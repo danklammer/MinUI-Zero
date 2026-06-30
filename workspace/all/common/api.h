@@ -302,7 +302,7 @@ enum {
 	CPU_SPEED_PERFORMANCE,
 };
 #define PWR_setCPUSpeed PLAT_setCPUSpeed
-#define PWR_setCPUFreq PLAT_setCPUFreq
+#define PWR_setCPUMaxFreq PLAT_setCPUMaxFreq
 
 ///////////////////////////////
 
@@ -337,8 +337,8 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge); // 0,1 and 0,10,20,40
 void PLAT_enableBacklight(int enable);
 void PLAT_powerOff(void);
 	
-void PLAT_setCPUSpeed(int speed); // enum
-void PLAT_setCPUFreq(int khz); // closed-loop governor: write an explicit clock (kHz) to the userspace cpufreq setspeed
+void PLAT_setCPUSpeed(int speed); // enum (now sets the scaling_max_freq cap under schedutil)
+void PLAT_setCPUMaxFreq(int khz); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
 void PLAT_setRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 

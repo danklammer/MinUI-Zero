@@ -28,7 +28,14 @@ unless noted:
         1800; 2000 is the OC). If real, our 8-bit `f_min` could drop **480 → 408 MHz** for a
         cooler idle. This is a *fork's* claim — confirm with `brick-recon.sh` before changing
         any value (CLAUDE.md: device values come from hardware, not other forks).
-- [ ] **Cluster-wide policy**: confirm `cpu0`'s `scaling_setspeed` governs all four cores
+- [ ] **schedutil present** (hybrid model): `cat .../policy0/scaling_available_governors` must
+      list `schedutil`. `boot.sh` now sets it + a `scaling_max_freq` cap. If it's absent, the cap
+      still bounds the default governor (safe), but we lose the "drop the clock in light scenes"
+      win — note it and consider an alternative kernel governor.
+- [ ] **No overclock**: confirm `1800000` is a real stock OPP and that nothing caps at `2000000`
+      (the OC). Adjust `GOV_STOCK_MAX_KHZ` / the PERFORMANCE tier / `launch.sh` FMAX to the
+      verified stock max if different. Watch `scaling_cur_freq` under load never exceeds it.
+- [ ] **Cluster-wide policy**: confirm `cpu0`'s `scaling_max_freq` governs all four cores
       (recon's per-core view). MinUI already assumes this; just confirm.
 - [ ] **`auto` governor present?** If the kernel exposes one, note it — not used here
       (we stay in `userspace`), but good to record.

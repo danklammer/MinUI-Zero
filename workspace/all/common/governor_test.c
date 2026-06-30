@@ -23,7 +23,7 @@
 
 // ---- gov_tick's platform dependency, stubbed so governor.c links standalone ----
 static int g_last_set_khz = -1;
-void PLAT_setCPUFreq(int khz) { g_last_set_khz = khz; }
+void PLAT_setCPUMaxFreq(int khz) { g_last_set_khz = khz; }
 
 // ---- tiny assert framework ----
 static int g_fail = 0;
@@ -38,7 +38,7 @@ static void run_workload(GovState* st, const GovProfile* p, int f_req, int temp_
                          int* tail_overruns) {
 	int tmin = p->f_max, tmax = p->f_min, oruns = 0;
 	for (int i = 0; i < ticks; i++) {
-		int overrun = (st->cur_khz < f_req); // the slip the current clock produces
+		int overrun = (st->ceil_khz < f_req); // the slip the current clock produces
 		int khz = gov_step(st, p, temp_c, overrun);
 		CHECK(khz >= p->f_min && khz <= p->f_max,
 		      "clock %d left bracket [%d,%d]", khz, p->f_min, p->f_max);
@@ -60,7 +60,7 @@ static void test_cold_idle(void) {
 	int tmin, tmax, oruns;
 	// f_req at f_min: the clock always holds frame rate, so the controller is free to sink.
 	run_workload(&st, p, p->f_min, 40 /*cool*/, 200, 30, &tmin, &tmax, &oruns);
-	CHECK(st.cur_khz == p->f_min, "expected to settle at f_min=%d, got %d", p->f_min, st.cur_khz);
+	CHECK(st.ceil_khz == p->f_min, "expected to settle at f_min=%d, got %d", p->f_min, st.ceil_khz);
 	CHECK(tmax == p->f_min, "tail clock should be pinned at f_min, saw up to %d", tmax);
 	CHECK(oruns == 0, "cold/idle should never overrun, saw %d tail overruns", oruns);
 }
@@ -72,7 +72,7 @@ static void test_hot_ceiling(void) {
 	GovState st; gov_init(&st, p);
 	// Demand maximum performance (overrun=1 every tick) while pinned above the ceiling.
 	// The ceiling branch must override the climb and walk the clock down to f_min.
-	int prev = st.cur_khz;
+	int prev = st.ceil_khz;
 	int reached_min = 0;
 	for (int i = 0; i < 200; i++) {
 		int khz = gov_step(&st, p, 80 /*>= 72C ceiling*/, 1 /*frames slipping*/);
@@ -82,7 +82,7 @@ static void test_hot_ceiling(void) {
 		if (khz == p->f_min) reached_min = 1;
 	}
 	CHECK(reached_min, "hot trace should drive the clock down to f_min");
-	CHECK(st.cur_khz == p->f_min, "should hold f_min under sustained overheat, got %d", st.cur_khz);
+	CHECK(st.ceil_khz == p->f_min, "should hold f_min under sustained overheat, got %d", st.ceil_khz);
 }
 
 // ---- scenario 2b: thermal ceiling caps a hot-but-demanding workload below f_max ----
@@ -94,13 +94,13 @@ static void test_hot_caps_below_max(void) {
 	// clock is pulled to f_min and the governor never exceeds it.
 	int peak = p->f_min;
 	for (int i = 0; i < 200; i++) {
-		int overrun = (st.cur_khz < p->f_max); // wants to climb to the top
+		int overrun = (st.ceil_khz < p->f_max); // wants to climb to the top
 		int khz = gov_step(&st, p, 75, overrun);
 		if (khz > peak) peak = khz;
 	}
 	// After the first tick the ceiling dominates; the only clock at/above the start is the
 	// initial f_max, which the ceiling immediately reduces. Final must be f_min.
-	CHECK(st.cur_khz == p->f_min, "ceiling should pin a hot heavy load at f_min, got %d", st.cur_khz);
+	CHECK(st.ceil_khz == p->f_min, "ceiling should pin a hot heavy load at f_min, got %d", st.ceil_khz);
 }
 
 // ---- scenario 3: oscillation-prone — alternating slip/slack must not hunt low ----
@@ -118,15 +118,15 @@ static void test_oscillation(void) {
 		CHECK(khz >= p->f_min && khz <= p->f_max, "clock %d left bracket", khz);
 		if (i >= 170 && khz < tail_min) tail_min = khz;
 	}
-	CHECK(st.cur_khz == p->f_max, "oscillating load should settle at f_max, got %d", st.cur_khz);
+	CHECK(st.ceil_khz == p->f_max, "oscillating load should settle at f_max, got %d", st.ceil_khz);
 	CHECK(tail_min == p->f_max, "should not hunt below f_max once settled, dipped to %d", tail_min);
 }
 
 // ---- scenario 4: real workload converges to the lowest stable clock (a saving) ----
 static void test_converges_to_lowest_stable(void) {
 	printf("[converge] mid workload settles at/above requirement but below f_max\n");
-	const GovProfile* p = &GOV_P_PS1; // 1008000..2000000, wide enough for a clear mid point
-	int f_req = 1500000;              // needs ~1.5GHz; should settle near there, not at 2.0
+	const GovProfile* p = &GOV_P_PS1; // 1008000..1800000 (stock cap), wide enough for a clear mid point
+	int f_req = 1500000;              // needs ~1.5GHz; should settle near there, not at the 1.8 cap
 	GovState st; gov_init(&st, p);
 	int tmin, tmax, oruns;
 	run_workload(&st, p, f_req, 55 /*cool, below target*/, 400, 60, &tmin, &tmax, &oruns);
@@ -141,7 +141,7 @@ static void test_converges_to_lowest_stable(void) {
 
 // ---- scenario 5: gov_tick I/O path smoke test (temp sensor absent -> -1) ----
 static void test_tick_io(void) {
-	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUFreq\n");
+	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
 	GovState st; gov_init(&st, p);
 	g_last_set_khz = -1;

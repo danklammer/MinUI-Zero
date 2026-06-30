@@ -994,7 +994,7 @@ static void Gov_start(void) {
 	}
 	gov_init(&gov_state, &gov_profile);
 	gov_active = 1;
-	PWR_setCPUFreq(gov_profile.f_max); // start high so the first frames never starve
+	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
 static int toggle_thread = 0;
