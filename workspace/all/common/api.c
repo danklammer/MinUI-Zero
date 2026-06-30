@@ -201,12 +201,19 @@ int GFX_hdmiChanged(void) {
 
 #define FRAME_BUDGET 17 // 60fps
 static uint32_t frame_start = 0;
+static int frame_overran = 0; // closed-loop governor: did the last frame's CPU work exceed the budget?
 void GFX_startFrame(void) {
 	frame_start = SDL_GetTicks();
 }
+int GFX_didOverrun(void) {
+	return frame_overran;
+}
 
 void GFX_flip(SDL_Surface* screen) {
-	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || SDL_GetTicks()-frame_start<FRAME_BUDGET));
+	uint32_t frame_duration = SDL_GetTicks()-frame_start;
+	// reuse the same budget comparison that drives vsync as the governor's frame-slip signal
+	frame_overran = (frame_start!=0 && frame_duration>=FRAME_BUDGET);
+	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
 	PLAT_flip(screen, should_vsync);
 }
 void GFX_sync(void) {
@@ -224,6 +231,7 @@ void GFX_sync(void) {
 
 FALLBACK_IMPLEMENTATION int PLAT_supportsOverscan(void) { return 0; }
 FALLBACK_IMPLEMENTATION void PLAT_setEffectColor(int next_color) { }
+FALLBACK_IMPLEMENTATION void PLAT_setCPUFreq(int khz) { } // platforms without a closed-loop freq write: no-op
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding) {
 	int text_width;

@@ -162,6 +162,7 @@ void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen);
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
+int GFX_didOverrun(void); // 1 if the most recent frame's CPU work exceeded the frame budget (closed-loop governor signal)
 void GFX_quit(void);
 
 enum {
@@ -336,6 +337,7 @@ void PLAT_enableBacklight(int enable);
 void PLAT_powerOff(void);
 	
 void PLAT_setCPUSpeed(int speed); // enum
+void PLAT_setCPUFreq(int khz); // closed-loop governor: write an explicit clock (kHz) to the userspace cpufreq setspeed
 void PLAT_setRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 

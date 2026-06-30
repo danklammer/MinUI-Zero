@@ -338,6 +338,11 @@ void PLAT_setCPUSpeed(int speed) {
 	// buh
 }
 
+void PLAT_setCPUFreq(int khz) {
+	// dummy platform: no cpufreq sysfs — log the closed-loop governor's intent instead of writing
+	LOG_info("PLAT_setCPUFreq: %d kHz (dummy, not written)\n", khz);
+}
+
 void PLAT_setRumble(int strength) {
 	// buh
 }

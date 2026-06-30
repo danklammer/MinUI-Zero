@@ -554,6 +554,14 @@ void PLAT_setCPUSpeed(int speed) {
 	putInt(GOVERNOR_PATH, freq);
 }
 
+// Closed-loop governor: write an explicit clock (kHz) to the userspace cpufreq
+// setspeed node. boot.sh already selects the `userspace` governor; we keep it and
+// just drive scaling_setspeed dynamically. The kernel snaps the value to the
+// nearest supported OPP, so an out-of-ladder kHz is coerced, never an error.
+void PLAT_setCPUFreq(int khz) {
+	putInt(GOVERNOR_PATH, khz);
+}
+
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"
 void PLAT_setRumble(int strength) {
 	putInt(RUMBLE_PATH, (strength && !GetMute())?1:0);
