@@ -69,3 +69,23 @@ cross-toolchain (`make tg5040`) and Intel Macs the stock command is unaffected.
 ## D9 — Governor safety hatch: `GOV_DISABLE` env
 Setting `GOV_DISABLE=1` makes `gov_tick` a no-op (governor off, static menu clock
 stands). Default is on. Cheap, reversible escape hatch for on-device bring-up.
+
+## D10 — Batch overrun threshold: ≥25% of frames in a tick window
+`minarch` samples `GFX_didOverrun()` every gameplay frame and calls `gov_tick` once
+per `GOV_TICK_FRAMES` (30). The batch is declared "overrun" when `slips*4 >= frames`
+(≥25% of the window missed budget). This catches a sustained inability to hold rate
+while ignoring rare one-frame hiccups (loads, audio underruns). The 25% threshold is
+a minarch-side aggregation policy, not part of the pure controller — a tuning knob.
+
+## D11 — Per-system bracket assignment (tg5040 paks)
+`launch.sh` exports (kHz), by system, mapping the design doc's three brackets:
+- **8-bit `480000..1008000`**: FC, GB, GBC, SMS, GG, PCE, NGP, NGPC, PKM
+- **16-bit `600000..1320000`**: SFC, MD, GBA, MGBA, SGB, SUPA, VB
+- **heavy `1008000..2000000`**: PS, P8 (PICO-8/fake08, Lua interpreter)
+`PAK.pak` is a stub (no `minarch.elf`) and is skipped. Other platforms' paks are not
+touched (this fork targets tg5040); there minarch falls back to `GOV_P_DEFAULT` and
+their `PLAT_setCPUFreq` is the weak no-op, so behavior is unchanged.
+Borderline cases flagged for on-device tuning (may want a higher `f_max`): MGBA and
+SGB (accuracy mGBA core, heavier than gpsp) and SUPA (supafaust SNES). Safe as-is —
+if they slip at `f_max` the governor simply pins `f_max`; raising it only recovers
+lost frames, never overheats (the ceiling still bounds it).
