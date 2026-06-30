@@ -34,8 +34,13 @@ all: setup $(PLATFORMS) special package done
 shell:
 	make -f makefile.toolchain PLATFORM=$(PLATFORM)
 
-name: 
+name:
 	@echo $(RELEASE_NAME)
+
+# host-side unit test for the closed-loop thermal governor (no device, no toolchain)
+.PHONY: test-governor
+test-governor:
+	sh ./workspace/all/common/run-governor-tests.sh
 
 build:
 	# ----------------------------------------------------
