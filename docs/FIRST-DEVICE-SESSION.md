@@ -8,6 +8,21 @@ scaffold, all building together). One session feeds **four** workstreams at once
 Prereqs: a TrimUI Brick, the SD card, SSH to the device (MinUI runs from SD + SSH), Docker
 running locally for `make tg5040`.
 
+## Safety & recovery (read first)
+**This cannot permanently brick the Brick.** MinUI runs entirely from the **SD card**; the
+device's real firmware/bootloader/internal storage is never written. Audited: no writes to flash/
+eMMC/mtd/bootloader/DTB; **undervolt is OFF** (no voltage writes); CPU writes are kernel-clamped
+caps (we're *more* conservative than stock — the 2.0GHz overclock is removed). Worst realistic
+case is "MinUI won't boot from SD" → fix/restore the SD on a computer.
+- **Keep a backup of your working SD** (or the MinUI release you're on) before flashing. That's
+  the whole recovery story.
+- **Deep sleep ships OFF by default** (it's the one path that does a real `echo mem`; if this
+  kernel can't resume, the device *freezes* until you hold Power ~10s to force-reset — recoverable,
+  not bricked). Leave it off for the first boot. Enable it deliberately (step 4) only once you're
+  ready to test suspend/resume with that recovery in hand.
+- The governor falls back to known-good `userspace`@1.6GHz if `schedutil` is missing, so it can't
+  leave the CPU in a weird state.
+
 ---
 
 ## 0. Build + get it on the device (~10 min)
@@ -57,7 +72,11 @@ This is the baseline every later change A/B's against (`bench-analyze.py before.
   mJ/frame and peak temp with no pacing regression** (the release gate).
 - Light systems (NES/GB) should sink toward `f_min` quickly.
 
-## 4. Validate deep sleep
+## 4. Validate deep sleep (opt-in — enable only when ready)
+- **Deep sleep is OFF until you create the flag** (so it can't surprise you on first boot):
+  `touch /mnt/SDCARD/.userdata/shared/enable-deep-sleep`. Until then, idle just powers off after
+  2 min (stock behavior). Know the recovery before enabling: if it doesn't resume, **hold Power
+  ~10s** to force-reset (SD/firmware are fine); delete the flag to disable again.
 - Idle past `DEEP_SLEEP_DELAY` (120s) → confirm it suspends (`echo mem`; logs "suspending to
   RAM"/"returned from suspend"), wakes on the power button, and **doesn't immediately re-sleep**
   (the resume debounce).
