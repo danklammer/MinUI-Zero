@@ -74,9 +74,12 @@ tinymix set 1 0
 mkdir -p /tmp/trimui_inputd
 trimui_inputd &
 
-echo userspace > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-CPU_PATH=/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed
-CPU_SPEED_PERF=2000000
+# Hybrid CPU control (see boot.sh): schedutil picks the freq beneath this cap.
+# CPU_SPEED_PERF is the launcher's scaling_max_freq cap, NOT a pinned clock; 1800000 is
+# the ASSUMED 1.8GHz stock max — never 2000000 (overclock). Confirm on device.
+echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+CPU_PATH=/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
+CPU_SPEED_PERF=1800000
 echo $CPU_SPEED_PERF > $CPU_PATH
 
 # disable internet stuff
