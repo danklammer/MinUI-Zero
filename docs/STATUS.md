@@ -5,6 +5,11 @@ As of this writing the whole no-hardware task list is implemented, verified wher
 can be verified without the Brick, and committed. Date: 2026-06-30.
 
 ## What the governor does
+> **Updated to the hybrid model (commit `27bba2c`, see DECISIONS D12):** the controller now
+> sets a `scaling_max_freq` *ceiling* and the kernel `schedutil` governor picks beneath it;
+> `f_max` is capped at the 1.8GHz stock OPP (2.0GHz OC removed). The rest of this doc
+> describes the original pin model; the architecture/values changed, the controller math did not.
+
 Replaces MinUI's static 4-tier CPU pick with a feedback controller: during gameplay it
 runs each system at the lowest CPU clock that still holds frame rate, capped by a
 conservative thermal ceiling. Reads frame-slip + temperature every ~30 frames, climbs
@@ -14,7 +19,7 @@ MinUI's lean software render path — no GL, no new features.
 ## Done + committed
 | Task | State | Commits |
 |------|-------|---------|
-| 1. `PLAT_setCPUFreq(int khz)` (tg5040 writes `scaling_setspeed`; macOS logs; weak no-op fallback) + `GFX_didOverrun()` | done, builds clean | `088a525` |
+| 1. `PLAT_setCPUMaxFreq(int khz)` (tg5040 writes `scaling_max_freq` ceiling under schedutil; macOS logs; weak no-op fallback) + `GFX_didOverrun()` | done, builds clean | `088a525`, hybrid in `27bba2c` |
 | 2. `gov_step`/`gov_tick` + per-system profiles + synthetic harness | done, tests green | `c4d43cd` |
 | 3. Wired `gov_tick` into the minarch run loop (~30 frames) + game-load profile pick | done, type-checked | `359983b` |
 | 4. Per-system `f_min`/`f_max` exported from 18 tg5040 pak `launch.sh` | done, `sh -n` clean | `9e91c67` |
@@ -25,8 +30,8 @@ Key files:
 - `workspace/all/common/governor.{c,h}` — controller (pure `gov_step` + I/O `gov_tick`).
 - `workspace/all/common/governor_test.c` — synthetic harness (5 scenarios).
 - `workspace/all/common/run-governor-tests.sh` + `make test-governor` — committed runner.
-- `workspace/all/common/api.{c,h}` — `PLAT_setCPUFreq` decl/weak fallback, `GFX_didOverrun`.
-- `workspace/tg5040/platform/platform.c`, `workspace/macos/platform/platform.c` — `PLAT_setCPUFreq`.
+- `workspace/all/common/api.{c,h}` — `PLAT_setCPUMaxFreq` decl/weak fallback, `GFX_didOverrun`.
+- `workspace/tg5040/platform/platform.c`, `workspace/macos/platform/platform.c` — `PLAT_setCPUMaxFreq`.
 - `workspace/all/minarch/minarch.c` — `Gov_start()` + run-loop tick.
 - `skeleton/**/tg5040/**/*.pak/launch.sh` — `MINARCH_FMIN`/`FMAX` exports.
 - `docs/DECISIONS.md` — every non-obvious choice (D1–D11).
