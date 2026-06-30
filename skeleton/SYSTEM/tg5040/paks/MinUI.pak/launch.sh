@@ -88,12 +88,17 @@ else
 fi
 echo $CPU_SPEED_PERF > $CPU_PATH 2>/dev/null || true
 
-# disable internet stuff
-killall MtpDaemon
-killall wpa_supplicant
-killall udhcpc
-rfkill block bluetooth
-rfkill block wifi
+# networking: DEV MODE (wifi + SSH for testing) only if the opt-in flag exists,
+# otherwise block all radios (default runs-cold behavior).
+if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then
+	sh "$SYSTEM_PATH/bin/dev-net.sh" &
+else
+	killall MtpDaemon
+	killall wpa_supplicant
+	killall udhcpc
+	rfkill block bluetooth
+	rfkill block wifi
+fi
 
 keymon.elf & # &> $SDCARD_PATH/keymon.txt &
 
