@@ -1,7 +1,7 @@
 # MinUI fork survey and implementation direction
 
 **Project:** New performance- and reliability-focused MinUI derivative  
-**Primary device:** TrimUI Brick / TG5040  
+**Target:** TrimUI Brick + Smart Pro (`tg5040`) **only** — single-platform fork; other MinUI platforms are frozen in `workspace/_unmaintained/` (not built/supported).  
 **Survey date:** 2026-06-30
 
 ## Purpose

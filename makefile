@@ -11,7 +11,9 @@ endif
 endif
 
 ifeq (,$(PLATFORMS))
-PLATFORMS = miyoomini trimuismart rg35xx rg35xxplus my355 tg5040 zero28 rgb30 m17 gkdpixel my282 magicmini
+# This is a Brick/Smart Pro (tg5040) focused fork. Other platforms are frozen in
+# workspace/_unmaintained/ (NextUI-style) and are not built or supported.
+PLATFORMS = tg5040
 endif
 
 ###########################################################

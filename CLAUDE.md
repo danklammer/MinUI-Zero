@@ -10,6 +10,14 @@ CPU clock that still holds its target frame rate**, so the device stays cool and
 This is *not* a feature fork — it's the opposite. NextUI is the feature-rich/GL fork; this
 one is the distilled, runs-cold one.
 
+## Scope — **tg5040 only** (TrimUI Brick + TrimUI Smart Pro)
+This is a single-platform fork. The whole thesis is A133P-specific (cpufreq/OPP/thermal/PMIC),
+and we only test on the Brick, so we **support `tg5040` exclusively**. Like NextUI, the other
+MinUI platforms are frozen under `workspace/_unmaintained/` — present for history/upstream
+merges, but **not built or supported** (`make` defaults to `PLATFORMS = tg5040`). `workspace/
+macos/` stays as the zero-hardware dev/test platform (launcher build + harnesses), not a device.
+Don't re-add other devices without doing that device's full bring-up (recon + per-SoC wiring).
+
 ## North star / non-negotiables
 - **Cool + efficient is the whole point.** Every change should serve "lowest clock that holds
   frame rate." If a change adds heat, idle power, or resident memory without earning it, don't.
