@@ -336,6 +336,8 @@ void PLAT_enableBacklight(int enable);
 void PLAT_powerOff(void);
 	
 void PLAT_setCPUSpeed(int speed); // enum
+int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mechanism exists (tg5040: 0 for now)
+void PLAT_setUndervolt(int millivolts); // global CPU voltage offset; negative lowers; 0=stock. No-op until supported.
 void PLAT_setRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 

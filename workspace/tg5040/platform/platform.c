@@ -554,6 +554,19 @@ void PLAT_setCPUSpeed(int speed) {
 	putInt(GOVERNOR_PATH, freq);
 }
 
+// Undervolt SPIKE (see docs/undervolt-spike-design.md): OFF until on-device recon
+// (tools/brick-recon.sh) confirms a runtime mechanism. The A133P CPU rail is usually
+// read-only on the stock kernel (voltage lives in the DTB OPP table), so this returns 0
+// and the setter is a logged no-op — a clear home for the real impl, harmless if called.
+int PLAT_supportsUndervolt(void) { return 0; }
+void PLAT_setUndervolt(int millivolts) {
+	// CANDIDATE mechanisms to wire once recon proves one (NONE confirmed -> do nothing):
+	//   1) writable CPU-rail regulator: putInt("/sys/class/regulator/regulator.N/microvolts", base+millivolts*1000)
+	//   2) OPP-table voltage override via /sys/kernel/debug/opp/...
+	//   3) custom DTB with patched OPP voltages (no runtime write).
+	LOG_info("PLAT_setUndervolt: %dmV requested but undervolt is unsupported (spike OFF)\n", millivolts);
+}
+
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"
 void PLAT_setRumble(int strength) {
 	putInt(RUMBLE_PATH, (strength && !GetMute())?1:0);
