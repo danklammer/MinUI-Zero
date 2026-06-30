@@ -6,15 +6,13 @@ safe by construction (writes snap to the nearest OPP, the loop self-corrects, a
 conservative ceiling bounds the downside). These steps replace ASSUMED placeholders
 with measured values and confirm the build/behavior on real silicon.
 
-## A. Cross-compile the firmware (needs Docker; ~mins)
-Docker was **not available** in the implementation environment, so the tg5040 build of
-`minarch.c` + `governor.c` + `platform.c` has not been compiled by the real toolchain.
-The governor API contract and the integration call sites were type-checked on the host
-(`.notes/integration_check.c`, host `cc` + ASan) and the controller logic is fully
-tested (`make test-governor`), but the cross build itself is unverified.
-- [ ] `make tg5040` (Docker running) builds clean — watch for errors in
-      `workspace/all/common/governor.c` and the `minarch.c` wiring.
-- [ ] `make shell PLATFORM=tg5040` if you need to poke at the toolchain.
+## A. Cross-compile the firmware (DONE)
+- [x] `minarch` (incl. `governor.c`) cross-compiles clean under the real
+      `aarch64-linux-gnu-gcc` toolchain (`tg5040-toolchain` image via Colima, `-flto -Os`,
+      zero warnings) → `workspace/all/minarch/build/tg5040/minarch.elf` (ARM aarch64 ELF).
+- [ ] Optional: full release build `make tg5040` (needs a TTY for `setup`'s `tty -s` and
+      `docker run -it`) to produce a flashable zip in `./releases/`. Not required to verify
+      the governor compiles — the targeted minarch build above already did that.
 
 ## B. Replace the ASSUMED hardware values (run `tools/brick-recon.sh`)
 Run the recon script twice — idle at the menu, and during a demanding game (PS1) — and

@@ -43,13 +43,12 @@ Key files:
   alternating slip/slack does not hunt low; `gov_tick`'s I/O path writes in-bracket.
 - **Integration type-check** (`.notes/integration_check.c`, host `cc` + ASan) — green.
   Compiles the exact `minarch.c` governor code against the real `governor.h`.
+- **tg5040 cross-compile** — green. Built `minarch` (incl. `governor.c`) under the real
+  `aarch64-linux-gnu-gcc` toolchain (`tg5040-toolchain` Docker image via Colima, `-flto -Os`,
+  zero warnings) → `workspace/all/minarch/build/tg5040/minarch.elf`, a valid ARM aarch64 ELF.
 - **launch.sh** — all 18 pass `sh -n`; exports land in scope just before `minarch.elf`.
 
-## Blocked on the Brick (and/or Docker) — see docs/ON-DEVICE-CHECKLIST.md
-- **tg5040 cross-compile** of `minarch.c` + `governor.c` via `make tg5040`: Docker was not
-  available here, so the firmware build is **unverified**. The host type-check + harness
-  cover the logic and signatures, but the real toolchain has not compiled it. This is the
-  one build that still needs to be run.
+## Blocked on the Brick — see docs/ON-DEVICE-CHECKLIST.md
 - **Replace ASSUMED hardware values** with `tools/brick-recon.sh` output: thermal-zone path
   (`GOV_T_SENSOR`), OPP ladder / `GOV_STEP_KHZ`, cluster-wide policy confirmation.
 - **Behavioral tuning** on real silicon: convergence/no-hunting, `GOV_T_TARGET_C`/dwell,
