@@ -13,14 +13,20 @@ one is the distilled, runs-cold one.
 ## North star / non-negotiables
 - **Cool + efficient is the whole point.** Every change should serve "lowest clock that holds
   frame rate." If a change adds heat, idle power, or resident memory without earning it, don't.
-- **Stay on MinUI's lean software (RGB565) render path.** Do **not** adopt NextUI's OpenGL/GLES
-  engine — it keeps the GPU powered all session, which is directly against the thesis. Fix
-  tearing the cheap way (page-flip + double-buffer / NEON scalers), referencing MyMinUI.
-- **Stay minimal.** No box art, WiFi/NTP, Pak Store, RetroAchievements, ambient-LED modes,
-  overlays, etc. Features are weight; weight is heat and idle drain.
-- **Never fabricate device values.** Real CPU OPP steps and thermal-zone paths must come from
-  the hardware (`tools/brick-recon.sh`). Until then, use the **clearly-labeled assumptions** in
-  `docs/thermal-governor-design.md` — they're safe by construction, not guesses to hide.
+- **Default to MinUI's lean software (RGB565) render path.** Fix tearing the cheap way first
+  (page-flip + double-buffer / NEON scalers, referencing MyMinUI). GLES is **benchmarked, not
+  auto-rejected** — adopt only if it wins on *total-device* power/temperature, not CPU% (it
+  keeps the GPU lit, which usually loses). See `docs/project-direction.md` §2.
+- **"Minimal" describes the UX, not the implementation.** Substantial internal change is fine
+  where it earns thermals, gameplay, frame pacing, suspend/save reliability, or crash
+  resistance. User-facing features are still weight — no box art, WiFi/NTP, Pak Store,
+  RetroAchievements, ambient-LED, overlays. Authoritative direction + roadmap:
+  **`docs/project-direction.md`** (it supersedes this file where they differ).
+- **Never overclock, never fabricate device values.** Real OPP steps / thermal-zone paths come
+  from the hardware (`tools/brick-recon.sh`); query the OPP table at runtime. **Never use
+  2.0 GHz** unless on-device evidence proves it's a stock (non-OC) operating point — default
+  the cap to the highest *verified-stock* OPP. Until measured, use the **clearly-labeled
+  assumptions** in `docs/thermal-governor-design.md` (safe by construction, not hidden guesses).
 
 ## Hardware (target platform = `tg5040`)
 - **SoC:** Allwinner A133P, quad-core Cortex-A53. MinUI's tg5040 code drives it via the
@@ -98,25 +104,23 @@ make shell PLATFORM=tg5040  # drop into the toolchain container
 **On-device iteration:** MinUI runs from SD + SSH. Iterate by `scp`-ing the rebuilt
 `minarch.elf` / pak and relaunching — no reflashing per change.
 
-## Current task — closed-loop thermal/perf governor
-Replace MinUI's static 4-tier CPU pick with a feedback controller: run each system at the
-lowest clock that holds frame rate, capped by a conservative thermal ceiling.
-**Full design + usable C: `docs/thermal-governor-design.md`.** It is safe to build entirely on
-assumptions because (1) writes to `scaling_setspeed` snap to the nearest valid OPP, (2) the
-loop self-corrects bad brackets at runtime, (3) a conservative ceiling bounds the downside.
+## Direction & status — see `docs/project-direction.md` for the authoritative plan
+Five pillars: (1) thermals/battery, (2) perfect gameplay **without overclocking**, (3) frame
+pacing / tear-free, (4) suspend/save reliability, (5) crash resistance. Staged roadmap +
+benchmark/acceptance gates live in `docs/project-direction.md`.
 
-Steps:
-1. Add a fine-grained freq write (`PLAT_setCPUFreq(khz)` → `scaling_setspeed`; keep the
-   `userspace` governor that `boot.sh` already sets).
-2. Add `gov_tick(profile, frame_overrun)` to `minarch.c`'s run loop (~every 30 frames), reusing
-   minarch's existing frame-budget measurement for `frame_overrun` and reading temp from the
-   thermal zone.
-3. Per-system `f_min`/`f_max` profile, wired through the per-pak `launch.sh` (which already sets
-   a CPU tier today).
-4. **No-hardware validation:** build a synthetic harness that feeds fake temp + frame-slip
-   traces into `gov_tick` and asserts it converges (compile it under the macOS path / ASan).
-5. **On device later (~10 min, not a blocker):** run `tools/brick-recon.sh` idle and during a
-   heavy game; replace the assumed OPP ladder + thermal-zone path with the real values.
+In flight (branches off `main`, nothing merged yet):
+- **Closed-loop governor** (`feat/thermal-governor`, `docs/thermal-governor-design.md`) — done
+  + ARM-verified, but being **reworked to the hybrid model**: the frame-aware controller sets a
+  `scaling_max_freq` **ceiling** and the kernel `schedutil` governor picks beneath it (per
+  NextUI evidence `6990d474`/`afb3783d`/`e9e91137`), restoring a safe Auto policy on every core
+  init/exit/crash/resume. **The current pin-exact-kHz-via-`scaling_setspeed` approach and the
+  2.0 GHz `f_max` are superseded** (2.0 GHz is an OC — drop it; cap at verified-stock OPP).
+- **Deep sleep** (`feat/deep-sleep`, `docs/deep-sleep-design.md`) — hybrid faux→suspend-to-RAM,
+  ported from `zhaofengli` (see `THIRD_PARTY_NOTICES.md`). ARM-verified; on-device validation
+  pending.
+- Next per the roadmap: device measurement (OPP table, thermals), core build audit
+  (AArch64/NEON/LTO), then renderer / audio / fault-tolerance.
 
 ## Working rules (these complement the global ~/.claude/CLAUDE.md)
 - **Read before edit.** Open the actual file and grep the symbol first; the line numbers in
