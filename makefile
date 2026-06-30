@@ -37,6 +37,11 @@ shell:
 name: 
 	@echo $(RELEASE_NAME)
 
+# host-side unit test for the benchmark telemetry harness (no device, no toolchain)
+.PHONY: test-telemetry
+test-telemetry:
+	sh ./workspace/all/common/run-telemetry-tests.sh
+
 build:
 	# ----------------------------------------------------
 	make build -f makefile.toolchain PLATFORM=$(PLATFORM)
