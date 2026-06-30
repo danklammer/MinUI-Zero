@@ -23,8 +23,11 @@ technique exists in more than one.
   post-release fixes: auto-speed slowdowns; "stuck in performance on fresh install.")
 - **MyMinUI:** same abstraction; `workspace/all/common/api.h` adds `CPU_SPEED_MAX` and
   `CPU_SPEED_SLEEP` to MinUI's tiers.
-- **Our move:** keep MinUI's userspace + `scaling_setspeed` base (best for a closed-loop
-  controller); borrow NextUI's idea of reading temp each tick. See `thermal-governor-design.md`.
+- **Our move (hybrid):** the frame-aware controller sets a `scaling_max_freq` **ceiling** and
+  the kernel **`schedutil`** governor picks the instantaneous freq beneath it — combining
+  frame-awareness (which a kernel governor lacks) with cheap kernel transitions. Restore a safe
+  Auto policy on core init/exit/crash/resume. **Never** cap above the verified-stock OPP (no
+  2.0 GHz OC). See `thermal-governor-design.md` + `project-direction.md` §1.
 
 ## 2. Frame loop / pacing
 - **MinUI:** run loop in `workspace/all/minarch/minarch.c`; pacing in `workspace/all/common/api.c`
@@ -42,9 +45,11 @@ technique exists in more than one.
   `workspace/all/common/api.c` (the `GFX_flip*` family + pthreads) + `minarch.c` (NEON); uses
   `SDL_rotozoom` instead of MinUI's `scaler.c`. Caveat: its multicore blit maximizes speed —
   for minimal heat, gate multicore aggressiveness by system demand.
-- **NextUI (full GLES shader pipeline) — DO NOT ADOPT:** `workspace/all/minarch/ma_video.c`
-  (`GFX_GL_Swap()`, shader passes) + `workspace/all/common/generic_video.c` (GLES shader
-  programs, multi-pass scale/effect/overlay, `.glsl`). Keeps the GPU lit all session.
+- **NextUI (full GLES shader pipeline) — BENCHMARK, don't auto-adopt:** `workspace/all/minarch/
+  ma_video.c` (`GFX_GL_Swap()`, shader passes) + `workspace/all/common/generic_video.c` (GLES
+  shader programs, multi-pass scale/effect/overlay, `.glsl`). Keeps the GPU lit, which usually
+  loses on *total-device* power — but measure a minimal nearest-neighbor GLES path against the
+  software/NEON paths rather than rejecting it on principle (`project-direction.md` §2).
 
 ## 4. Audio / resampler
 - **MinUI:** SDL audio in `workspace/all/minarch/minarch.c` (+ `api.c` `SND_*`).
