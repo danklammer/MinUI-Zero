@@ -302,6 +302,7 @@ enum {
 	CPU_SPEED_PERFORMANCE,
 };
 #define PWR_setCPUSpeed PLAT_setCPUSpeed
+#define PWR_setCPUFreq PLAT_setCPUFreq
 
 ///////////////////////////////
 

@@ -18,6 +18,7 @@
 #include "api.h"
 #include "utils.h"
 #include "scaler.h"
+#include "governor.h"
 
 ///////////////////////////////////////
 
@@ -967,6 +968,34 @@ static void setOverclock(int i) {
 		case 1: PWR_setCPUSpeed(CPU_SPEED_NORMAL); break;
 		case 2: PWR_setCPUSpeed(CPU_SPEED_PERFORMANCE); break;
 	}
+}
+
+///////////////////////////////
+// closed-loop thermal/perf governor (see docs/thermal-governor-design.md)
+
+static GovState gov_state;
+static GovProfile gov_profile;
+static int gov_active = 0; // governor owns the clock during gameplay once a profile is picked
+
+// Pick the per-system clock bracket. The per-pak launch.sh exports MINARCH_FMIN/FMAX
+// in kHz; fall back to a safe default (max holds frame rate, governor sinks from there).
+static void Gov_start(void) {
+	int fmin = 0, fmax = 0;
+	char* s_min = getenv("MINARCH_FMIN");
+	char* s_max = getenv("MINARCH_FMAX");
+	if (s_min) fmin = atoi(s_min);
+	if (s_max) fmax = atoi(s_max);
+	if (fmin>0 && fmax>=fmin) {
+		gov_profile.f_min = fmin;
+		gov_profile.f_max = fmax;
+	}
+	else {
+		gov_profile = GOV_P_DEFAULT;
+	}
+	gov_init(&gov_state, &gov_profile);
+	gov_active = 1;
+	PWR_setCPUFreq(gov_profile.f_max); // start high so the first frames never starve
+	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
@@ -4745,7 +4774,9 @@ int main(int argc , char* argv[]) {
 	GFX_flip(screen);
 	
 	Special_init(); // after config
-	
+
+	Gov_start(); // closed-loop governor takes the clock for gameplay (overrides static overclock)
+
 	sec_start = SDL_GetTicks();
 	while (!quit) {
 		GFX_startFrame();
@@ -4798,7 +4829,22 @@ int main(int argc , char* argv[]) {
 			}
 		}
 		// LOG_info("frame duration: %ims\n", SDL_GetTicks()-frame_start);
-		
+
+		// closed-loop governor: sample frame slip each gameplay frame, run the
+		// controller once per GOV_TICK_FRAMES. Skipped in the menu (which owns its
+		// own clock). A batch "overran" when >=25% of its frames missed the budget,
+		// so rare hiccups don't pin the clock high (threshold is a tuning knob).
+		if (gov_active && !show_menu) {
+			static int gov_frames = 0, gov_slips = 0;
+			if (GFX_didOverrun()) gov_slips++;
+			if (++gov_frames >= GOV_TICK_FRAMES) {
+				int frame_overrun = (gov_slips*4 >= gov_frames);
+				gov_tick(&gov_state, &gov_profile, frame_overrun);
+				gov_frames = 0;
+				gov_slips = 0;
+			}
+		}
+
 		hdmimon();
 	}
 	
