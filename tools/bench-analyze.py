@@ -73,6 +73,9 @@ def summarize(path):
         "temp_delta": (temp[-1] - temp[0]) if temp else None,
         "power_mean_mw": statistics.mean(power) if power else None,
     }
+    aud_u = col("aud_under"); aud_o = col("aud_over")
+    m["underruns"] = int(sum(aud_u)) if aud_u else None
+    m["overruns"] = int(sum(aud_o)) if aud_o else None
     m["mj_per_frame"] = (m["power_mean_mw"] / fps) if (m["power_mean_mw"] and fps) else None
     return m
 
@@ -92,6 +95,7 @@ def show(m):
     print(f"  thermals:    start={fmt(m['temp_start'],'C',0)} peak={fmt(m['temp_peak'],'C',0)}"
           f" end={fmt(m['temp_end'],'C',0)} Δ={fmt(m['temp_delta'],'C',0)}")
     print(f"  power:       mean={fmt(m['power_mean_mw'],'mW')}   **mJ/frame={fmt(m['mj_per_frame'])}**")
+    print(f"  audio:       underruns={fmt(m['underruns'])} overruns(blocking)={fmt(m['overruns'])}")
 
 
 def diff(a, b):
@@ -117,6 +121,7 @@ def diff(a, b):
     cmp("drop rate", "drop_rate")
     cmp("peak temp (C)", "temp_peak")
     cmp("mJ/frame", "mj_per_frame")
+    cmp("audio underruns", "underruns")
     print(f"\n  RELEASE GATE: {'PASS — no regressions' if gates_ok else 'FAIL — a metric got worse'}")
     return 0 if gates_ok else 1
 

@@ -957,6 +957,10 @@ static struct SND_Context {
 	int frame_in;     // buf_w
 	int frame_out;    // buf_r
 	int frame_filled; // max_buf_w
+	// audio-health counters (benchmark telemetry; benign cross-thread race, stats only)
+	volatile long underruns;
+	volatile long overruns;
+	volatile long wait_ms;
 	
 	SND_Resampler resample;
 } snd = {0};
@@ -984,6 +988,7 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 		if (snd.frame_out>=snd.frame_count) snd.frame_out = 0;
 	}
 	
+	if (len>0) snd.underruns++; // ring drained before the request was filled (audible crackle)
 	int zero = len>0 && len==SAMPLES;
 	if (zero) return (void)memset(out,0,len*(sizeof(int16_t) * 2));
 	// else if (len>=5) LOG_info("%8i BUFFER UNDERRUN (%i/%i frames)\n", ms(), len,full_len);
@@ -1067,6 +1072,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 			SDL_Delay(1);
 			SDL_LockAudio();
 		}
+		if (tries) { snd.overruns++; snd.wait_ms += tries; } // buffer full: audio-blocking paced emulation
 		// if (tries) LOG_info("%8i waited %ims for buffer to get low...\n", ms(), tries);
 
 		while (amount && snd.frame_in != snd.frame_filled) {
@@ -1083,6 +1089,17 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	return consumed;
 }
 
+void SND_getStats(SND_Stats* out) {
+	if (!out) return;
+	out->underruns = snd.underruns;
+	out->overruns = snd.overruns;
+	out->wait_ms = snd.wait_ms;
+	out->frame_count = (int)snd.frame_count;
+	// current ring fill (frames buffered, ready to play)
+	int q = snd.frame_in - snd.frame_out;
+	if (q < 0) q += (int)snd.frame_count;
+	out->queue_frames = (snd.frame_count > 0) ? q : 0;
+}
 void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("SND_init\n");
 	

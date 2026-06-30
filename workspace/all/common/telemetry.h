@@ -30,6 +30,7 @@ double tlm_mj_per_frame(double power_mw, double fps);
 void tlm_init(const char* tag, int budget_us); // budget_us = 1e6/fps (over-budget detector)
 int  tlm_enabled(void);                        // cheap gate for the run loop
 void tlm_frame(uint32_t work_us);              // record one gameplay frame's work time
+void tlm_audio(int queue_frames, long underruns_total, long overruns_total); // latest audio-health snapshot
 void tlm_quit(void);                           // flush remaining window + close the CSV
 
 #endif // TELEMETRY_H
