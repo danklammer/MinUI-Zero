@@ -97,8 +97,8 @@ clean:
 
 setup: name
 	# ----------------------------------------------------
-	# make sure we're running in an input device
-	tty -s 
+	# make sure we're running in an input device (non-fatal: allow headless/CI builds)
+	tty -s || true
 	
 	# ready fresh build
 	rm -rf ./build
