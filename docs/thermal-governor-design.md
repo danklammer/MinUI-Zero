@@ -11,39 +11,56 @@ frame timing at runtime and corrects, so assumptions only set the *starting poin
 3. **A conservative thermal ceiling** means the worst case of a wrong guess is "too cautious"
    (a little perf lost), never "overheats."
 
+## Architecture: HYBRID (updated per docs/project-direction.md §1)
+The controller no longer pins an exact clock via `userspace`/`scaling_setspeed`. Instead the
+frame-aware controller chooses an allowed **ceiling** (`scaling_max_freq`) and the kernel
+**`schedutil`** governor picks the instantaneous frequency beneath it. This keeps frame
+awareness (which a kernel governor lacks) while letting the kernel drop the clock during
+lighter moments — cooler than a hard pin. The control math below is unchanged; only the
+*actuated value* changed from "the frequency" to "the ceiling" (`gov_step` → `ceil_khz` →
+`PLAT_setCPUMaxFreq`). `boot.sh` selects `schedutil`; every CPU-control point (menu tiers
+and the governor) sets the cap, so no governor-mode switching is needed.
+
 ## KNOWN vs ASSUMED
 **KNOWN (from MinUI's tg5040 source):**
-- Governor is `userspace`; speed is set by writing kHz to
-  `/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed`. Keep that; drive it dynamically.
-- Reference points MinUI uses: **600 / 1200 / 1608 / 2000 MHz**.
+- MinUI historically used `userspace` + `scaling_setspeed`; reference points **600 / 1200 /
+  1608 / 2000 MHz**. We now use `schedutil` + `scaling_max_freq`.
 
 **ASSUMED (safe defaults; confirm later, nothing breaks if wrong):**
-- OPP ladder ≈ 480/600/720/816/1008/1104/1200/1320/1488/1608/1800/2000 MHz (writes snap to nearest).
+- `schedutil` is available on the Brick kernel (NextUI uses it — verify
+  `scaling_available_governors`). If absent, the cap still bounds the default governor.
+- **Stock max ≈ 1.8GHz; 2.0GHz is an OVERCLOCK and is never used** (CLAUDE.md). Cap every
+  `f_max` at the verified-stock OPP; query `scaling_available_frequencies` on device.
+- OPP ladder ≈ 408/.../1200/1608/1800 MHz (writes snap to nearest; NextUI implies a 408 floor).
 - One CPU thermal sensor at `thermal_zone0` (verify `type`).
-- Voltage/OPP not user-writable on the stock kernel → no undervolt without a custom kernel.
 - cpufreq policy is cluster-wide (cpu0 governs all four cores) — typical for the A133P.
 
-## Tunables — assumptions live here as #defines
+## Tunables — assumptions live here as #defines (see governor.c)
 ```c
-#define T_TARGET_C   60      // start shaving clock above this
+#define T_TARGET_C   60      // start shaving the ceiling above this
 #define T_CEIL_C     72      // hard back-off above this
-#define T_SENSOR     "/sys/class/thermal/thermal_zone0/temp"               // mC
-#define FREQ_PATH    "/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed" // kHz
+#define T_SENSOR     "/sys/class/thermal/thermal_zone0/temp"                // mC
+#define MAX_FREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq" // kHz ceiling
+#define STOCK_MAX_KHZ 1800000 // verified-stock cap; NEVER 2000000 (OC)
 #define TICK_FRAMES  30      // run controller ~every 30 frames (~0.5s @60)
 #define STEP_KHZ     108000  // ~one OPP per move
 #define UP_DWELL     1       // ticks of slip before climbing (climb fast)
 #define DN_DWELL     4       // ticks of slack before sinking (sink slow = no hunting)
 
-typedef struct { int f_min, f_max; } sys_profile;
+typedef struct { int f_min, f_max; } sys_profile; // f_max <= STOCK_MAX_KHZ (no OC)
 static const sys_profile P_8BIT  = {  480000, 1008000 }; // NES/GB/GBC/SMS/GG/PCE
 static const sys_profile P_16BIT = {  600000, 1320000 }; // SNES/Genesis/GBA
-static const sys_profile P_PS1   = { 1008000, 2000000 };
+static const sys_profile P_PS1   = { 1008000, 1800000 }; // capped at stock, was 2000000
 ```
 
 ## Primitives
+> The pseudocode below is the original single-pin spec, kept for the control math. In the
+> shipped hybrid (governor.c), the computed value is the **ceiling** and is written via the
+> platform primitive `PLAT_setCPUMaxFreq(khz)` → `scaling_max_freq` (not `gov_set_freq`/
+> `scaling_setspeed`), with `schedutil` choosing beneath it. `g_cur_khz` ≡ `ceil_khz`.
 ```c
-static void gov_set_freq(int khz) {
-    FILE* f = fopen(FREQ_PATH, "w");
+static void gov_set_freq(int khz) {       // shipped as PLAT_setCPUMaxFreq -> scaling_max_freq
+    FILE* f = fopen(MAX_FREQ_PATH, "w");
     if (!f) return;
     fprintf(f, "%d", khz);            // kernel clamps to nearest supported OPP
     fclose(f);
@@ -104,8 +121,13 @@ static void gov_tick(const sys_profile* p, int frame_overrun) {
   `CPU_SPEED_MENU`, keep it.
 
 ## Confirm on-device later (~10 min, not a blocker)
-- `cat scaling_available_frequencies` → replace the assumed ladder / `STEP_KHZ`.
+- `cat scaling_available_governors` → confirm **`schedutil`** exists (else the cap still bounds
+  the default governor; behavior degrades but stays safe).
+- `cat scaling_available_frequencies` / `cpuinfo_max_freq` → confirm the **verified-stock max**
+  (replace the assumed 1.8GHz `STOCK_MAX_KHZ`; **never** cap at 2.0GHz) and `STEP_KHZ`.
 - `cat /sys/class/thermal/thermal_zone*/type` → confirm the CPU zone; fix `T_SENSOR`.
-- Watch it converge during a heavy game; nudge `T_TARGET_C` / dwell if it hunts or runs warm.
+- Watch it converge during a heavy game; confirm `schedutil` drops the clock in light scenes;
+  nudge `T_TARGET_C` / dwell if it hunts or runs warm.
+- Confirm the menu/launcher cap behaves (a low `scaling_max_freq` keeps the menu cool).
 
 None of these change the structure — just better numbers in the `#define`s.

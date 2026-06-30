@@ -89,3 +89,22 @@ Borderline cases flagged for on-device tuning (may want a higher `f_max`): MGBA 
 SGB (accuracy mGBA core, heavier than gpsp) and SUPA (supafaust SNES). Safe as-is —
 if they slip at `f_max` the governor simply pins `f_max`; raising it only recovers
 lost frames, never overheats (the ceiling still bounds it).
+
+
+## D12 — Reworked to the HYBRID model + removed the 2.0 GHz overclock (per docs/project-direction.md)
+The pure userspace-pin design (write exact kHz to `scaling_setspeed`) is superseded. Now:
+- **`schedutil` + ceiling.** `boot.sh` selects `schedutil`; the controller (and the static menu
+  tiers) set `scaling_max_freq` as a *cap*, and the kernel picks the instantaneous freq beneath
+  it. Benefit: keeps frame-awareness *and* lets the kernel drop the clock in light scenes
+  (cooler) with cheaper transitions. No governor-mode switching — every CPU-control point just
+  sets the cap. `PLAT_setCPUFreq`->**`PLAT_setCPUMaxFreq`** (scaling_max_freq); `GovState.cur_khz`
+  ->`ceil_khz`. The control math (fast-up/slow-down, hysteresis, thermal backstop) is unchanged.
+- **No overclock.** `f_max` for PS1/DEFAULT 2000000->**1800000**; the static PERFORMANCE tier
+  2000000->1800000; `launch.sh` PS/P8 FMAX 2000000->1800000; `boot.sh` no longer pins 2000000.
+  `GOV_STOCK_MAX_KHZ=1800000` is a clearly-marked ASSUMED stock cap — confirm on device, never
+  cap at/above 2.0 GHz (the number-one constraint: never require overclocking).
+- **Deferred (needs device / follow-up):** full Auto-restore on every core init/exit/crash/
+  resume (today the menu cap + gov re-assert cover the common paths); treating audio underruns
+  as a separate signal from presentation misses; gating the governor off during fast-forward;
+  runtime OPP-table discovery to replace the assumed `STOCK_MAX_KHZ`/`STEP_KHZ`. Tracked in
+  docs/project-direction.md (Stage 1) + ON-DEVICE-CHECKLIST.md.
