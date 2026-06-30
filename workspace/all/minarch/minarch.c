@@ -4803,7 +4803,10 @@ int main(int argc , char* argv[]) {
 		}
 		// LOG_info("frame duration: %ims\n", SDL_GetTicks()-frame_start);
 
-		if (!show_menu) tlm_frame(GFX_getFrameWorkUs()); // benchmark: record frame work time
+		if (!show_menu) {
+			tlm_frame(GFX_getFrameWorkUs()); // benchmark: record frame work time
+			if (tlm_enabled()) { SND_Stats as; SND_getStats(&as); tlm_audio(as.queue_frames, as.underruns, as.overruns); }
+		}
 
 		hdmimon();
 	}
