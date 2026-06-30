@@ -209,6 +209,9 @@ typedef struct SND_Frame {
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
 void SND_quit(void);
+// audio-health telemetry (benchmark): cumulative counters + current ring fill.
+typedef struct SND_Stats { long underruns; long overruns; long wait_ms; int queue_frames; int frame_count; } SND_Stats;
+void SND_getStats(SND_Stats* out);
 
 ///////////////////////////////
 
