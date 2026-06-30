@@ -1596,9 +1596,9 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	}
 	
 	if (PAD_justPressed(BTN_POWER)) {
-		// a wake from deep sleep arrives as a power press; ignore it so we don't
-		// immediately re-sleep / power off right after resuming
-		if (now - pwr.resume_tick < 1000) {
+		// on deep-sleep platforms a wake arrives as a power press; debounce it so we don't
+		// immediately re-sleep / power off after resuming. Inert elsewhere (original behavior).
+		if (PLAT_supportsDeepSleep() && now - pwr.resume_tick < 1000) {
 			LOG_debug("ignoring spurious power button press (just resumed)\n");
 			power_pressed_at = 0;
 		} else {
@@ -1612,7 +1612,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && power_pressed_at) // manual sleep (not a resume press)
+		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && (!PLAT_supportsDeepSleep() || power_pressed_at)) // manual sleep (resume-press guard only where deep sleep is on)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
