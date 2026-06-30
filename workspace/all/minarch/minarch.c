@@ -4842,7 +4842,10 @@ int main(int argc , char* argv[]) {
 			if (GFX_didOverrun()) gov_slips++;
 			if (++gov_frames >= GOV_TICK_FRAMES) {
 				int frame_overrun = (gov_slips*4 >= gov_frames);
+				int prev_ceil = gov_state.ceil_khz;
 				gov_tick(&gov_state, &gov_profile, frame_overrun);
+				if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
+					LOG_info("gov: ceil %d->%d kHz (temp=%dC, overrun=%d)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun);
 				gov_frames = 0;
 				gov_slips = 0;
 			}
