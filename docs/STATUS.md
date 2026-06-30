@@ -4,6 +4,15 @@ Branch: `feat/thermal-governor` (off `main`, which is untouched).
 As of this writing the whole no-hardware task list is implemented, verified where it
 can be verified without the Brick, and committed. Date: 2026-06-30.
 
+## Hardware validation — IT BOOTS AND RUNS (2026-06-30)
+A real `make` release build (`integration` branch, tg5040-only, 10 cores) was flashed to a
+TrimUI Brick and **boots, runs the launcher, and plays games** — no crashes. Confirmed from the
+device log (`/.userdata/tg5040/logs/minui.txt`): our `PWR_sleep()` runs (`"Entering hybrid
+sleep"`), audio/display init clean. Deep sleep correctly stayed in the safe faux-sleep stage
+(opt-in flag absent). **Still to capture on-device:** the governor's per-game log + behavior,
+and `brick-recon.sh` output (to replace the ASSUMED OPP/thermal/battery values). See
+docs/FIRST-DEVICE-SESSION.md.
+
 ## What the governor does
 > **Updated to the hybrid model (commit `27bba2c`, see DECISIONS D12):** the controller now
 > sets a `scaling_max_freq` *ceiling* and the kernel `schedutil` governor picks beneath it;

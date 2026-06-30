@@ -121,21 +121,10 @@ done:
 	say "done" 2>/dev/null || true
 
 special:
-	# setup miyoomini/trimui/magicx family .tmp_update in BOOT
+	# tg5040 (TrimUI Brick / Smart Pro): set up the trimui .tmp_update bootstrap only
 	mv ./build/BOOT/common ./build/BOOT/.tmp_update
-	mv ./build/BOOT/miyoo ./build/BASE/
 	mv ./build/BOOT/trimui ./build/BASE/
-	mv ./build/BOOT/magicx ./build/BASE/
-	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/
 	cp -R ./build/BOOT/.tmp_update ./build/BASE/trimui/app/
-	cp -R ./build/BOOT/.tmp_update ./build/BASE/magicx/
-	cp -R ./build/BASE/miyoo ./build/BASE/miyoo354
-	cp -R ./build/BASE/miyoo ./build/BASE/miyoo355
-	cp -R ./build/BASE/miyoo ./build/BASE/miyoo285
-ifneq (,$(findstring my355, $(PLATFORMS)))
-	cp -R ./workspace/my355/init ./build/BASE/miyoo355/app/my355
-	cp -r ./workspace/my355/other/squashfs/output/* ./build/BASE/miyoo355/app/my355/payload/
-endif
 
 tidy:
 	# ----------------------------------------------------
@@ -169,7 +158,7 @@ package: tidy
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
 	# TODO: can I just add everything in BASE to zip?
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves miyoo miyoo354 trimui rg35xx rg35xxplus gkdpixel miyoo355 magicx miyoo285 em_ui.sh MinUI.zip README.txt
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves trimui MinUI.zip README.txt
 	cd ./build/EXTRAS && zip -r ../../releases/$(RELEASE_NAME)-extras.zip Bios Emus Roms Saves Tools README.txt
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
