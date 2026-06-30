@@ -4,15 +4,11 @@ All three are MinUI-lineage. Branch `main` on each. Line numbers are from curren
 **approximate — grep the symbol, don't trust the number.** NextUI split MinUI's single
 `minarch.c` into `ma_*` modules, so its pairings are MinUI(one file) → NextUI(a module).
 
-## Licensing (decide before copying anything)
-| Repo | License | Implication |
-|------|---------|-------------|
-| `shauninman/MinUI` (base) | **none** (all rights reserved) | Tolerated fork scene; keep attribution, don't relicense the repo. |
-| `LoveRetro/NextUI` | **GPLv3** | Copying its code → our distributed fork is GPLv3 (full source, no closed dist). Reimplement the *technique* to stay non-GPL. |
-| `Turro75/MyMinUI` | **none** (no LICENSE file) | Same gray zone as MinUI, **but** contains GPLv3 code lifted from NextUI (cheats) → those bits are GPLv3 regardless. Mixed provenance. |
-
-Ideas/techniques aren't copyrightable; specific code is. Default stance: **reference, then
-reimplement.**
+## Borrowing
+Community fork scene — borrow and adapt code from any of these forks freely; keep attribution
+as a courtesy. The only constraint is technical: NextUI's `ma_*`/GL refactor rarely applies
+cleanly, so prefer the leaner forks (MyMinUI for render, zhaofengli for deep-sleep) when a
+technique exists in more than one.
 
 ## 1. CPU frequency / thermal — the #1 heat lever
 - **MinUI:** `workspace/tg5040/platform/platform.c` → `PLAT_setCPUSpeed()` (~L546). Uses the
@@ -56,11 +52,12 @@ reimplement.**
   quality/perf resampling (cites libsamplerate). Use a build *after* their resampler
   memory-leak fix.
 
-## 5. Deep sleep / suspend — overheat-bug fix (high value, cleanest copy candidate)
+## 5. Deep sleep / suspend — overheat-bug fix (high value)
 - **Both:** `PWR_*` lives in `workspace/all/common/api.c`.
 - **NextUI** added suspend-to-RAM ("suspending to RAM" / "returned from suspend", retry logic,
-  battery-monitor thread, `can_autosleep`) around L3400–3710 (author: zhaofengli). Diff
-  NextUI's `PWR_*` against MinUI's in the same file to isolate the delta. (GPLv3 if copied.)
+  battery-monitor thread, `can_autosleep`) around L3400–3710 (author: zhaofengli).
+- **zhaofengli/MinUI** (`deep-sleep` branch) — the original, minimal version on stock `PWR_*`
+  (~90 LOC + a `bin/suspend` script); the cleanest reference to borrow from for our tree.
 
 ## 6. Per-core patches
 - **MinUI** already ships A133P core patches: `workspace/tg5040/cores/patches/` — gpsp, mgba,

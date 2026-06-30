@@ -53,22 +53,25 @@ one is the distilled, runs-cold one.
 
 Full three-way file map (incl. NextUI/MyMinUI equivalents): **`docs/architecture-map.md`**.
 
-## Reference forks (git remotes — READ them, don't blindly copy)
-Add as remotes; treat as reference implementations, **not** patch sources (NextUI modularized
-`minarch.c` into `ma_*` modules, so almost nothing applies cleanly):
-- `upstream` = `shauninman/MinUI` — the base. **No license file → all rights reserved.** Don't
-  add a LICENSE over the repo; keep attribution; at most license our *own* new files.
+## Reference forks (git remotes — borrow freely)
+This is a community fork scene — borrow and adapt code from any of these freely; keep
+attribution as a courtesy. The only real friction is technical, not legal: NextUI modularized
+`minarch.c` into `ma_*` modules, so its code rarely applies cleanly as a patch — prefer the
+leaner forks when a technique exists in more than one.
+- `upstream` = `shauninman/MinUI` — the base.
 - `mymin` = `Turro75/MyMinUI` — **best reference for the lean tear-free software render path**
-  (NEON + multicore + double-buffer, no GL). No license file; contains GPLv3 bits lifted from
-  NextUI, so its provenance is mixed.
+  (NEON + multicore + double-buffer, no GL).
 - `nextui` = `LoveRetro/NextUI` — reference for the **suspend-to-RAM / deep-sleep overheat fix**
-  and the dynamic-governor idea. **GPLv3** → pasting its code makes us GPLv3. To keep license
-  options open, **reimplement the technique, don't copy the code.**
+  and the dynamic-governor idea (its governor delegates to kernel governors, which can't do
+  "lowest clock that holds frame rate" — see our closed-loop design instead).
+- `zhaofengli` = `zhaofengli/MinUI` (`deep-sleep` branch) — the original, minimal deep-sleep
+  implementation against **stock MinUI `PWR_*`** (maps ~1:1 to our tree). Best deep-sleep ref.
 
 ```
-git remote add upstream https://github.com/shauninman/MinUI.git
-git remote add nextui   https://github.com/LoveRetro/NextUI.git
-git remote add mymin    https://github.com/Turro75/MyMinUI.git
+git remote add upstream   https://github.com/shauninman/MinUI.git
+git remote add nextui     https://github.com/LoveRetro/NextUI.git
+git remote add mymin      https://github.com/Turro75/MyMinUI.git
+git remote add zhaofengli https://github.com/zhaofengli/MinUI.git
 git fetch --all
 ```
 
@@ -122,5 +125,6 @@ Steps:
 - **Scope discipline.** One subsystem per branch. Keep `main` clean tracking `upstream`; work on
   feature branches (e.g. `feat/thermal-governor`).
 - **Stay lean, stay software-rendered** unless explicitly told otherwise in chat.
-- **License hygiene.** If you ever reference `nextui`/`mymin` code, note the provenance and
-  license in the commit message, and prefer reimplementing over copying.
+- **Borrow freely.** This is a community fork scene — adapt code from the reference forks as
+  needed; keep attribution as a courtesy. Don't spend effort on license analysis or clean-room
+  reimplementation.
