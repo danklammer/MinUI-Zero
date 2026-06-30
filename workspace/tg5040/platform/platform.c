@@ -540,6 +540,8 @@ void PLAT_powerOff(void) {
 	exit(0); // poweroff handled by PLATFORM/bin/shutdown
 }
 
+int PLAT_supportsDeepSleep(void) { return 1; } // tg5040/Brick can suspend-to-RAM
+
 ///////////////////////////////
 
 // Hybrid governor: boot.sh selects the `schedutil` kernel governor; all CPU control
