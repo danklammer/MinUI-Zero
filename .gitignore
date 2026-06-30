@@ -37,3 +37,5 @@ workspace/hash.txt
 workspace/readmes
 
 FAKESD
+# scratch / triage / local-only notes
+.notes/
