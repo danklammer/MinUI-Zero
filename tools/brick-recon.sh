@@ -45,15 +45,39 @@ case "$gl" in
   *)          echo "no  — closed-loop in userspace, or patch the kernel" ;;
 esac
 
-hdr "Voltage / OPP exposure (usually hidden without a custom kernel)"
-for path in /sys/kernel/debug/opp /sys/class/devfreq /sys/class/regulator; do
+hdr "Voltage / OPP / undervolt mechanism (spike: CAN we write CPU voltage at runtime?)"
+# READ-ONLY probe. This script NEVER writes a voltage. See docs/undervolt-spike-design.md.
+for path in /sys/kernel/debug/opp /sys/class/devfreq /sys/class/regulator /sys/firmware/devicetree; do
   [ -e "$path" ] && echo "present: $path" || echo "absent:  $path"
 done
+
+echo "-- regulators (name, current uV, min/max, node perms = writability) --"
 for r in /sys/class/regulator/regulator.*/; do
   [ -d "$r" ] || continue
-  printf '  %s name=%s uV=%s\n' "$(basename "$r")" \
-    "$(cat "$r/name" 2>/dev/null)" "$(cat "$r/microvolts" 2>/dev/null)"
+  perm=$(ls -l "$r/microvolts" 2>/dev/null | cut -c1-10)
+  printf '  %-14s name=%-18s uV=%-9s [%s..%s] microvolts-perms:%s\n' \
+    "$(basename "$r")" "$(cat "$r/name" 2>/dev/null)" "$(cat "$r/microvolts" 2>/dev/null)" \
+    "$(cat "$r/min_microvolts" 2>/dev/null)" "$(cat "$r/max_microvolts" 2>/dev/null)" "$perm"
 done
+
+echo "-- cpu regulator + cpufreq driver (is freq scaling OPP/voltage-backed?) --"
+dump "scaling_driver"  /sys/devices/system/cpu/cpu0/cpufreq/scaling_driver
+dump "cpu-supply name" /sys/devices/system/cpu/cpu0/cpu-supply/name
+
+echo "-- OPP table (the freq<->voltage map = the undervolt target), if exposed --"
+for d in /sys/kernel/debug/opp/*/ ; do
+  [ -d "$d" ] || continue
+  echo "  $d"
+  for f in "$d"*; do
+    [ -f "$f" ] || continue
+    printf '    %-22s %s\n' "$(basename "$f")" "$(cat "$f" 2>/dev/null)"
+  done
+done
+
+echo "VERDICT INPUT: if every regulator microvolts node above is read-only (r--) and no OPP"
+echo "  voltage is writable, runtime undervolt is NOT possible on this kernel -> needs a custom"
+echo "  DTB/kernel (patched OPP voltages). If a CPU-rail regulator is writable, a bounded runtime"
+echo "  undervolt is feasible. Record this output in docs/undervolt-spike-design.md."
 
 hdr "Thermal zones (find which one is the CPU)"
 for z in /sys/class/thermal/thermal_zone*; do
