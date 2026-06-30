@@ -23,6 +23,11 @@ unless noted:
 - [ ] **OPP ladder**: `cat .../cpufreq/policy0/scaling_available_frequencies`. Replace the
       assumed ladder reasoning and set `GOV_STEP_KHZ` to ~one real OPP step. Re-check the
       per-system brackets in the pak `launch.sh` files snap sensibly onto real OPPs.
+      - **Hint to confirm (not measured):** NextUI's `skeleton/SYSTEM/tg5040/bin/governor.sh`
+        implies the TG5040 OPP range is **~408–1800 MHz** (min 408, mid 1200, "second_max"
+        1800; 2000 is the OC). If real, our 8-bit `f_min` could drop **480 → 408 MHz** for a
+        cooler idle. This is a *fork's* claim — confirm with `brick-recon.sh` before changing
+        any value (CLAUDE.md: device values come from hardware, not other forks).
 - [ ] **Cluster-wide policy**: confirm `cpu0`'s `scaling_setspeed` governs all four cores
       (recon's per-core view). MinUI already assumes this; just confirm.
 - [ ] **`auto` governor present?** If the kernel exposes one, note it — not used here
