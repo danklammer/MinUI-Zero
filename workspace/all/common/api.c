@@ -77,7 +77,8 @@ static struct PWR_Context {
 	int can_autosleep;
 	int requested_sleep;
 	int requested_wake;
-	
+	int resume_tick; // SDL ticks at last resume — used to debounce the wake button press
+
 	pthread_t battery_pt;
 	int is_charging;
 	int charge;
@@ -1370,6 +1371,29 @@ FALLBACK_IMPLEMENTATION int PLAT_shouldWake(void) {
 	}
 	return 0;
 }
+FALLBACK_IMPLEMENTATION int PLAT_supportsDeepSleep(void) { return 0; }
+FALLBACK_IMPLEMENTATION int PLAT_deepSleep(void) {
+	const char *state_path = "/sys/power/state";
+
+	int state_fd = open(state_path, O_WRONLY);
+	if (state_fd < 0) {
+		LOG_error("failed to open %s: %d\n", state_path, errno);
+		return -1;
+	}
+
+	LOG_info("suspending to RAM\n");
+	int ret = write(state_fd, "mem", 3);
+	if (ret < 0) {
+		// Can fail shortly after resuming with EBUSY
+		LOG_error("failed to set power state: %d\n", errno);
+		close(state_fd);
+		return -1;
+	}
+
+	LOG_info("returned from suspend\n");
+	close(state_fd);
+	return 0;
+}
 
 int PAD_anyJustPressed(void)	{ return pad.just_pressed!=BTN_NONE; }
 int PAD_anyPressed(void)		{ return pad.is_pressed!=BTN_NONE; }
@@ -1475,7 +1499,8 @@ void PWR_init(void) {
 	
 	pwr.requested_sleep = 0;
 	pwr.requested_wake = 0;
-	
+	pwr.resume_tick = 0;
+
 	pwr.should_warn = 0;
 	pwr.charge = PWR_LOW_CHARGE;
 	
@@ -1537,20 +1562,27 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	}
 	
 	if (PAD_justPressed(BTN_POWER)) {
-		power_pressed_at = now;
+		// a wake from deep sleep arrives as a power press; ignore it so we don't
+		// immediately re-sleep / power off right after resuming
+		if (now - pwr.resume_tick < 1000) {
+			LOG_debug("ignoring spurious power button press (just resumed)\n");
+			power_pressed_at = 0;
+		} else {
+			power_pressed_at = now;
+		}
 	}
-	
+
 	#define SLEEP_DELAY 30000 // 30 seconds
 	if (now-last_input_at>=SLEEP_DELAY && PWR_preventAutosleep()) last_input_at = now;
-	
+
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP)) // manual sleep
+		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && power_pressed_at) // manual sleep (not a resume press)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
-		PWR_fauxSleep();
+		PWR_sleep();
 		if (after_sleep) after_sleep();
 		
 		last_input_at = now = SDL_GetTicks();
@@ -1668,29 +1700,75 @@ static void PWR_exitSleep(void) {
 	sync();
 }
 
+// How long to stay in light faux-sleep (screen off, polling) before escalating to true
+// suspend-to-RAM. Lower = cooler/less idle drain (our thesis), at the cost of slower resume.
+// Tune on-device; keep the proven default until measured. See docs/deep-sleep-design.md.
+#define DEEP_SLEEP_DELAY 120000 // two minutes
 static void PWR_waitForWake(void) {
 	uint32_t sleep_ticks = SDL_GetTicks();
+	int deep_sleep_attempts = 0;
 	while (!PAD_wake()) {
 		if (pwr.requested_wake) {
 			pwr.requested_wake = 0;
 			break;
 		}
 		SDL_Delay(200);
-		if (pwr.can_poweroff && SDL_GetTicks()-sleep_ticks>=120000) { // increased to two minutes
-			if (pwr.is_charging) sleep_ticks += 60000; // check again in a minute
-			else PWR_powerOff();
+		if (SDL_GetTicks()-sleep_ticks>=DEEP_SLEEP_DELAY) {
+			if (pwr.is_charging) {
+				sleep_ticks += 60000; // check again in a minute
+				continue;
+			}
+			if (PLAT_supportsDeepSleep()) {
+				int ret = PWR_deepSleep();
+				if (ret==0) {
+					return; // suspended and resumed
+				}
+				else if (deep_sleep_attempts<3) {
+					// suspend can fail with EBUSY right after a resume — retry
+					LOG_warn("failed to enter deep sleep - retrying in 5 seconds\n");
+					sleep_ticks += 5000;
+					deep_sleep_attempts++;
+					continue;
+				}
+				else {
+					LOG_warn("failed to enter deep sleep - powering off\n");
+				}
+			}
+			if (pwr.can_poweroff) PWR_powerOff();
 		}
 	}
-	
+
 	return;
 }
-void PWR_fauxSleep(void) {
+void PWR_sleep(void) {
+	LOG_info("Entering hybrid sleep\n");
+
 	GFX_clear(gfx.screen);
 	PAD_reset();
 	PWR_enterSleep();
 	PWR_waitForWake();
 	PWR_exitSleep();
 	PAD_reset();
+
+	pwr.resume_tick = SDL_GetTicks();
+}
+
+int PWR_deepSleep(void) {
+	// Run ${BIN_PATH}/suspend if it exists (platform choreography: quiesce radios, save
+	// the mixer, then `echo mem`); else fall back to the bare PLAT_deepSleep write. We
+	// assume the suspend executable returns after a full suspend/resume cycle.
+	char *suspend_path = BIN_PATH "/suspend";
+	if (exists(suspend_path)) {
+		LOG_info("suspending using platform suspend executable\n");
+		int ret = system(suspend_path);
+		if (ret<0) {
+			LOG_error("failed to launch suspend executable: %d\n", errno);
+			return -1;
+		}
+		LOG_info("suspend executable exited with %d\n", ret);
+		return ret==0 ? 0 : -1;
+	}
+	return PLAT_deepSleep();
 }
 
 void PWR_disableAutosleep(void) {
