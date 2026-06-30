@@ -10,13 +10,17 @@ SYSTEM_PATH="$SDCARD_PATH/.system"
 mount -o remount,rw,async "$SDCARD_PATH"
 mount -o remount,rw,async "/mnt/UDISK"
 
-# Hybrid CPU control: schedutil picks the frequency beneath a cap that MinUI / the
-# closed-loop governor set via scaling_max_freq. If schedutil is absent the cap still
-# bounds whatever governor the kernel defaults to (safe degradation).
-echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-# ASSUMED 1.8GHz stock max — NEVER 2.0GHz (that is an overclock). Confirm on device
-# with tools/brick-recon.sh (scaling_available_frequencies / cpuinfo_max_freq).
-echo 1800000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq
+# Hybrid CPU control: prefer schedutil (the governor sets a scaling_max_freq cap and the
+# kernel picks beneath it). Verify by read-back; if schedutil is unavailable, fall back to
+# the known-good userspace path at a NON-OC clock. Either way: never 2.0GHz (overclock).
+GOV=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+echo schedutil > "$GOV" 2>/dev/null
+if [ "$(cat "$GOV" 2>/dev/null)" = "schedutil" ]; then
+	echo 1800000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || true
+else
+	echo userspace > "$GOV" 2>/dev/null || true
+	echo 1608000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed 2>/dev/null || true
+fi
 
 # install/update
 if [ -f "$UPDATE_PATH" ]; then
