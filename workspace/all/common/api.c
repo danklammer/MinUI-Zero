@@ -202,8 +202,14 @@ int GFX_hdmiChanged(void) {
 #define FRAME_BUDGET 17 // 60fps
 static uint32_t frame_start = 0;
 static int frame_overran = 0; // closed-loop governor: did the last frame's CPU work exceed the budget?
+static uint64_t frame_start_us = 0; // benchmark telemetry: us timestamp at frame start
+static uint32_t frame_work_us = 0;  // us of CPU work from GFX_startFrame to GFX_flip
 void GFX_startFrame(void) {
 	frame_start = SDL_GetTicks();
+	frame_start_us = getMicroseconds();
+}
+uint32_t GFX_getFrameWorkUs(void) {
+	return frame_work_us;
 }
 int GFX_didOverrun(void) {
 	return frame_overran;
@@ -211,6 +217,7 @@ int GFX_didOverrun(void) {
 
 void GFX_flip(SDL_Surface* screen) {
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
+	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
 	// reuse the same budget comparison that drives vsync as the governor's frame-slip signal
 	frame_overran = (frame_start!=0 && frame_duration>=FRAME_BUDGET);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));

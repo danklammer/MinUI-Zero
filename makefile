@@ -37,10 +37,12 @@ shell:
 name:
 	@echo $(RELEASE_NAME)
 
-# host-side unit test for the closed-loop thermal governor (no device, no toolchain)
-.PHONY: test-governor
+# host-side unit tests (no device, no toolchain)
+.PHONY: test-governor test-telemetry
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
+test-telemetry:
+	sh ./workspace/all/common/run-telemetry-tests.sh
 
 build:
 	# ----------------------------------------------------

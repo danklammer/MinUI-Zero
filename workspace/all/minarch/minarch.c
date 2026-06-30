@@ -19,6 +19,7 @@
 #include "utils.h"
 #include "scaler.h"
 #include "governor.h"
+#include "telemetry.h"
 
 ///////////////////////////////////////
 
@@ -4776,6 +4777,8 @@ int main(int argc , char* argv[]) {
 	Special_init(); // after config
 
 	Gov_start(); // closed-loop governor takes the clock for gameplay (overrides static overclock)
+	// benchmark telemetry (no-op unless BENCH=1): budget_us from the core frame rate
+	tlm_init(tag_name, core.fps>0 ? (int)(1000000.0/core.fps) : 16667);
 
 	sec_start = SDL_GetTicks();
 	while (!quit) {
@@ -4844,6 +4847,7 @@ int main(int argc , char* argv[]) {
 				gov_slips = 0;
 			}
 		}
+		if (!show_menu) tlm_frame(GFX_getFrameWorkUs()); // benchmark: record frame work time
 
 		hdmimon();
 	}
@@ -4852,6 +4856,8 @@ int main(int argc , char* argv[]) {
 	QuitSettings();
 	
 finish:
+
+	tlm_quit(); // benchmark: flush + close the CSV (no-op unless enabled)
 
 	Game_close();
 	Core_unload();
