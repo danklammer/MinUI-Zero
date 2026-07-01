@@ -59,11 +59,14 @@ static int device_pitch;
 // The Brick's display is a plain framebuffer (32bpp little-endian XRGB8888 => BGRA bytes). For the
 // MENU (native 1024x768, no scaling) we can convert+copy vid.screen (RGB565) directly to fb0 and skip
 // GLES entirely, so the PowerVR GPU can suspend while browsing. Games keep the GLES scaling path.
-static int   fb_present = 0;
+static int   fb_present = 0; // GPU-dark software present for the MENU (env ZERO_FB_PRESENT)
+static int   fb_game    = 0; // GPU-dark software present for GAMES (env ZERO_FB_GAME) — light systems
 static int   fb_fd      = -1;
 static uint8_t* fb_mem  = NULL;
 static struct fb_var_screeninfo fb_vinfo;
 static struct fb_fix_screeninfo fb_finfo;
+static int   fbg_xmap[1280]; // src-x sample index per dst column (recomputed on geometry change)
+static int   fbg_last_dw=-1, fbg_last_dh=-1, fbg_last_dx=-1, fbg_last_dy=-1;
 
 static void PLAT_flipFB(void) {
 	// RGB565 -> XRGB8888 (BGRA in memory), native res, into the currently-visible fb page.
@@ -79,6 +82,51 @@ static void PLAT_flipFB(void) {
 			uint16_t p = s[x];
 			uint32_t r = (p>>11)&0x1f, g = (p>>5)&0x3f, b = p&0x1f;
 			d[x] = 0xff000000u | ((r<<3|r>>2)<<16) | ((g<<2|g>>4)<<8) | (b<<3|b>>2);
+		}
+	}
+}
+
+static void PLAT_flipFB_game(void) {
+	// GPU-dark GAME present: software nearest-neighbor scale of the native core frame straight to
+	// /dev/fb0 (page 0), replacing the GLES RenderCopy — so the PowerVR domain can suspend during
+	// light-system play. Mirrors PLAT_flip's aspect/native/fullscreen dst geometry. Effects/overlays
+	// (scanlines, DMG grid) are GLES-only and skipped here.
+	if (!vid.blit) return;
+	int sx = vid.blit->src_x, sy = vid.blit->src_y;
+	int sw = vid.blit->src_w, sh = vid.blit->src_h;
+	int dw, dh;
+	if (vid.blit->aspect==0) { dw = sw * vid.blit->scale; dh = sh * vid.blit->scale; } // native/cropped
+	else if (vid.blit->aspect>0) {                                                     // aspect fit
+		dh = device_height; dw = dh * vid.blit->aspect;
+		if (dw>device_width) { dw = device_width; dh = dw / vid.blit->aspect; }
+	}
+	else { dw = device_width; dh = device_height; }                                    // fullscreen
+	if (dw>device_width)  dw = device_width;
+	if (dh>device_height) dh = device_height;
+	int dx = (device_width - dw) / 2;
+	int dy = (device_height - dh) / 2;
+
+	int fbstride = fb_finfo.line_length / 4;
+	uint32_t* fb = (uint32_t*)fb_mem; // page 0
+
+	// first frame / geometry change: pan to page 0, black the whole page (letterbox bars), rebuild x-map
+	if (dw!=fbg_last_dw || dh!=fbg_last_dh || dx!=fbg_last_dx || dy!=fbg_last_dy) {
+		fb_vinfo.yoffset = 0;
+		ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_vinfo);
+		memset(fb_mem, 0, (long)fb_vinfo.yres * fb_finfo.line_length);
+		for (int x=0; x<dw; x++) fbg_xmap[x] = sx + (x * sw) / dw;
+		fbg_last_dw=dw; fbg_last_dh=dh; fbg_last_dx=dx; fbg_last_dy=dy;
+	}
+
+	uint16_t* src = (uint16_t*)vid.blit->src;
+	int src_p16 = vid.blit->src_p / 2;
+	for (int y=0; y<dh; y++) {
+		uint16_t* srow = src + (long)(sy + (y * sh) / dh) * src_p16;
+		uint32_t* drow = fb + (long)(dy + y) * fbstride + dx;
+		for (int x=0; x<dw; x++) {
+			uint16_t p = srow[fbg_xmap[x]];
+			uint32_t r=(p>>11)&0x1f, g=(p>>5)&0x3f, b=p&0x1f;
+			drow[x] = 0xff000000u | ((r<<3|r>>2)<<16) | ((g<<2|g>>4)<<8) | (b<<3|b>>2);
 		}
 	}
 }
@@ -149,15 +197,16 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.sharpness = SHARPNESS_SOFT;
 
 	fb_present = getenv("ZERO_FB_PRESENT") && getenv("ZERO_FB_PRESENT")[0]=='1';
-	if (fb_present) {
+	fb_game    = getenv("ZERO_FB_GAME")    && getenv("ZERO_FB_GAME")[0]=='1';
+	if (fb_present || fb_game) {
 		fb_fd = open("/dev/fb0", O_RDWR);
 		if (fb_fd>=0 && ioctl(fb_fd,FBIOGET_FSCREENINFO,&fb_finfo)==0 && ioctl(fb_fd,FBIOGET_VSCREENINFO,&fb_vinfo)==0) {
 			fb_mem = mmap(0, fb_finfo.smem_len, PROT_READ|PROT_WRITE, MAP_SHARED, fb_fd, 0);
 			if (fb_mem==MAP_FAILED) fb_mem = NULL;
 		}
-		if (!fb_mem) { fb_present = 0; if (fb_fd>=0) close(fb_fd); fb_fd = -1; }
-		LOG_info("ZERO_FB_PRESENT: %s (fb %ux%u %ubpp stride=%u yoff=%u)\n", fb_present?"ON":"FAILED",
-			fb_vinfo.xres, fb_vinfo.yres, fb_vinfo.bits_per_pixel, fb_finfo.line_length, fb_vinfo.yoffset);
+		if (!fb_mem) { fb_present = 0; fb_game = 0; if (fb_fd>=0) close(fb_fd); fb_fd = -1; }
+		LOG_info("ZERO_FB: fb=%ux%u menu=%s game=%s (stride=%u yoff=%u)\n", fb_vinfo.xres, fb_vinfo.yres,
+			fb_present?"on":"off", fb_game?"on":"off", fb_finfo.line_length, fb_vinfo.yoffset);
 	}
 
 	return vid.screen;
@@ -420,7 +469,9 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		SDL_RenderPresent(vid.renderer);
 		return;
 	}
-	
+
+	if (fb_game) { PLAT_flipFB_game(); vid.blit = NULL; return; } // GPU-dark software present for games
+
 	// uint32_t then = SDL_GetTicks();
 	SDL_UpdateTexture(vid.texture,NULL,vid.blit->src,vid.blit->src_p);
 	// LOG_info("blit blocked for %ims (%i,%i)\n", SDL_GetTicks()-then,vid.buffer->w,vid.buffer->h);
