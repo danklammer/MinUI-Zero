@@ -14,12 +14,15 @@ every change below (energy ≈ Δcharge × voltage). No more optimizing blind.
 - **GPU-dark MENU: DONE + verified.** Software present straight to `/dev/fb0` (RGB565→XRGB8888, native
   res) — the PowerVR domain SUSPENDS while browsing (owner-confirmed "super fast", 26°C). See
   `PLAT_flipFB` in `tg5040/platform.c`, env `ZERO_FB_PRESENT`, on by default in `MinUI.pak/launch.sh`.
-- **GPU-dark GAMES: the confirmed next big lever.** Measured on-device: the GPU domain is `active`
-  **~93% of the time during a trivial Game Boy game** (active 1745s vs suspended 136s), holding
-  `pll_gpu` at 702 MHz just to upscale a 160×144 frame. Software-scaling it (NEON `scaler.c`,
-  MyMinUI-proven) + fb0 present would let the GPU sleep during light-system play. Feasibility high
-  (MyMinUI does it on weaker HW); validate CPU-cost-vs-GPU-sleep via drain once charged. Target: light
-  systems (GB/GBC/NES/GG); PS1 likely stays GLES.
+- **GPU-dark GAMES: proven possible, but BORDERLINE (needs NEON).** Headroom is real — the GPU sits
+  `active` **~93% of a trivial GB game** at 702 MHz just to upscale 160×144. **Prototype built + tested**
+  (`ZERO_FB_GAME`, `PLAT_flipFB_game` in `platform.c`, commit `33b5e6e`): it **renders correctly and the
+  GPU domain DOES suspend during play** ✅ — but the scalar nearest-neighbor scale to 1024×768 @ 60fps
+  costs **~1 full CPU core** (minarch 13%→108%), too slow at 408 MHz → **owner-confirmed choppy**. This
+  empirically confirms the "borderline at 1024×768" concern. **Path:** NEON-vectorize the scale/convert
+  (adapt MyMinUI's NEON scalers; integer-scale path avoids the gather), *then* drain-A/B vs the ~6h
+  baseline. **Net-win genuinely uncertain** — CPU cost at 408 vs GPU domain at 702 off; unlike the menu
+  (clear win), games may not pay off. Target if viable: light systems only (GB/GBC/NES/GG); PS1 stays GLES.
 - **Radios OFF: now actually implemented.** This lever was marked "done" below but wifi/BT were in fact
   always-on (OFW `S96wpa_supplicant`). `boot.sh` now kills BT + gates wifi on `enable-ssh`.
 - **Deep-sleep: validated on-device + ENABLED** (suspend-to-RAM, 33→27°C, `enable-deep-sleep` flag).
