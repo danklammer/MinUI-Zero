@@ -6,9 +6,9 @@ SDCARD_PATH="/mnt/SDCARD"
 UPDATE_PATH="$SDCARD_PATH/MinUI.zip"
 SYSTEM_PATH="$SDCARD_PATH/.system"
 
-# for Brick
-mount -o remount,rw,async "$SDCARD_PATH"
-mount -o remount,rw,async "/mnt/UDISK"
+# for Brick (noatime: nothing reads atime, so skip the per-access metadata writeback to SD)
+mount -o remount,rw,async,noatime "$SDCARD_PATH"
+mount -o remount,rw,async,noatime "/mnt/UDISK"
 
 # Hybrid CPU control: prefer schedutil (the governor sets a scaling_max_freq cap and the
 # kernel picks beneath it). Verify by read-back; if schedutil is unavailable, fall back to
