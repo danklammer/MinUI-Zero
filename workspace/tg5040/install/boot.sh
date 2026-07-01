@@ -39,6 +39,12 @@ if [ ! -f "$SHARED_UD/enable-ssh" ]; then
 	done
 fi
 
+# Ambient RGB LEDs off every boot (not just on install) — Zero has no ambient-LED feature, so they're
+# a rail we never use. Cheap insurance in case an OFW update re-enables them.
+echo 0 > /sys/class/led_anim/max_scale 2>/dev/null
+echo 0 > /sys/class/led_anim/max_scale_lr 2>/dev/null
+echo 0 > /sys/class/led_anim/max_scale_f1f2 2>/dev/null
+
 # install/update
 if [ -f "$UPDATE_PATH" ]; then
 	export LD_LIBRARY_PATH=/usr/trimui/lib:$LD_LIBRARY_PATH
