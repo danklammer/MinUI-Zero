@@ -1,7 +1,7 @@
 # MinUI Zero
 
 **MinUI Zero** is a performance-focused fork of [MinUI](https://github.com/shauninman/MinUI)
-for the **TrimUI Brick** and **TrimUI Smart Pro** (Allwinner A133P, `tg5040`).
+for the **TrimUI Brick** and **TrimUI Smart Pro**
 
 The thesis: **run cool, run efficient, stay simple.** Every emulated system runs at the lowest CPU clock
 that still holds its frame rate, the GPU sleeps when it isn't earning its keep, and an idle device
