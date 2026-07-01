@@ -54,18 +54,31 @@ Reads `scaling_available_frequencies` live; three modes:
    (b) fits the "stay lean / runs cold" thesis and is already half-built (per-system f_max is applied
    statically at game load). Our differentiator is **per-system caps**, not the bespoke controller.
 
-## On-device A/B result (measured 2026-06-30, same NES game 1942, only clock policy differs)
-| Run | CPU behavior | Settled CPU temp |
-|-----|--------------|------------------|
-| **A — our schedutil governor** | self-scaled 408–816 MHz | **39°C** |
-| **B — old userspace 2.0GHz pin** (`GOV_DISABLE=1` + userspace@2000000) | locked 2000 MHz | **44°C** |
-| **Δ** | | **5°C cooler with our governor** |
+## On-device A/B result (measured 2026-06-30, same game each run, only clock policy differs)
+Method: `GOV_DISABLE=1` + `userspace`@2000000 reproduces the old MinUI pin; schedutil is our governor.
+Settled CPU temp after ~70s.
 
-This **reproduces NextUI's 5–10°C claim on our own fork** — landing at the 5°C (light-load) end;
-NES only pushed the pinned CPU to 44°C because the cores aren't fully worked, so a heavy game
-(where the pin wastes far more) should widen the gap toward their 10°C. Nearly all of that 5°C is
-the schedutil-vs-userspace-pin win that we *and* NextUI share; our per-system caps + closed-loop
-ceiling are refinements on top of it.
+| Game (load) | schedutil (ours) | pinned 2.0GHz (old) | Δ |
+|-------------|------------------|---------------------|---|
+| NES 1942 (light)        | ~600 MHz · 39°C  | 2000 MHz · 44°C | **5°C cooler** |
+| PS1 Tony Hawk (heavy)   | 1416 MHz · 38°C  | 2000 MHz · 42°C | **4°C cooler** |
+
+**Reproduces NextUI's 5–10°C on our own fork** (~4–5°C, low end). The delta is essentially the
+schedutil-vs-userspace-pin win we *and* NextUI share; per-system caps + the closed loop sit on top.
+
+### Corrected insight: the governor saves MOST on light games, not heavy ones
+An earlier note here guessed a heavier game would widen the gap toward 10°C. The PS1 run disproved
+it: the gap *narrowed* (4°C vs NES's 5°C). Reason — the pin wastes the most where the game needs the
+least. schedutil cuts NES 3.3× below the pin (2000→600) but PS1 only 1.4× (2000→1416, it genuinely
+needs the clock). So the efficiency win scales with how *little* a system demands.
+
+### Honest measurement caveats
+Absolute temps sit in a narrow 37–44°C band — at this ambient the baseline (display/SoC/wifi-for-SSH)
+dominates and emulation adds only a few °C; even the "bad" 2.0 pin never got hot here. The 4-vs-5°C
+difference is within single-run sensor/thermal-drift noise; the robust takeaways are the **~4–5°C
+magnitude** and the **light-saves-more direction**. The bigger thermal story would show under
+sustained load in a warm/enclosed environment. On this bench, the win is mostly efficiency/battery
+and headroom, not overheating-avoidance.
 
 ## Correction to an earlier read: the closed-loop ceiling DOES fire
 On Tony Hawk (PS1) the ceiling held at f_max, which first looked like the sink branch was dead. The
