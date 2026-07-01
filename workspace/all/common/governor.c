@@ -19,22 +19,20 @@ void PLAT_setCPUMaxFreq(int khz);
 // bad brackets at runtime, (3) the conservative ceiling bounds the downside to "too cautious".
 #define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
 #define GOV_T_CEIL_C   72      // hard back-off above this — always wins
-#define GOV_STEP_KHZ   108000  // ~one OPP per move
+#define GOV_STEP_KHZ   216000  // one real OPP step (MEASURED gaps 192-216MHz; 108k snapped back up)
 #define GOV_UP_DWELL   1       // ticks of slip before climbing (climb fast)
 #define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
 
-// ASSUMED CPU thermal sensor path (verify `type` on device; thermal_zone0 is the guess).
-// In milli-Celsius. Absent on non-device builds -> gov_read_temp_c() returns -1.
+// CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
 
-// ASSUMED highest verified-stock OPP (kHz). CLAUDE.md: 1.8GHz stock, 2.0GHz is an OC.
-// NEVER cap at/above 2000000. Confirm the real stock max on device (brick-recon.sh) and
-// query scaling_available_frequencies at runtime; until then this bounds every f_max.
+// MEASURED OPP table (device 2026-06-30): 408 600 816 1008 1200 1416 1608 1800 2000 MHz.
+// 2000000 is exposed but is the OC we avoid (never require overclocking); cap at 1800.
 #define GOV_STOCK_MAX_KHZ 1800000
 
-// ---- Per-system ceiling brackets (ASSUMED kHz; f_max <= GOV_STOCK_MAX_KHZ, no OC) ----
-const GovProfile GOV_P_8BIT   = {  480000, 1008000 };
-const GovProfile GOV_P_16BIT  = {  600000, 1320000 };
+// ---- Per-system ceiling brackets (f_min/f_max are real OPPs; f_max <= stock cap, no OC) ----
+const GovProfile GOV_P_8BIT   = {  408000, 1008000 }; // MEASURED: 408 is the real OPP floor
+const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
 const GovProfile GOV_P_PS1    = { 1008000, 1800000 };
 const GovProfile GOV_P_DEFAULT = { 600000, 1800000 };
 

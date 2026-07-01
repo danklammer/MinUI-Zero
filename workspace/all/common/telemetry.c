@@ -12,8 +12,8 @@
 // a missing node just leaves its CSV column blank.
 #define TLM_TEMP_PATH "/sys/class/thermal/thermal_zone0/temp"                 // milli-C
 #define TLM_FREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq" // kHz
-#define TLM_VOLT_PATH "/sys/class/power_supply/battery/voltage_now"           // uV
-#define TLM_CURR_PATH "/sys/class/power_supply/battery/current_now"           // uA
+#define TLM_VOLT_PATH "/sys/class/power_supply/axp2202-battery/voltage_now"    // uV (MEASURED path)
+#define TLM_CURR_PATH "/sys/class/power_supply/axp2202-battery/current_now"    // uA (MEASURED: node is EMPTY on axp2202 -> no instantaneous power; use capacity drain)
 
 // ---- pure helpers ----
 static int cmp_u32(const void* a, const void* b) {
