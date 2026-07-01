@@ -2180,6 +2180,37 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 	// 	break;
 	// };
 	
+	case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: { /* 32 */
+		// A core changed its timing/geometry mid-run (PAL/NTSC toggle, some arcade cores). Stock let
+		// this fall through to `return false`, telling the core the frontend rejected the change, which
+		// desyncs frame pacing + the scaler. Re-read the fields and reset dst_p so the scaler re-inits
+		// on the next frame. (When sent during load — before SND_init — the updated sample_rate/fps
+		// flow into SND_init automatically; a post-audio-init rate change is rare and would still need
+		// an SND re-init, left for if a real core needs it.)
+		const struct retro_system_av_info *info = (const struct retro_system_av_info *)data;
+		if (info) {
+			core.fps = info->timing.fps;
+			core.sample_rate = info->timing.sample_rate;
+			double a = info->geometry.aspect_ratio;
+			if (a<=0) a = (double)info->geometry.base_width / info->geometry.base_height;
+			core.aspect_ratio = a;
+			renderer.dst_p = 0; // force selectScaler() on the next frame (see :2837)
+		}
+		break;
+	}
+	case RETRO_ENVIRONMENT_SET_GEOMETRY: { /* 37 */
+		// Geometry-only change (aspect / base size), no timing change. Re-read aspect + reset dst_p
+		// so the scaler re-syncs; stock rejected it.
+		const struct retro_game_geometry *geom = (const struct retro_game_geometry *)data;
+		if (geom) {
+			double a = geom->aspect_ratio;
+			if (a<=0) a = (double)geom->base_width / geom->base_height;
+			core.aspect_ratio = a;
+			renderer.dst_p = 0;
+		}
+		break;
+	}
+
 	default:
 		// LOG_debug("Unsupported environment cmd: %u\n", cmd);
 		return false;
@@ -2988,16 +3019,21 @@ void Core_init(void) {
 	core.init();
 	core.initialized = 1;
 }
-void Core_load(void) {
+int Core_load(void) {
 	LOG_info("Core_load\n");
 	struct retro_game_info game_info;
 	game_info.path = game.tmp_path[0]?game.tmp_path:game.path;
 	game_info.data = game.data;
 	game_info.size = game.size;
 	LOG_info("game path: %s (%i)\n", game_info.path, game.size);
-	
-	core.load_game(&game_info);
-	
+
+	if (!core.load_game(&game_info)) {
+		// core rejected the ROM (bad/unsupported file). Stock ignored this and ran an
+		// unloaded core -> hang/black-screen needing a hard power-off. Bail cleanly instead.
+		LOG_error("core.load_game failed for %s\n", game_info.path);
+		return 0;
+	}
+
 	SRAM_read();
 	RTC_read();
 	
@@ -3013,6 +3049,7 @@ void Core_load(void) {
 	core.aspect_ratio = a;
 	
 	LOG_info("aspect_ratio: %f (%ix%i) fps: %f\n", a, av_info.geometry.base_width,av_info.geometry.base_height, core.fps);
+	return 1;
 }
 void Core_reset(void) {
 	core.reset();
@@ -4748,7 +4785,12 @@ int main(int argc , char* argv[]) {
 	// ah, because it's defined before options_menu...
 	options_menu.items[1].desc = (char*)core.version;
 	
-	Core_load();
+	if (!Core_load()) {
+		// game failed to load — bail cleanly. The core is initialized but holds no game, so
+		// clear the flag to keep Core_quit from tearing down a game that isn't there.
+		core.initialized = 0;
+		goto finish;
+	}
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
