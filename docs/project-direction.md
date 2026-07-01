@@ -24,6 +24,25 @@ Meaningful internal improvements are encouraged. Additional user-facing features
 The ideal result requires little or no tuning by the user and automatically chooses the
 coolest configuration that preserves correct gameplay.
 
+## Identity — what "Zero" means (added 2026-06-30, per project owner)
+
+This is **not only about coolness.** It is about **radical simplicity** and **an OS optimized to the
+max** — and coolness is what *falls out* of doing both well. Three faces of one discipline, and the
+name **MinUI Zero** captures all three:
+
+- **Zero bloat** — MinUI's appliance-like simplicity. No feature creep, an instant menu, nothing the
+  user must configure. Minimal by conviction, not by omission.
+- **Zero waste** — every layer optimized to the metal: `-O3` dynarec cores, lean software render,
+  drift-free frame pacing, the closed-loop governor, radios/LEDs/GPU dark when unused. No cycle, watt,
+  or byte spent without earning it. The whole stack — boot, kernel governor, render, cores, audio,
+  power states — tuned as far as this silicon allows.
+- **Zero heat** — the *result* of the first two, not a separate goal. A simple, maximally-optimized OS
+  runs cool, sips battery, and stays snappy as a consequence.
+
+**Practical corollary:** optimizations that serve simplicity or efficiency count even when they don't
+move the thermometer — a quieter fan, longer battery, or snappier UI are wins in their own right. The
+target is not "coldest" narrowly; it is **the leanest, most-optimized OS this hardware can run.**
+
 ---
 
 ## Product constraints
