@@ -43,6 +43,8 @@ pcsx_rearmed_MAKEFILE = Makefile.libretro
 
 picodrive_REPO = https://github.com/irixxxx/picodrive
 picodrive_MAKEFILE = Makefile.libretro
+# NOTE: no ARCH override — picodrive's M68K JIT (Cyclone) is ARM32-only, so aarch64 uses the FAMEC C
+# core regardless; ARCH=aarch64 was verified byte-identical (SH2 DRC + NEON draw already on). Inert.
 
 pokemini_REPO = https://github.com/libretro/PokeMini
 pokemini_MAKEFILE = Makefile.libretro
