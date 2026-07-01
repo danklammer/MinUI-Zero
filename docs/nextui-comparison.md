@@ -1,0 +1,60 @@
+# NextUI thermal/CPU-governor comparison
+
+Researched 2026-06-30 from the `nextui` remote (LoveRetro/NextUI) — release notes, PR #695,
+and their shipped `governor.sh`. Goal: find NextUI's documented thermal benchmarks and compare
+their CPU-scaling design against ours.
+
+## The benchmark number you remembered
+NextUI does **not** publish a formal temperature table. Their numbers live in two places:
+1. **A runtime debug HUD** — v2.5.1 (2025-03-24) "Added cpu temperature in celsius to debug HUD".
+2. **PR #695** (merged v6.11.0, 2026-05-14, "Replace userspace CPU governor with kernel scaling
+   governors", by pvaibhav). The money quote:
+
+   > "the biggest positive impact of this PR is significant reduction in CPU usage by the
+   > userspace governor thread and correspondingly **significant reduction in core temperature
+   > of the order of 5–10°C**."
+
+That 5–10°C is the headline figure — and it comes from the **same change we made**: dropping the
+`userspace` governor + `scaling_setspeed` pin (whose polling thread itself burned CPU/heat) in
+favor of kernel scaling governors.
+
+## NextUI's shipped design (their `governor.sh`, v6.11.x)
+Reads `scaling_available_frequencies` live; three modes:
+| Mode | Kernel governor | Range (TG5040) |
+|------|----------------|----------------|
+| **auto** | `schedutil` | 408 → **1800** (second_max = one step below the 2000 OC) |
+| **performance** | `performance` | 408 → **2000** (they *do* expose the 2.0GHz OC here) |
+| **powersave** | `conservative` | 408 → 1200 (midpoint) |
+- Author's philosophy: *"there should not be any need for any option except Auto and at best a
+  Powersave mode → that is how our phones and laptops work."* No frame-aware closed loop at all.
+- Their auto restores on minarch exit; `PLAT_setCPUSpeed` became a no-op.
+- Follow-up v6.11.1 "fix: slowdowns on Auto cpu speed" (PR #727) — they hit tuning pain too.
+
+## How we compare
+| | NextUI auto | Ours (measured on-device, Tony Hawk PS1) |
+|---|---|---|
+| Governor | schedutil | schedutil (hybrid) |
+| Floor | 408 | 408 (just corrected from assumed 480) |
+| Cap | 1800 global (every system) | **per-system** (PS1 1800, 16-bit 1416, 8-bit 1008) |
+| 2.0GHz OC | exposed in Performance mode | **never** (thesis: no overclock) |
+| Frame-aware loop | none | built, but **not firing** on-device (ceiling never sinks below f_max) |
+| Result | "5–10°C cooler" vs old userspace | 36–37°C sustained PS1; schedutil self-scaled 816–1608 |
+
+## The two findings that matter
+1. **Independent convergence = strong validation.** Two forks, arrived separately at the identical
+   core: *schedutil + range-limit, floor 408, cap one step below the 2.0 OC.* We're on the right road.
+2. **Our closed-loop ceiling controller currently adds nothing over plain schedutil.** On-device the
+   ceiling pins at f_max the whole session; schedutil does all the real scaling underneath. NextUI
+   deliberately shipped *without* such a loop and still got the 5–10°C win. So our decision point:
+   - **(a)** Debug/tune the frame-aware sink so it demonstrably beats plain schedutil, **or**
+   - **(b)** Lean into schedutil + **per-system ranges** (our real edge — NextUI caps *everything* at
+     1800; we cap an 8-bit game's schedutil at 1008, which should run cooler than NextUI on light
+     systems) and treat the closed loop as optional.
+
+   (b) fits the "stay lean / runs cold" thesis and is already half-built (per-system f_max is applied
+   statically at game load). Our differentiator is **per-system caps**, not the bespoke controller.
+
+## Open question worth an on-device test
+Does our per-system cap actually beat NextUI's global 1800 on light systems? Predicted: an 8-bit
+core capped at schedutil 408–1008 should sit meaningfully cooler than the 37°C we saw on PS1.
+That test gives us *our own* number to place beside NextUI's 5–10°C claim.
