@@ -22,7 +22,15 @@ mkdir -p "$USERDATA_PATH"
 mkdir -p "$LOGS_PATH"
 mkdir -p "$SHARED_USERDATA_PATH/.minui"
 
-export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
+# model detection: `strings` reads the entire MainUI binary — do it once and cache
+# (the model can't change out from under a device); later boots skip the read
+MODEL_CACHE="$SHARED_USERDATA_PATH/.minui/model"
+if [ -s "$MODEL_CACHE" ]; then
+	export TRIMUI_MODEL=`cat "$MODEL_CACHE"`
+else
+	export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
+	echo "$TRIMUI_MODEL" > "$MODEL_CACHE"
+fi
 if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	export DEVICE="brick"
 fi
@@ -115,7 +123,7 @@ cd $(dirname "$0")
 
 EXEC_PATH="/tmp/minui_exec"
 NEXT_PATH="/tmp/next"
-touch "$EXEC_PATH"  && sync
+touch "$EXEC_PATH" # tmpfs; a sync here would flush every filesystem for a file that never touches disk
 while [ -f $EXEC_PATH ]; do
 	ZERO_FB_PRESENT=1 minui.elf &> $LOGS_PATH/minui.txt
 	[ -f $EXEC_PATH ] && echo $CPU_SPEED_PERF > $CPU_PATH
