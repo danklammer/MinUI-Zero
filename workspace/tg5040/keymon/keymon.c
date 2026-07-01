@@ -8,6 +8,7 @@
 #include <linux/input.h>
 #include <pthread.h>
 #include <signal.h>
+#include <poll.h>
 
 #include <msettings.h>
 
@@ -102,24 +103,49 @@ int main (int argc, char *argv[]) {
 	uint32_t down_just_pressed = 0;
 	uint32_t down_repeat_at = 0;
 	
-	uint8_t ignore;
 	uint32_t then;
 	uint32_t now;
+	uint32_t ev_ms;
 	struct timeval tod;
-	
+
+	struct pollfd fds[INPUT_COUNT];
+	for (int i=0; i<INPUT_COUNT; i++) {
+		fds[i].fd = inputs[i];
+		fds[i].events = POLLIN;
+	}
+
 	gettimeofday(&tod, NULL);
 	then = tod.tv_sec * 1000 + tod.tv_usec / 1000; // essential SDL_GetTicks()
-	ignore = 0;
-	
+
 	while (!quit) {
+		// block until input arrives; wake early only to drive key-repeat
+		// (was a 60hz usleep busy-wait — ~60 wakeups/sec forever, kept a core out of deep idle)
+		int timeout = -1;
+		if (up_pressed || down_pressed) {
+			gettimeofday(&tod, NULL);
+			now = tod.tv_sec * 1000 + tod.tv_usec / 1000;
+			uint32_t at = up_pressed ? up_repeat_at : down_repeat_at;
+			if (down_pressed && (!up_pressed || down_repeat_at<at)) at = down_repeat_at;
+			timeout = (at>now) ? (int)(at-now) : 0;
+			if (timeout>100) timeout = 100;
+		}
+		poll(fds, INPUT_COUNT, timeout);
+
 		gettimeofday(&tod, NULL);
 		now = tod.tv_sec * 1000 + tod.tv_usec / 1000;
-		if (now-then>1000) ignore = 1; // ignore input that arrived during sleep
-		
+		if (now-then>1000) { // stopped for sleep: forget held keys (their release may have been missed)
+			menu_pressed = 0;
+			up_pressed = up_just_pressed = 0;
+			down_pressed = down_just_pressed = 0;
+			up_repeat_at = 0;
+			down_repeat_at = 0;
+		}
+
 		for (int i=0; i<INPUT_COUNT; i++) {
 			input = inputs[i];
 			while(read(input, &ev, sizeof(ev))==sizeof(ev)) {
-				if (ignore) continue;
+				ev_ms = ev.time.tv_sec * 1000 + ev.time.tv_usec / 1000;
+				if (now-ev_ms>1000) continue; // ignore input that arrived during sleep
 				val = ev.value;
 				if (ev.type==EV_SW) {
 					printf("switch: %i\n", ev.code);
@@ -155,14 +181,6 @@ int main (int argc, char *argv[]) {
 			}
 		}
 		
-		if (ignore) {
-			menu_pressed = 0;
-			up_pressed = up_just_pressed = 0;
-			down_pressed = down_just_pressed = 0;
-			up_repeat_at = 0;
-			down_repeat_at = 0;
-		}
-		
 		if (up_just_pressed || (up_pressed && now>=up_repeat_at)) {
 			if (menu_pressed) {
 				printf("brightness up\n"); fflush(stdout);
@@ -196,9 +214,6 @@ int main (int argc, char *argv[]) {
 		}
 		
 		then = now;
-		ignore = 0;
-		
-		usleep(16666); // 60fps
 	}
 	
 	for (int i=0; i<INPUT_COUNT; i++) {
