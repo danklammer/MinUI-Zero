@@ -4837,30 +4837,41 @@ int main(int argc , char* argv[]) {
 		// controller once per GOV_TICK_FRAMES. Skipped in the menu (which owns its
 		// own clock). A batch "overran" when >=25% of its frames missed the budget,
 		// so rare hiccups don't pin the clock high (threshold is a tuning knob).
-		if (gov_active && !show_menu) {
-			static int gov_frames = 0, gov_slips = 0;
-			if (GFX_didOverrun()) gov_slips++;
-			if (++gov_frames >= GOV_TICK_FRAMES) {
-				int frame_overrun = (gov_slips*4 >= gov_frames);
-				int prev_ceil = gov_state.ceil_khz;
-				gov_tick(&gov_state, &gov_profile, frame_overrun);
-				if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
-					LOG_info("gov: ceil %d->%d kHz (temp=%dC, overrun=%d)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun);
-				gov_frames = 0;
-				gov_slips = 0;
-			}
-		}
-		if (!show_menu && tlm_enabled()) {
-			// Record PURE CPU frame work. GFX_getFrameWorkUs() spans startFrame->flip, which INCLUDES
-			// SND_batchSamples() blocking (audio-paced emulation) during core.run. Subtract that block
-			// time so the percentiles measure CPU work, not "the loop was paced" — on PS1 the audio wait
-			// was inflating p95/p99 into false "overruns" while the game held a smooth 60fps.
+		if (!show_menu && (gov_active || tlm_enabled())) {
+			// Bench metric: PURE CPU work = frame work (startFrame->flip) MINUS the audio-pacing block
+			// (SND_batchSamples blocking on a full buffer during core.run). Used ONLY for the bench
+			// percentiles below. (thread_video sync waits are not subtracted, so it's cleaner-than-raw,
+			// not perfectly pure.)
+			//
+			// NOTE: the GOVERNOR deliberately keeps its original GFX_didOverrun() signal. An on-device
+			// test (2026-07-01) showed that sinking the ceiling on the pure-work signal capped schedutil
+			// BELOW its race-to-idle sweet spot (PS1 forced to 100% util at 1008 instead of 1416-then-idle)
+			// and ran WARMER, not cooler — "runs fine but feels warmer." So the audio-pacing "false slips"
+			// that held the ceiling high were actually PROTECTIVE (they let the CPU race-to-idle). The
+			// governor caps runaway spikes; it must NOT force schedutil below where it can finish-and-sleep.
 			static long prev_wait_ms = 0;
 			SND_Stats as; SND_getStats(&as);
 			long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
-			uint32_t work_us = GFX_getFrameWorkUs();
-			tlm_frame((pace_us > 0 && (uint32_t)pace_us < work_us) ? work_us - (uint32_t)pace_us : work_us);
-			tlm_audio(as.queue_frames, as.underruns, as.overruns);
+			uint32_t raw_us  = GFX_getFrameWorkUs();
+			uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
+
+			if (gov_active) {
+				static int gov_frames = 0, gov_slips = 0;
+				if (GFX_didOverrun()) gov_slips++; // PROVEN signal (see note — pure-work sink ran warmer)
+				if (++gov_frames >= GOV_TICK_FRAMES) {
+					int frame_overrun = (gov_slips*4 >= gov_frames);
+					int prev_ceil = gov_state.ceil_khz;
+					gov_tick(&gov_state, &gov_profile, frame_overrun);
+					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
+						LOG_info("gov: ceil %d->%d kHz (temp=%dC, overrun=%d)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun);
+					gov_frames = 0;
+					gov_slips = 0;
+				}
+			}
+			if (tlm_enabled()) {
+				tlm_frame(work_us);
+				tlm_audio(as.queue_frames, as.underruns, as.overruns);
+			}
 		}
 
 		hdmimon();
