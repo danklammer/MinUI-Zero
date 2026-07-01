@@ -127,3 +127,16 @@ Considered widening support and explicitly chose not to. Rationale:
   frequencies`, à la NextUI) so a future *tested* A133P device is config, not a rewrite. Don't hardcode
   A133P assumptions where a dynamic read is nearly free.
 - Decision: **stay tg5040 (Brick + Smart Pro).** Revisit only if a same-SoC device lands in hand to test.
+
+
+## D14 - Governor CAPS spikes; it must NOT force schedutil below race-to-idle (2026-07-01, on-device)
+Tried "fixing" the governor's slip signal to use PURE CPU work (subtracting the audio-pacing block that
+SND_batchSamples adds during core.run). It made the governor sink the PS1 ceiling aggressively to 1008
+(the floor). On-device result from the project owner in free skate: "runs fine but feels warmer."
+Why: capping schedutil at 1008 forces the CPU to ~100% util the whole frame, instead of running at ~1416
+and then IDLING (WFI, near-zero power) for the rest of each frame. Running slower-continuously is WARMER
+than faster-then-asleep -- race-to-idle. So the audio-pacing "false slips" that pinned the ceiling high
+were actually PROTECTIVE: they let the CPU race-to-idle. Reverted the governor to GFX_didOverrun()
+(proven cool: ceiling holds 1800, schedutil ~1416-with-idle, 35-36C). Kept the pure-work subtraction for
+the BENCH metric only. Lesson: the closed-loop ceiling should cap runaway spikes, not drive schedutil
+below the clock at which it can finish-the-frame-and-sleep. A future ceiling floor must respect race-to-idle.
