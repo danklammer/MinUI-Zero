@@ -55,7 +55,12 @@ Regulators are read-only at runtime (confirmed). A DTB with undervolted OPPs cut
 on *every* rail (CPU+GPU+DRAM). Largest single lever, largest effort/risk. Deferred.
 
 ## Suggested order
-1. Stand up the `charge_counter` drain-rate benchmark (the meter). 
-2. Land the free core -O fixes (③) and measure each.
+1. ✅ **DONE** — `charge_counter` drain-rate benchmark stood up (`tools/drain-bench.sh`). Baseline
+   ~900 mA / ~3.4 W on PS1. Caveat: `charge_counter` quantizes in ~30-unit (1%) steps → use 10-min+
+   windows for precise A/B.
+2. ✅ **DONE** — core `-O` fixes landed (snes9x2005_plus/fceumm/supafaust `-O2→-O3`), patches
+   regenerated + verified, 3 cores rebuilt (`-O3` confirmed in applied source), deployed; optimized
+   fceumm boots + runs clean on-device (no miscompile). Measuring the SNES payoff needs a SNES ROM
+   (none on the test device) + a 10-min meter window — deferred, not blocking.
 3. Prototype the no-GL DRM page-flip present (①) and measure GPU-dark savings — the marquee win.
 4. DRAM cap (④) + frame-pacing (⑤) as follow-ons; DTB undervolt (⑥) as the long game.
