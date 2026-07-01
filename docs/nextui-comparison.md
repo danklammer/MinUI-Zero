@@ -40,6 +40,32 @@ Reads `scaling_available_frequencies` live; three modes:
 | Frame-aware loop | none | built, but **not firing** on-device (ceiling never sinks below f_max) |
 | Result | "5–10°C cooler" vs old userspace | 36–37°C sustained PS1; schedutil self-scaled 816–1608 |
 
+## Three-way comparison: original MinUI vs NextUI vs ours
+Original MinUI (`upstream/main`) uses the **userspace** governor with a **static pin**: MENU 600 /
+POWERSAVE 1200 / **NORMAL 1608 (the default — `minarch_cpu_speed .default_value = 1`)** / PERFORMANCE
+2000. No dynamic scaling — it holds the pinned clock through idle, menus, and light scenes alike.
+
+| | Original MinUI | NextUI v6.11+ | Ours |
+|---|----------------|---------------|------|
+| Mechanism | userspace **static pin** | `schedutil` auto | `schedutil` + per-system cap + frame loop |
+| Default gameplay clock | **1608 flat** | dynamic 408–1800 | dynamic 408–[per-system cap] |
+| 2.0GHz OC | opt-in "Performance" | opt-in "Performance" mode | **never** |
+| Scales down when idle/light | **no** (stays pinned) | yes | yes |
+
+**Measured on-device (settled CPU temp, TrimUI Brick, 2026-06-30):**
+| Game | Ours (schedutil) | MinUI default (1608 pin) | MinUI Perf / old (2000 pin) |
+|------|------------------|--------------------------|-----------------------------|
+| NES 1942     | 600 MHz · **39°C** | 1608 · **42°C** | 2000 · **44°C** |
+| PS1 Tony Hawk| 1416 · **38°C**    | 1608 · **40°C** | 2000 · **42°C** |
+
+- **vs original MinUI:** **2–3°C cooler than its 1608 default, 4–5°C cooler than 2000 Performance** —
+  and structurally more efficient: MinUI pins 1608 even for NES and during idle/menus, where we drop
+  to 600. That standing-power gap is larger than the temp delta suggests and the static pin can't close it.
+- **vs NextUI:** **a thermal tie** — NextUI's `auto` *is* `schedutil` 408–1800, the same mechanism we
+  measured, so its temps track ours (~38–39°C). (Inferred from their `governor.sh`, not separately
+  flashed.) Our differences are philosophy, not degrees: per-system caps (they cap everything at 1800),
+  never exposing the 2.0 OC, and staying pure-software RGB565 (NextUI adds GL/GPU features we omit).
+
 ## The two findings that matter
 1. **Independent convergence = strong validation.** Two forks, arrived separately at the identical
    core: *schedutil + range-limit, floor 408, cap one step below the 2.0 OC.* We're on the right road.
