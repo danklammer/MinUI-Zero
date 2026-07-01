@@ -1,7 +1,6 @@
 #!/bin/sh
 
 EMU_EXE=mednafen_supafaust
-CORES_PATH=$(dirname "$0")
 
 ###############################
 
