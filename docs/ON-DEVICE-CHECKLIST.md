@@ -67,3 +67,17 @@ unless noted:
       its own clock within ~0.5 s (it rewrites `scaling_setspeed` every tick by design).
 - [ ] Confirm entering the menu / sleeping still drops to the menu/idle clock, and resuming
       hands control back to the governor.
+
+## MEASURED (device session 2026-06-30) — recon complete
+Real values captured over SSH on the Brick; the ASSUMED placeholders above are now resolved:
+- **OPP table:** `408 600 816 1008 1200 1416 1608 1800 2000` MHz (floor 408, not 480). `GOV_STEP_KHZ`
+  set to 216000 (real gap ~192-216); 16-bit f_max -> 1416 (1320 was not an OPP); 8-bit f_min -> 408.
+- **schedutil: PRESENT and active** (`scaling_available_governors` includes it). Hybrid model confirmed:
+  under Tony Hawk PS1, ceiling held 1800 while schedutil ran 816-1416 MHz (mostly 1008), 33-37C.
+- **Thermal zone: thermal_zone0 = cpu_thermal_zone** (confirmed). zone1=gpu, zone2=ddr, zone3=battery.
+- **Battery: axp2202-battery** (path fixed). `current_now` is EMPTY on the AXP2202 -> no instantaneous
+  power; mJ/frame must use capacity-drain, not V*I. `voltage_now`=4.03V, `capacity`=98%.
+- **Undervolt: NOT feasible at runtime** — all regulators (incl. tcs4838-dcdc0=0.9V, axp2202-cpusldo)
+  are read-only (`-r--r--r--`). Needs a custom DTB. Spike stays OFF. VERDICT DELIVERED.
+- **Deep sleep: `mem` supported** (`/sys/power/state` = `freeze mem`). Suspend-to-RAM will work.
+- **2.0GHz** IS an exposed OPP (cpuinfo_max=2000000) but we keep the 1.8 cap (no overclock).
