@@ -1,7 +1,8 @@
-# CLAUDE.md — performant/efficient MinUI fork for the TrimUI Brick
+# CLAUDE.md — MinUI Zero: performant/efficient MinUI fork for the TrimUI Brick
 
-> Working title only — **no name chosen yet** (candidates: Brisk, Frost). This is a fork of
-> `shauninman/MinUI`. Don't rename files/identifiers for branding yet.
+> **Name: MinUI Zero** (chosen 2026-07-01) — "drive every unused rail to zero." A fork of
+> `shauninman/MinUI`. The name lives in `README.md`; internal files/identifiers are **not** renamed
+> for branding (keeps upstream merges clean) — the `ZERO_*` env flags are the only Zero-branded symbols.
 
 ## What this is
 A fork of MinUI focused on **performance through efficiency** on the TrimUI Brick
@@ -117,18 +118,25 @@ Five pillars: (1) thermals/battery, (2) perfect gameplay **without overclocking*
 pacing / tear-free, (4) suspend/save reliability, (5) crash resistance. Staged roadmap +
 benchmark/acceptance gates live in `docs/project-direction.md`.
 
-In flight (branches off `main`, nothing merged yet):
-- **Closed-loop governor** (`feat/thermal-governor`, `docs/thermal-governor-design.md`) — done
-  + ARM-verified, but being **reworked to the hybrid model**: the frame-aware controller sets a
-  `scaling_max_freq` **ceiling** and the kernel `schedutil` governor picks beneath it (per
-  NextUI evidence `6990d474`/`afb3783d`/`e9e91137`), restoring a safe Auto policy on every core
-  init/exit/crash/resume. **The current pin-exact-kHz-via-`scaling_setspeed` approach and the
-  2.0 GHz `f_max` are superseded** (2.0 GHz is an OC — drop it; cap at verified-stock OPP).
-- **Deep sleep** (`feat/deep-sleep`, `docs/deep-sleep-design.md`) — hybrid faux→suspend-to-RAM,
-  ported from `zhaofengli` (see `THIRD_PARTY_NOTICES.md`). ARM-verified; on-device validation
-  pending.
-- Next per the roadmap: device measurement (OPP table, thermals), core build audit
-  (AArch64/NEON/LTO), then renderer / audio / fault-tolerance.
+Shipped + on-device-validated (2026-07-01, on `integration`, build `MinUI-20260701-2`):
+- **GPU-dark menu** — software present to `/dev/fb0` (`PLAT_flipFB`, env `ZERO_FB_PRESENT` on by
+  default in `MinUI.pak/launch.sh`); the PowerVR domain suspends at the menu (~26°C, snappy).
+- **Closed-loop governor** — hybrid model live: frame-aware controller sets a `scaling_max_freq`
+  ceiling, `schedutil` picks beneath it, measured OPP values, capped at the verified-stock 1.8 GHz OPP
+  (2.0 GHz OC dropped). **Race-to-idle** (`DECISIONS` D14): the ceiling must not force `schedutil` below
+  the clock where it finishes-the-frame-and-idles. ~4-5°C cooler than stock, validated GBC→PS1.
+- **Deep sleep** — validated on-device (33→27°C, clean resume) + enabled (`enable-deep-sleep` opt-in).
+- **Radios + LEDs off** by default (`boot.sh`); **QoL** #4 (bail on failed `core.load_game`) + #6
+  (`SET_SYSTEM_AV_INFO`/`SET_GEOMETRY` re-sync) in `minarch.c`; `-O3` pinned cores; drift-free pacer.
+- **Measured:** ~6h battery on GB (`charge_counter`); CPU OPP floor = **408 MHz** (no lower step — so a
+  sub-408 sleep clock is impossible; `schedutil` already idles there).
+- **GPU-dark GAMES: tested → SHELVED** — software-scale-to-fb0 (`ZERO_FB_GAME`, `PLAT_flipFB_game`)
+  renders + GPU suspends + smooth (row-caching, 72% CPU), but a clean drain A/B = **exact break-even vs
+  GLES** (~6h) → games keep GLES, GPU-dark is **menu-only**, flag off by default. Only real-win path =
+  the DE hardware scaler (`/dev/disp` layer — no GPU *and* no CPU scale), a research project.
+
+Next: DE hardware scaler research (the only path to a real GPU-dark-games win); backlight is a limited
+lever (disp-controlled + user-set). See `docs/zero-efficiency-roadmap.md` + `docs/qol-backlog.md`.
 
 ## Working rules (these complement the global ~/.claude/CLAUDE.md)
 - **Read before edit.** Open the actual file and grep the symbol first; the line numbers in

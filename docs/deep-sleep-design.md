@@ -1,5 +1,8 @@
 # Deep sleep (suspend-to-RAM) — idle-heat lever
 
+> **STATUS (2026-07-01): shipped + validated on-device + enabled** (opt-in `enable-deep-sleep`).
+> On-device: **33 → 27°C, clean resume, no `EBUSY`.** The "On-device validation" checklist below is done.
+
 The governor handles **active gameplay** heat. This handles the other half: **idle/menu/
 pause** heat and battery drain. Stock MinUI, when "asleep", just turns the screen off and
 spins a 200 ms poll loop — the SoC keeps drawing power and stays warm. Deep sleep escalates
