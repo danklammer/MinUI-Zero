@@ -66,6 +66,7 @@ static uint8_t* fb_mem  = NULL;
 static struct fb_var_screeninfo fb_vinfo;
 static struct fb_fix_screeninfo fb_finfo;
 static int   fbg_xmap[1280]; // src-x sample index per dst column (recomputed on geometry change)
+static uint32_t fbg_rowbuf[1280]; // one h-scaled+converted dst row, reused across identical dst rows
 static int   fbg_last_dw=-1, fbg_last_dh=-1, fbg_last_dx=-1, fbg_last_dy=-1;
 
 static void PLAT_flipFB(void) {
@@ -120,14 +121,22 @@ static void PLAT_flipFB_game(void) {
 
 	uint16_t* src = (uint16_t*)vid.blit->src;
 	int src_p16 = vid.blit->src_p / 2;
+	int prev_syy = -1;
+	int rowbytes = dw * 4;
 	for (int y=0; y<dh; y++) {
-		uint16_t* srow = src + (long)(sy + (y * sh) / dh) * src_p16;
-		uint32_t* drow = fb + (long)(dy + y) * fbstride + dx;
-		for (int x=0; x<dw; x++) {
-			uint16_t p = srow[fbg_xmap[x]];
-			uint32_t r=(p>>11)&0x1f, g=(p>>5)&0x3f, b=p&0x1f;
-			drow[x] = 0xff000000u | ((r<<3|r>>2)<<16) | ((g<<2|g>>4)<<8) | (b<<3|b>>2);
+		int syy = sy + (y * sh) / dh;
+		if (syy != prev_syy) {
+			// this dst row maps to a new source row — h-scale + RGB565->XRGB8888 into the row buffer once
+			uint16_t* srow = src + (long)syy * src_p16;
+			for (int x=0; x<dw; x++) {
+				uint16_t p = srow[fbg_xmap[x]];
+				uint32_t r=(p>>11)&0x1f, g=(p>>5)&0x3f, b=p&0x1f;
+				fbg_rowbuf[x] = 0xff000000u | ((r<<3|r>>2)<<16) | ((g<<2|g>>4)<<8) | (b<<3|b>>2);
+			}
+			prev_syy = syy;
 		}
+		// blast the cached row to fb0 (memcpy is NEON-optimized; identical dst rows reuse the buffer)
+		memcpy(fb + (long)(dy + y) * fbstride + dx, fbg_rowbuf, rowbytes);
 	}
 }
 

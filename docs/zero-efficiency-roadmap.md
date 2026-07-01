@@ -18,11 +18,14 @@ every change below (energy ≈ Δcharge × voltage). No more optimizing blind.
   `active` **~93% of a trivial GB game** at 702 MHz just to upscale 160×144. **Prototype built + tested**
   (`ZERO_FB_GAME`, `PLAT_flipFB_game` in `platform.c`, commit `33b5e6e`): it **renders correctly and the
   GPU domain DOES suspend during play** ✅ — but the scalar nearest-neighbor scale to 1024×768 @ 60fps
-  costs **~1 full CPU core** (minarch 13%→108%), too slow at 408 MHz → **owner-confirmed choppy**. This
-  empirically confirms the "borderline at 1024×768" concern. **Path:** NEON-vectorize the scale/convert
-  (adapt MyMinUI's NEON scalers; integer-scale path avoids the gather), *then* drain-A/B vs the ~6h
-  baseline. **Net-win genuinely uncertain** — CPU cost at 408 vs GPU domain at 702 off; unlike the menu
-  (clear win), games may not pay off. Target if viable: light systems only (GB/GBC/NES/GG); PS1 stays GLES.
+  cost ~1 core (choppy); a **row-caching** optimization (scale each source row once, `memcpy` to identical
+  dst rows) cut it to **72% CPU — smooth, no tearing** (owner-confirmed). **Clean drain A/B, GPU verified
+  suspended the whole 15-min window: EXACTLY break-even — 4%/15min = ~6h, identical to GLES.** The
+  software-scale CPU cost *precisely offsets* the GPU power it saves → net zero (matching the ~1-2°C
+  thermal wash). **DECISION: SHELVED** — zero net gain for 72% CPU + a per-launch-flag and an
+  in-game-menu-GLES seam. GPU-dark stays **menu-only**; games keep GLES. The only path to a real games win
+  would be the **DE hardware scaler** (`/dev/disp` layer — no GPU *and* no CPU scale), a research project.
+  Prototype committed (`33b5e6e`+`b1bsz0..`), `ZERO_FB_GAME` off by default. **Measured, not assumed.**
 - **Radios OFF: now actually implemented.** This lever was marked "done" below but wifi/BT were in fact
   always-on (OFW `S96wpa_supplicant`). `boot.sh` now kills BT + gates wifi on `enable-ssh`.
 - **Deep-sleep: validated on-device + ENABLED** (suspend-to-RAM, 33→27°C, `enable-deep-sleep` flag).
