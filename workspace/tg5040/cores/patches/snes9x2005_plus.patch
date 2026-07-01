@@ -1,8 +1,8 @@
-diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
-index 07d5368a8e78a020813732239ec369d83e931ede..009f13b8e61c634de4cb83e97785a10b83b4322d 100644
---- forkSrcPrefix/Makefile
-+++ forkDstPrefix/Makefile
-@@ -288,6 +288,31 @@ else ifeq ($(platform), miyoo)
+diff --git a/Makefile b/Makefile
+index a8b6835..507615c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -292,6 +292,31 @@ else ifeq ($(platform), miyoo)
  	FLAGS += -fomit-frame-pointer -ffast-math -march=armv5te -mtune=arm926ej-s
  	FLAGS += -DFAST_ALIGNED_LSB_WORD_ACCESS -fno-unroll-loops
  
@@ -34,3 +34,12 @@ index 07d5368a8e78a020813732239ec369d83e931ede..009f13b8e61c634de4cb83e97785a10b
  # (armv7 a7, hard point, neon based) ### 
  # NESC, SNESC, C64 mini 
  else ifeq ($(platform), classic_armv7_a7)
+@@ -582,7 +607,7 @@ endif
+ ifeq ($(DEBUG),1)
+ 	FLAGS += -O0 -g
+ else
+-	FLAGS += -O2 -DNDEBUG
++	FLAGS += -O3 -DNDEBUG
+ endif
+ 
+ ifneq (,$(findstring msvc,$(platform)))

@@ -1,8 +1,8 @@
-diff --git forkSrcPrefix/Makefile.libretro forkDstPrefix/Makefile.libretro
-index 036c41f48b087c99b2276b2d41a71d661fd85145..891eb96ceeb1da868d6d2ed40392b51b65dcbb20 100644
---- forkSrcPrefix/Makefile.libretro
-+++ forkDstPrefix/Makefile.libretro
-@@ -461,6 +461,23 @@ else ifeq ($(platform), miyoo)
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 3be314b..fbae940 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -475,6 +475,23 @@ else ifeq ($(platform), miyoo)
  	PLATFORM_DEFINES += -fomit-frame-pointer -ffast-math -mcpu=arm926ej-s
  	EXTERNAL_ZLIB = 1
  
@@ -26,3 +26,14 @@ index 036c41f48b087c99b2276b2d41a71d661fd85145..891eb96ceeb1da868d6d2ed40392b51b
  # Windows MSVC 2017 all architectures
  else ifneq (,$(findstring windows_msvc2017,$(platform)))
  	CC  = cl.exe
+@@ -731,8 +748,8 @@ else
+       CFLAGS     += -MT
+       CXXFLAGS   += -MT
+ 	endif
+-      CFLAGS     += -O2 -DNDEBUG
+-      CXXFLAGS   += -O2 -DNDEBUG
++      CFLAGS     += -O3 -DNDEBUG
++      CXXFLAGS   += -O3 -DNDEBUG
+ endif
+ 
+ ifneq ($(SANITIZER),)
