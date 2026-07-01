@@ -11,6 +11,21 @@ CORES+= mednafen_pce_fast mednafen_vb mednafen_supafaust mgba # skipped (upstrea
 # *_MAKEFILE=
 # *_BUILD_PATH=
 
+###############################
+# PINNED core versions — tested-working HEADs (2026-06-30). Setting *_HASH switches the fetch to a
+# full clone + `git checkout` (see all/cores/makefile), locking reproducible, regression-free thermal
+# behavior — an unpinned upstream commit could silently raise CPU cost or break frame pacing.
+fceumm_HASH             = 6e00afac498903586330492cdd81354a6c4c0d4c
+gambatte_HASH           = fc59959a30b40d74875f18ac4bc617d81b42d782
+gpsp_HASH               = 69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4
+pcsx_rearmed_HASH       = 050981b6eeb715f142854f57c68086f62921f027
+picodrive_HASH          = 9e011174842a098a99290622b14db7ffafa717d1
+snes9x2005_plus_HASH    = b60356971fc9caae02cd0853676dced886a08be7
+mednafen_pce_fast_HASH  = 4727b96c10f50405167d98d364844469307fcc41
+mednafen_vb_HASH        = 38e7a0ec9ac7079ca1c1e3dd9aaf5b56f527efca
+mednafen_supafaust_HASH = 2b93c0d7dff5b8f6c4e60e049d66849923fa8bba
+mgba_HASH               = 6dce57eef127dc4cc292644f38196e0e7c58590c
+
 mednafen_pce_fast_REPO = https://github.com/libretro/beetle-pce-fast-libretro
 mednafen_vb_REPO = https://github.com/libretro/beetle-vb-libretro
 
