@@ -4850,9 +4850,17 @@ int main(int argc , char* argv[]) {
 				gov_slips = 0;
 			}
 		}
-		if (!show_menu) {
-			tlm_frame(GFX_getFrameWorkUs()); // benchmark: record frame work time
-			if (tlm_enabled()) { SND_Stats as; SND_getStats(&as); tlm_audio(as.queue_frames, as.underruns, as.overruns); }
+		if (!show_menu && tlm_enabled()) {
+			// Record PURE CPU frame work. GFX_getFrameWorkUs() spans startFrame->flip, which INCLUDES
+			// SND_batchSamples() blocking (audio-paced emulation) during core.run. Subtract that block
+			// time so the percentiles measure CPU work, not "the loop was paced" — on PS1 the audio wait
+			// was inflating p95/p99 into false "overruns" while the game held a smooth 60fps.
+			static long prev_wait_ms = 0;
+			SND_Stats as; SND_getStats(&as);
+			long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
+			uint32_t work_us = GFX_getFrameWorkUs();
+			tlm_frame((pace_us > 0 && (uint32_t)pace_us < work_us) ? work_us - (uint32_t)pace_us : work_us);
+			tlm_audio(as.queue_frames, as.underruns, as.overruns);
 		}
 
 		hdmimon();
