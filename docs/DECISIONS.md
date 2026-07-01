@@ -200,3 +200,12 @@ a fixed window gives a real rate. First energy baseline: **~6h on Game Boy** (4%
 "sleep clock" is **impossible**, so schedutil already idles at the lowest hardware clock and there's
 nothing lower to chase (kills QoL #2's premise on this SoC). Stock cap held at 1800; 2.0 GHz OC never
 used. These are the first real numbers to validate future changes against — no more optimizing blind.
+
+## D21 — FMIN floors stay at 600 for 16-bit systems: 408 pegs the core for zero thermal win (2026-07-01, on-device)
+Tested Genesis (picodrive, Aladdin) with `MINARCH_FMIN=408000`: the governor sank cleanly to a 408
+ceiling with no overruns — but at **102% CPU, fully saturated**, no idle time at all, and no measurable
+temperature win over the 600 floor (36°C vs 37°C, within session drift; 600 runs 76% util with real
+race-to-idle headroom). Saturated-at-min-clock is the exact anti-pattern D14 documented on PS1: no
+C-state residency, fragile on heavy scenes, nothing gained. The shipped per-system floors (408 for
+8-bit, 600 for 16-bit, 1008 for PS1) are already at the race-to-idle sweet spot — don't lower them
+without new evidence.
