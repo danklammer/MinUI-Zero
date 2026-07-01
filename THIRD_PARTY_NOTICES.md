@@ -28,3 +28,8 @@ The closed-loop CPU governor (`workspace/all/common/governor.{c,h}`) is our own 
 NextUI commits informed the *direction* (kernel-governor architecture) but no code was copied:
 `6990d474` (userspace loop → kernel governors), `afb3783d` (ondemand→schedutil + caps),
 `e9e91137` (stuck-in-performance fix). See `docs/thermal-governor-design.md`.
+
+## Allwinner disp2 / ION UAPI headers (tools/disp-probe/)
+`sunxi_display2.h` and `sunxi_ion.h` are Allwinner kernel UAPI headers, taken via MyMinUI
+(Turro75/MyMinUI, `workspace/m21/platform/`). Used only by the `/dev/disp` recon probe to match the
+A133P display-engine ioctl ABI. Kernel-origin headers (GPL); attribution retained as courtesy.
