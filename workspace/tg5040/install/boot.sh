@@ -22,6 +22,23 @@ else
 	echo 1608000 > /sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed 2>/dev/null || true
 fi
 
+# MinUI Zero: radios off by default. MinUI has no networking, so full-time wifi/BT is pure wasted
+# power. Bluetooth is always disabled (no feature uses it); wifi stays up ONLY when the dev
+# enable-ssh flag is present (SSH access). Zero user-facing loss, less idle drain + heat.
+SHARED_UD="$SDCARD_PATH/.userdata/shared"
+killall -q bluetoothd bluealsa hciattach 2>/dev/null
+[ -x /etc/init.d/hciattach ] && /etc/init.d/hciattach stop >/dev/null 2>&1
+for r in /sys/class/rfkill/rfkill*; do
+	[ "$(cat "$r/type" 2>/dev/null)" = "bluetooth" ] && echo 0 > "$r/state" 2>/dev/null
+done
+if [ ! -f "$SHARED_UD/enable-ssh" ]; then
+	killall -q wpa_supplicant 2>/dev/null
+	ifconfig wlan0 down 2>/dev/null
+	for r in /sys/class/rfkill/rfkill*; do
+		[ "$(cat "$r/type" 2>/dev/null)" = "wlan" ] && echo 0 > "$r/state" 2>/dev/null
+	done
+fi
+
 # install/update
 if [ -f "$UPDATE_PATH" ]; then
 	export LD_LIBRARY_PATH=/usr/trimui/lib:$LD_LIBRARY_PATH
