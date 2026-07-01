@@ -10,6 +10,22 @@ fighting on CPU clock and win on **total-device power**: the rails NextUI leaves
 drop over a fixed window gives a real **drain rate** → we can finally measure efficiency and validate
 every change below (energy ≈ Δcharge × voltage). No more optimizing blind.
 
+## 2026-07-01 — what's actually shipped now (supersedes stale lever statuses below)
+- **GPU-dark MENU: DONE + verified.** Software present straight to `/dev/fb0` (RGB565→XRGB8888, native
+  res) — the PowerVR domain SUSPENDS while browsing (owner-confirmed "super fast", 26°C). See
+  `PLAT_flipFB` in `tg5040/platform.c`, env `ZERO_FB_PRESENT`, on by default in `MinUI.pak/launch.sh`.
+- **GPU-dark GAMES: the confirmed next big lever.** Measured on-device: the GPU domain is `active`
+  **~93% of the time during a trivial Game Boy game** (active 1745s vs suspended 136s), holding
+  `pll_gpu` at 702 MHz just to upscale a 160×144 frame. Software-scaling it (NEON `scaler.c`,
+  MyMinUI-proven) + fb0 present would let the GPU sleep during light-system play. Feasibility high
+  (MyMinUI does it on weaker HW); validate CPU-cost-vs-GPU-sleep via drain once charged. Target: light
+  systems (GB/GBC/NES/GG); PS1 likely stays GLES.
+- **Radios OFF: now actually implemented.** This lever was marked "done" below but wifi/BT were in fact
+  always-on (OFW `S96wpa_supplicant`). `boot.sh` now kills BT + gates wifi on `enable-ssh`.
+- **Deep-sleep: validated on-device + ENABLED** (suspend-to-RAM, 33→27°C, `enable-deep-sleep` flag).
+- **CPU OPP floor = 408 MHz** (measured; no lower step) — so a sub-408 "sleep clock" is impossible;
+  schedutil already idles there. **Drain audit PENDING** — needs the device charged + unplugged.
+
 ## Lever ①  Kill GPU from the present path — the real headline (CORRECTED)
 **Reality check (measured):** we are NOT GPU-dark. `minarch` maps `libGLESv2`/`libglslcompiler`/
 `libpvrNULL_WSEGL` and holds an open fd to `/dev/dri/renderD128`; the GPU power domain is `active` and
