@@ -108,3 +108,22 @@ The pure userspace-pin design (write exact kHz to `scaling_setspeed`) is superse
   as a separate signal from presentation misses; gating the governor off during fast-forward;
   runtime OPP-table discovery to replace the assumed `STOCK_MAX_KHZ`/`STEP_KHZ`. Tracked in
   docs/project-direction.md (Stage 1) + ON-DEVICE-CHECKLIST.md.
+
+
+## D13 — Scope: tg5040 only (TrimUI Brick + Smart Pro). Expansion evaluated + declined (2026-06-30)
+Considered widening support and explicitly chose not to. Rationale:
+- **Miyoo Mini / Mini Plus — rejected.** Different SoC/arch entirely: SigmaStar SSD202D, 32-bit
+  ARMv7 Cortex-A7 (confirmed from `mymin` miyoomini flags `-march=armv7ve -mtune=cortex-a7`), vs our
+  64-bit ARMv8 Cortex-A53 (A133P). Our aarch64 cores wouldn't run; no A133P governor/DE2/thermal work
+  transfers; philosophically inverted (MyMinUI *overclocks* the weak Miyoo for perf via `overclock.elf`
+  — opposite of our downclock-for-cold). It's a from-scratch rewrite of a device we can't test, and
+  MyMinUI already covers it. Skip.
+- **Other A133P handhelds exist** (Powkiddy V20 640x480, R36S Plus 720p, Ampown Mini Zero 28, rebrands).
+  These ARE the viable expansion IF ever wanted: same aarch64 A133P -> our -O3 cores + schedutil-cap
+  governor transfer; only display-res/input/thermal-paths need per-device wiring (~a weekend). Declined
+  for now to keep single-chip depth (our differentiator vs MyMinUI's breadth) and honesty (only ship
+  what we can physically test).
+- **Hedge (do regardless):** keep the governor's dynamic-OPP path clean (read `scaling_available_
+  frequencies`, à la NextUI) so a future *tested* A133P device is config, not a rewrite. Don't hardcode
+  A133P assumptions where a dynamic read is nearly free.
+- Decision: **stay tg5040 (Brick + Smart Pro).** Revisit only if a same-SoC device lands in hand to test.
