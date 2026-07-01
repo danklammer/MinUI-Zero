@@ -54,7 +54,23 @@ Reads `scaling_available_frequencies` live; three modes:
    (b) fits the "stay lean / runs cold" thesis and is already half-built (per-system f_max is applied
    statically at game load). Our differentiator is **per-system caps**, not the bespoke controller.
 
-## Open question worth an on-device test
-Does our per-system cap actually beat NextUI's global 1800 on light systems? Predicted: an 8-bit
-core capped at schedutil 408–1008 should sit meaningfully cooler than the 37°C we saw on PS1.
-That test gives us *our own* number to place beside NextUI's 5–10°C claim.
+## On-device A/B result (measured 2026-06-30, same NES game 1942, only clock policy differs)
+| Run | CPU behavior | Settled CPU temp |
+|-----|--------------|------------------|
+| **A — our schedutil governor** | self-scaled 408–816 MHz | **39°C** |
+| **B — old userspace 2.0GHz pin** (`GOV_DISABLE=1` + userspace@2000000) | locked 2000 MHz | **44°C** |
+| **Δ** | | **5°C cooler with our governor** |
+
+This **reproduces NextUI's 5–10°C claim on our own fork** — landing at the 5°C (light-load) end;
+NES only pushed the pinned CPU to 44°C because the cores aren't fully worked, so a heavy game
+(where the pin wastes far more) should widen the gap toward their 10°C. Nearly all of that 5°C is
+the schedutil-vs-userspace-pin win that we *and* NextUI share; our per-system caps + closed-loop
+ceiling are refinements on top of it.
+
+## Correction to an earlier read: the closed-loop ceiling DOES fire
+On Tony Hawk (PS1) the ceiling held at f_max, which first looked like the sink branch was dead. The
+NES run disproved that: the ceiling actively sank toward the 408 floor (408–624 kHz, below the 1008
+cap) because a trivial load has zero frame pressure — while PS1 correctly held high for real demand.
+So the frame-aware loop works as designed. Its *marginal* benefit over plain schedutil is still open
+(schedutil already runs light loads low), but it is not inert. Per-system static caps remain the
+clearest, cheapest edge over NextUI's single global 1800 cap.
