@@ -226,15 +226,34 @@ void GFX_flip(SDL_Surface* screen) {
 }
 void GFX_sync(void) {
 	uint32_t frame_duration = SDL_GetTicks() - frame_start;
-	if (gfx.vsync!=VSYNC_OFF) {
-		// this limiting condition helps SuperFX chip games
-		if (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET) { // only wait if we're under frame budget
-			PLAT_vsync(FRAME_BUDGET-frame_duration);
-		}
+	// Preserve the original gate (the "under budget / strict / first frame" condition helps SuperFX
+	// chip games by not stalling a genuinely over-budget frame even further).
+	int paced = (gfx.vsync!=VSYNC_OFF)
+		? (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET)
+		: (frame_duration<FRAME_BUDGET);
+
+	// Absolute-schedule pacer (ported from MyMinUI's GFX_flip_fixed_rate, api.c:437): pace against a
+	// fixed anchor + N*budget instead of a per-frame relative delay, so pacing cannot accumulate drift
+	// over a run. Waits via PLAT_vsync only (NO busy-spin — MyMinUI spins the tail for us-precision, but
+	// that burns ~1ms/frame of CPU, against the runs-cold thesis). Resets the schedule if we drift more
+	// than 2 frames (a stall/jump) so we re-anchor instead of bursting to catch up.
+	static uint64_t anchor_us = 0;
+	static int64_t  frame_index = -1;
+	const uint64_t  period_us = (uint64_t)FRAME_BUDGET * 1000;
+
+	if (!paced) { anchor_us = 0; frame_index = -1; return; } // not pacing this frame -> resync next time
+
+	uint64_t now = getMicroseconds();
+	frame_index++;
+	if (anchor_us==0 || frame_index==0) { anchor_us = now; frame_index = 0; }
+	uint64_t target  = anchor_us + (uint64_t)frame_index * period_us;
+	int64_t  offset  = (int64_t)(now - target);
+
+	if (offset < -(int64_t)(2*period_us) || offset > (int64_t)(2*period_us)) { // lost sync -> re-anchor
+		anchor_us = 0; frame_index = -1;
+		return;
 	}
-	else {
-		if (frame_duration<FRAME_BUDGET) SDL_Delay(FRAME_BUDGET-frame_duration);
-	}
+	if (offset < 0) PLAT_vsync((int)((-offset) / 1000)); // sleep the remaining whole ms to the scheduled time
 }
 
 FALLBACK_IMPLEMENTATION int PLAT_supportsOverscan(void) { return 0; }
