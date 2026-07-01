@@ -1,7 +1,7 @@
 MinUI Zero is a performance- and efficiency-focused fork of MinUI for the TrimUI Brick and TrimUI Smart Pro (tg5040). It keeps MinUI's simple, appliance-like experience while running cooler, leaner, and longer on battery. Only the TrimUI Brick / Smart Pro are supported; the multi-device install notes below apply to upstream MinUI.
 
 Source:
-https://github.com/danklammer/minui-zero  (built on MinUI by Shaun Inman: https://github.com/shauninman/minui)
+https://github.com/danklammer/MinUI-Zero  (built on MinUI by Shaun Inman: https://github.com/shauninman/minui)
 
 ----------------------------------------
 Installing
