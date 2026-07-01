@@ -1,5 +1,10 @@
 # Closed-loop thermal/perf governor — designed on assumptions, self-correcting on first boot
 
+> **STATUS (2026-07-01): shipped + validated on-device.** The hybrid governor (ceiling + `schedutil`)
+> runs on a real Brick — **~4–5°C cooler than stock**, GBC sinks to the 408 floor, PS1 rides ~1416–1800.
+> On-device lesson **D14 (race-to-idle)**: the ceiling caps spikes but must NOT drive schedutil below the
+> clock where it can finish-the-frame-and-idle. The "confirm on-device later" items below are done.
+
 You do **not** need the device to write this. A closed-loop controller measures temp +
 frame timing at runtime and corrects, so assumptions only set the *starting point* and
 *guardrails* — not the behavior. Three things make running on assumptions safe, not risky:

@@ -140,3 +140,63 @@ were actually PROTECTIVE: they let the CPU race-to-idle. Reverted the governor t
 (proven cool: ceiling holds 1800, schedutil ~1416-with-idle, 35-36C). Kept the pure-work subtraction for
 the BENCH metric only. Lesson: the closed-loop ceiling should cap runaway spikes, not drive schedutil
 below the clock at which it can finish-the-frame-and-sleep. A future ceiling floor must respect race-to-idle.
+
+
+## D15 — GPU-dark MENU shipped: software present to /dev/fb0 (2026-07-01, on-device)
+The whole present path (games *and* menu) went through GLES on the PowerVR GE8300 — `minarch` held
+`/dev/dri/renderD128`, the GPU power domain sat `active`, `pll_gpu`/`gpu` at 702 MHz. The menu is a
+static native-res (1024×768) surface that needs **no scaling**, so software-presenting it is nearly free
+(one RGB565→XRGB8888 convert + copy). Shipped `PLAT_flipFB` (tg5040 `platform.c`, env `ZERO_FB_PRESENT`,
+**on by default** in `MinUI.pak/launch.sh`): the launcher/menu presents straight to `/dev/fb0`, no GL
+client, so the **GPU power domain runtime-suspends while browsing.** On-device: **26°C, owner-confirmed
+"super fast."** This is a structural edge NextUI can't copy — their entire UI is GPU-based. Games keep
+GLES (see D18); GPU-dark is the low-risk, native-res menu slice where the CPU-scale cost that makes the
+games case borderline simply doesn't exist.
+
+## D16 — Deep sleep ENABLED (opt-in), validated on-device (2026-07-01)
+Deep sleep (hybrid faux-sleep → suspend-to-RAM, ported from `zhaofengli`, see `THIRD_PARTY_NOTICES.md`)
+moved from "designed, awaiting hardware" to **validated + enabled.** On-device: **33 → 27°C, clean
+resume**, no stuck-radio `EBUSY`. Kept opt-in behind the `enable-deep-sleep` flag in `.userdata/shared`
+rather than defaulting on, so a normal install is unaffected until the owner turns it on. The `bin/suspend`
+choreography quiesces radios + saves the ALSA mixer (`alsactl store`) so the kernel accepts `mem` and
+audio returns clean on resume. The resume-debounce interlock (D-series in deep-sleep-design) prevents the
+wake-press from immediately re-sleeping.
+
+## D17 — Radios + ambient LEDs dark by default (2026-07-01)
+MinUI has no networking, yet OFW left Wi-Fi/BT powered (`S96wpa_supplicant`) — a continuous idle rail for
+nothing. `boot.sh` now kills Bluetooth and **gates Wi-Fi on the dev-only `enable-ssh` flag**, so a normal
+install boots radio-dark; SSH stays available for on-device iteration when the flag is set. Ambient LEDs
+are zeroed every boot. These are standing-power rails NextUI's feature set (WiFi/NTP, Pak Store,
+RetroAchievements, ambient LEDs) keeps lit — a continuous efficiency win we hold structurally.
+
+## D18 — GPU-dark GAMES: measured EXACT break-even → SHELVED, menu-only (2026-07-01, on-device)
+Tested whether the GPU-dark win extends to gameplay. Built a software-scale-to-fb0 game present
+(`ZERO_FB_GAME`, `PLAT_flipFB_game`, commit `33b5e6e`): it **renders correctly and the GPU domain does
+suspend during play**; naive nearest-neighbor scale (256→1024) cost ~1 core (choppy), a **row-caching**
+pass (scale each source row once, `memcpy` to identical dst rows) cut it to **72% CPU — smooth, no
+tearing** (owner-confirmed). Then the honest test: a clean `charge_counter` drain A/B with the GPU
+**verified suspended the whole window** = **exact break-even, ~6h, identical to GLES** (also only ~1–2°C
+cooler). The software-scale CPU cost *precisely offsets* the GPU power it saves → net zero. **Decision:
+games keep GLES; GPU-dark is MENU-ONLY; `ZERO_FB_GAME` off by default.** Not worth a per-launch flag + an
+in-game-menu GLES seam for zero net gain. The only real-win path is the **DE hardware scaler** (`/dev/disp`
+layer — no GPU *and* no CPU scale), which probed unavailable on this kernel (legacy fbdev scanout; nobody
+holds `card0`) — a research project, not shipped work. **Measured, not assumed** — the negative result is
+itself the finding, exactly as the CLAUDE.md non-negotiable demands.
+
+## D19 — QoL Tier-1 mostly no-ops on our tree: verify-before-porting (2026-07-01)
+Surveyed NextUI/MyMinUI/upstream/zhaofengli for QoL wins, then checked each against **our actual tree**
+(stock MinUI + schedutil governor). Most survey "wins" fell away because they refine features or baselines
+our tree doesn't share: instant-first-press is already ours (`api.c` sets `just_repeated` on initial
+press); favorite-toggle requires a favorites feature we don't have (= bloat); MyMinUI's sleep-clock
+drop / audio-close savings are likely redundant under schedutil (measure-first, not ported blind).
+**Not porting them *is* the thesis working.** Only two Tier-1 items were genuine gaps and both shipped
+(#4 failed-load bail, #6 AV-info handling — see `qol-backlog.md`). Lesson: verify a fork's "fix" against
+our code before porting; a patch that fixes *their* refactor is a no-op or a regression on ours.
+
+## D20 — First measured baseline: ~6h on Game Boy, 408 MHz OPP floor (2026-07-01, on-device)
+Measurement is unblocked: `current_now` is dead on the AXP2202, but `charge_counter` works, so drain over
+a fixed window gives a real rate. First energy baseline: **~6h on Game Boy** (4% / 15 min). Confirmed the
+**CPU OPP floor = 408 MHz** with no lower step — which settles a recurring design question: a sub-408
+"sleep clock" is **impossible**, so schedutil already idles at the lowest hardware clock and there's
+nothing lower to chase (kills QoL #2's premise on this SoC). Stock cap held at 1800; 2.0 GHz OC never
+used. These are the first real numbers to validate future changes against — no more optimizing blind.

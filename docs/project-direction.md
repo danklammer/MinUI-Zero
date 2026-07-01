@@ -43,6 +43,35 @@ name **MinUI Zero** captures all three:
 move the thermometer — a quieter fan, longer battery, or snappier UI are wins in their own right. The
 target is not "coldest" narrowly; it is **the leanest, most-optimized OS this hardware can run.**
 
+## Implementation status (2026-07-01) — shipped + on-device validated
+
+The roadmap below is no longer all forward-looking. A large batch shipped this session and was
+**validated on a real TrimUI Brick** (build MinUI-20260701-2, branch `integration`). Progress
+against the stages, with the authoritative detail in `docs/STATUS.md` and `docs/DECISIONS.md`:
+
+- **Stage 0 (baseline + measurement) — largely done.** `charge_counter` drain meter stood up
+  (`current_now` is dead on the AXP2202); reproducible core builds pinned; first energy baseline
+  measured (**~6h on Game Boy**). CPU OPP **floor confirmed = 408 MHz** (no lower step).
+- **Stage 1 (CPU + power lifecycle) — shipped + validated.** Closed-loop hybrid governor:
+  frame-aware `scaling_max_freq` ceiling + kernel `schedutil` beneath it, per-system caps, **no
+  overclock**, 408 floor. **~4–5°C cooler than stock**; validated GBC (sinks to 408) → PS1
+  (~1416–1800). Race-to-idle lesson learned on-device (**D14**). Some abnormal-exit restore paths
+  still partial (see D12 deferred list).
+- **Stage 2 (core build audit) — done.** 6 stock cores corrected from silent `-O2` to `-O3`/`-Ofast`
+  and pinned to reproducible HEADs; SNES payoff A/B deferred (no ROM on the test unit).
+- **Stage 3 (suspend + power reliability) — shipped + validated + enabled.** Deep sleep
+  (suspend-to-RAM, ported from zhaofengli) validated on-device (33 → 27°C, clean resume), enabled via
+  opt-in `enable-deep-sleep`. Radios + ambient LEDs dark by default at boot.
+- **Stage 4 (renderer) — partial.** **GPU-dark menu shipped + validated** (software present to
+  `/dev/fb0`, GPU domain suspends while browsing, 26°C). **GPU-dark *games* tested → shelved**
+  (measured exact break-even vs GLES — the software-scale CPU cost offsets the GPU power saved).
+  DE hardware-scaler (`/dev/disp`) probed unavailable on this kernel; a real games win needs it.
+- **Stage 5 (audio + frame pacing) — partial.** Drift-free absolute-schedule frame pacer shipped;
+  QoL #6 keeps pacing/scaler synced across mid-run AV-info changes. The audio-path rewrite stays
+  instrument-first behind a dev flag (device-gated).
+- **Stage 6 (fault tolerance) — partial.** QoL #4 (bail cleanly on failed `core.load_game`) shipped;
+  broader atomic-save / fault-injection work is still future.
+
 ---
 
 ## Product constraints
@@ -448,6 +477,10 @@ then apply the equivalent fix if required.
 Fork comments suggest a TG5040 frequency range with a low point around 408 MHz, a middle
 point around 1200 MHz, a second-highest point around 1800 MHz, and a possible 2000 MHz
 performance/overclock point. These are clues, not project constants.
+
+> **Measured on-device (2026-07-01):** the OPP **floor is 408 MHz** (no lower step), stock cap held
+> at **1800 MHz**, and the 2.0 GHz OC is never used. The clues checked out; the guidance below —
+> read the device, never label a frequency stock from another fork's comments — still stands.
 
 The implementation must inspect the actual target device:
 

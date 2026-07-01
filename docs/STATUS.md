@@ -1,80 +1,86 @@
-# Status — closed-loop thermal/perf governor
+# Status — MinUI Zero (shipped + on-device validated)
 
-Branch: `feat/thermal-governor` (off `main`, which is untouched).
-As of this writing the whole no-hardware task list is implemented, verified where it
-can be verified without the Brick, and committed. Date: 2026-06-30.
+Branch: `integration`. Build: **MinUI-20260701-2**. Date: 2026-07-01.
 
-## Hardware validation — IT BOOTS AND RUNS (2026-06-30)
-A real `make` release build (`integration` branch, tg5040-only, 10 cores) was flashed to a
-TrimUI Brick and **boots, runs the launcher, and plays games** — no crashes. Confirmed from the
-device log (`/.userdata/tg5040/logs/minui.txt`): our `PWR_sleep()` runs (`"Entering hybrid
-sleep"`), audio/display init clean. Deep sleep correctly stayed in the safe faux-sleep stage
-(opt-in flag absent). **Still to capture on-device:** the governor's per-game log + behavior,
-and `brick-recon.sh` output (to replace the ASSUMED OPP/thermal/battery values). See
-docs/FIRST-DEVICE-SESSION.md.
+A large batch of work shipped this session and was **validated on a real TrimUI Brick** — the
+device boots, runs the launcher, plays games, sleeps and resumes cleanly, and measures cooler
+and leaner than stock. What follows is the current state, not a plan. Facts below are measured
+on-device unless marked otherwise. See `docs/DECISIONS.md` for the reasoning behind each call.
 
-## What the governor does
-> **Updated to the hybrid model (commit `27bba2c`, see DECISIONS D12):** the controller now
-> sets a `scaling_max_freq` *ceiling* and the kernel `schedutil` governor picks beneath it;
-> `f_max` is capped at the 1.8GHz stock OPP (2.0GHz OC removed). The rest of this doc
-> describes the original pin model; the architecture/values changed, the controller math did not.
+## Shipped + validated this session
 
-Replaces MinUI's static 4-tier CPU pick with a feedback controller: during gameplay it
-runs each system at the lowest CPU clock that still holds frame rate, capped by a
-conservative thermal ceiling. Reads frame-slip + temperature every ~30 frames, climbs
-fast on slip, sinks slowly on slack, and always backs off above the ceiling. Stays on
-MinUI's lean software render path — no GL, no new features.
+### GPU-dark menu (the headline efficiency win)
+Software present straight to `/dev/fb0` (RGB565 → XRGB8888, native 1024×768) — `PLAT_flipFB` in
+`workspace/tg5040/platform/platform.c`, env `ZERO_FB_PRESENT`, **on by default** in
+`MinUI.pak/launch.sh`. With no GL client holding it, the **PowerVR GPU power domain suspends
+while at the menu**. On-device: **26°C, owner-confirmed "super fast."** This is the one
+efficiency edge NextUI (fully GPU-based UI) structurally can't copy.
 
-## Done + committed
-| Task | State | Commits |
-|------|-------|---------|
-| 1. `PLAT_setCPUMaxFreq(int khz)` (tg5040 writes `scaling_max_freq` ceiling under schedutil; macOS logs; weak no-op fallback) + `GFX_didOverrun()` | done, builds clean | `088a525`, hybrid in `27bba2c` |
-| 2. `gov_step`/`gov_tick` + per-system profiles + synthetic harness | done, tests green | `c4d43cd` |
-| 3. Wired `gov_tick` into the minarch run loop (~30 frames) + game-load profile pick | done, type-checked | `359983b` |
-| 4. Per-system `f_min`/`f_max` exported from 18 tg5040 pak `launch.sh` | done, `sh -n` clean | `9e91c67` |
-| 5. Standalone synthetic harness, in the build + green | done | `c4d43cd`, `45d65fb` |
-| Decisions log | running | `24ce9aa` + updates |
+### Deep sleep (suspend-to-RAM) — enabled
+Hybrid faux-sleep → suspend-to-RAM, ported from `zhaofengli/MinUI` (see `THIRD_PARTY_NOTICES.md`).
+**Validated on-device (33 → 27°C, clean resume) and enabled** via the opt-in `enable-deep-sleep`
+flag in `.userdata/shared`. The `bin/suspend` choreography quiesces radios and saves the ALSA
+mixer so the kernel accepts `mem` and audio comes back clean.
 
-Key files:
-- `workspace/all/common/governor.{c,h}` — controller (pure `gov_step` + I/O `gov_tick`).
-- `workspace/all/common/governor_test.c` — synthetic harness (5 scenarios).
-- `workspace/all/common/run-governor-tests.sh` + `make test-governor` — committed runner.
-- `workspace/all/common/api.{c,h}` — `PLAT_setCPUMaxFreq` decl/weak fallback, `GFX_didOverrun`.
-- `workspace/tg5040/platform/platform.c`, `workspace/macos/platform/platform.c` — `PLAT_setCPUMaxFreq`.
-- `workspace/all/minarch/minarch.c` — `Gov_start()` + run-loop tick.
-- `skeleton/**/tg5040/**/*.pak/launch.sh` — `MINARCH_FMIN`/`FMAX` exports.
-- `docs/DECISIONS.md` — every non-obvious choice (D1–D11).
+### Closed-loop governor (hybrid ceiling + schedutil)
+The frame-aware controller sets a `scaling_max_freq` **ceiling**; the kernel **`schedutil`**
+governor picks the instantaneous frequency beneath it. Measured OPP values applied. Validated
+across the range — GBC sinks to the **408 MHz** floor, PS1 rides **~1416–1800 MHz** — and runs
+**~4–5°C cooler than stock**. Key on-device lesson (**D14, race-to-idle**): capping the ceiling
+*too low* runs the CPU **warmer**, because it forces ~100% util instead of letting schedutil
+finish-the-frame-and-idle (WFI). The ceiling caps runaway spikes; it must not drive schedutil
+below the clock where it can race to idle.
 
-## How it was verified (no hardware)
-- **macOS dummy-platform launcher build** under AddressSanitizer — green
-  (`api.c` / `macos` `platform.c` changes). Needs `-U__ARM_ARCH` locally on Apple
-  Silicon to dodge a *pre-existing* 32-bit ARM-asm blend path in `api.c`; see D8. The
-  stock build command is unchanged and works on the Linux toolchain / Intel Macs.
-- **Synthetic harness** (`make test-governor`) under ASan — green. Asserts: clock never
-  leaves `[f_min,f_max]`; a hot trace (≥ceiling) walks the clock down monotonically and
-  never up; cold/idle sinks to `f_min`; a real workload converges to the lowest *stable*
-  clock that holds frame rate (settles at/above the requirement but below `f_max`);
-  alternating slip/slack does not hunt low; `gov_tick`'s I/O path writes in-bracket.
-- **Integration type-check** (`.notes/integration_check.c`, host `cc` + ASan) — green.
-  Compiles the exact `minarch.c` governor code against the real `governor.h`.
-- **tg5040 cross-compile** — green. Built `minarch` (incl. `governor.c`) under the real
-  `aarch64-linux-gnu-gcc` toolchain (`tg5040-toolchain` Docker image via Colima, `-flto -Os`,
-  zero warnings) → `workspace/all/minarch/build/tg5040/minarch.elf`, a valid ARM aarch64 ELF.
-- **launch.sh** — all 18 pass `sh -n`; exports land in scope just before `minarch.elf`.
+### Radios + LEDs dark by default
+`boot.sh` kills Bluetooth and gates Wi-Fi on the dev-only `enable-ssh` flag (MinUI has no
+networking, so a normal install runs radio-dark). Ambient LEDs are zeroed every boot. These are
+continuous idle-power rails NextUI's feature set keeps lit.
 
-## Blocked on the Brick — see docs/ON-DEVICE-CHECKLIST.md
-- **Replace ASSUMED hardware values** with `tools/brick-recon.sh` output: thermal-zone path
-  (`GOV_T_SENSOR`), OPP ladder / `GOV_STEP_KHZ`, cluster-wide policy confirmation.
-- **Behavioral tuning** on real silicon: convergence/no-hunting, `GOV_T_TARGET_C`/dwell,
-  the sub-60 Hz `FRAME_BUDGET` caveat (D5), and per-core `f_max` for MGBA/SGB/SUPA (D11).
-- **Confirm** `GOV_DISABLE=1` disable hatch and the governor↔static-menu hand-off (D6).
+### Correctness / QoL (crash + pacing pillars)
+- **#4 — bail cleanly on failed `core.load_game`** (`minarch.c`): a bad/unsupported ROM used to
+  run an unloaded core → hang / black-screen needing a hard power-off. Now captured and bailed via
+  the existing `finish:` path.
+- **#6 — handle `SET_SYSTEM_AV_INFO` / `SET_GEOMETRY`** env calls (`minarch.c`): cores that change
+  fps/res/aspect mid-run no longer desync pacing + the scaler.
 
-None of the above changes the controller's structure — only better numbers in the
-`#define`s and the `launch.sh` brackets, exactly as the design doc anticipated.
+### Build efficiency
+- **-O3 pinned cores** — 6 stock cores build at their intended `-O3`/`-Ofast` (was silently `-O2`
+  via last-`-O`-wins Makefile merge), pinned to reproducible core HEADs.
+- **Drift-free absolute-schedule frame pacer.**
 
-## Notes for the next session
-- `.notes/` (gitignored) holds local-only scratch: `verify.sh` (full build+test),
-  `integration_check.c`, `wire-launch.sh` (the launch.sh editor). Not part of the repo.
-- Nothing here touched the render path or added features (CLAUDE.md non-negotiables).
-- No on-device flashing or thermal/perf claims were made — that work is deferred to the
-  checklist, not faked.
+## Measured numbers (first real device data)
+- **Battery: ~6h on Game Boy** — first energy measurement, via `charge_counter` (4% / 15 min).
+  `current_now` is dead on the AXP2202; `charge_counter` works and is the meter.
+- **CPU OPP floor = 408 MHz** (measured; no lower step exists). A sub-408 "sleep clock" is
+  therefore impossible — schedutil already idles there, so there's nothing lower to drop to.
+- **Governor thermals: ~4–5°C cooler than stock**; converged with NextUI (both `schedutil`
+  408–1800).
+
+## Tested → shelved: GPU-dark games
+Built a software-scale-to-fb0 game present (`ZERO_FB_GAME`, `PLAT_flipFB_game`, commit `33b5e6e`).
+It **renders correctly and the GPU domain does suspend during play**; a row-caching optimization
+(scale each source row once, `memcpy` to identical destination rows) got it **smooth at 72% CPU**.
+But a clean drain A/B with the GPU verified suspended the whole window came out **exact break-even
+— ~6h, identical to GLES** — because the software-scale CPU cost precisely offsets the GPU power
+saved (also only ~1–2°C cooler). **Decision: games keep GLES; GPU-dark is menu-only;
+`ZERO_FB_GAME` is off by default.** The only path to a real games win is the **DE hardware scaler**
+(`/dev/disp` layer — no GPU *and* no CPU scale), which probed as unavailable on this kernel (see
+`no-gl-present-proposal.md`) and is a research project, not shipped work. *Measured, not assumed.*
+
+## Where the comparison landed
+- **vs NextUI:** a governor tie — their `auto` *is* `schedutil` 408–1800, the same mechanism, ~5–10°C
+  cooler than old userspace (we reproduce ~4–5°C on our own fork). Our edges are per-system caps,
+  never exposing the 2.0 GHz OC, radios/LEDs/GPU dark, and the GPU-dark menu they can't copy.
+- **vs MyMinUI:** the lean-software-render peer (NEON + double-buffer, no GL) — our reference for
+  the fb0 present path.
+
+## What's next
+- **DE hardware-scaler research** (`/dev/disp` layer) — the only route to a GPU-dark *games* win
+  without paying the CPU software-scale cost. Probed unavailable on the stock kernel via the legacy
+  fbdev scanout path; would require becoming DRM master + raw ioctls. Scoped follow-up, not cheap.
+- **Backlight** is a limited lever (small, bounded).
+- Longer thermal-soak / battery A/B under sustained load in a warmer environment (bench ambient
+  keeps absolute temps in a narrow band; the efficiency/battery story is bigger than the °C delta).
+
+See `docs/zero-efficiency-roadmap.md` for the full lever list and `docs/nextui-comparison.md` for
+the head-to-head detail.

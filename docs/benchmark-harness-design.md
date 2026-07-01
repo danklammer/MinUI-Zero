@@ -1,5 +1,10 @@
 # Benchmark / telemetry harness — make "measurement-first" executable
 
+> **STATUS (2026-07-01): live on-device.** The `charge_counter` drain meter is stood up and produced the
+> first energy numbers (**~6h on Game Boy**; the GPU-dark-games A/B). **Correction to D4:** `current_now`
+> is dead on the AXP2202 — `charge_counter` (Δcharge × voltage over a fixed window) is the real meter,
+> i.e. the discharge-rate fallback D4 anticipated is the primary path, not `voltage_now × current_now`.
+
 `docs/project-direction.md` mandates measurement before changing CPU/render/audio policy, with
 explicit acceptance gates. Today that's manual. This harness makes it a command: run a core
 through a fixed scene, capture the numbers, and compare runs. The north-star metric is

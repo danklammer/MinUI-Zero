@@ -1,5 +1,11 @@
 # Proposal: GL-free present path (make the GPU dark) — scope, not code
 
+> **STATUS (2026-07-01): resolved by measurement.** GPU-dark **menu shipped + validated** (software
+> present to `/dev/fb0`, GPU domain suspends, 26°C). GPU-dark **games tested → shelved** — a clean drain
+> A/B came out exact break-even vs GLES (the software-scale CPU cost offsets the GPU power saved). Games
+> keep GLES; the only real games-win path is the DE hardware scaler (`/dev/disp`), which probed
+> unavailable on this kernel. See the PROBE RESULT + UPDATE sections below and **D15/D18** in `DECISIONS.md`.
+
 Lever ① from `zero-efficiency-roadmap.md`. Goal: stop presenting through the PowerVR GE8300 so its
 power domain can suspend — the one efficiency edge NextUI (fully GPU-based) structurally can't copy.
 **This is a prototype-and-measure proposal, not a "just do it" — because at 1024×768 the tradeoff can
