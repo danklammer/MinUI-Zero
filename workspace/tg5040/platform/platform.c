@@ -55,6 +55,34 @@ static int device_width;
 static int device_height;
 static int device_pitch;
 
+// --- MinUI Zero: optional GPU-dark software present straight to /dev/fb0 (env ZERO_FB_PRESENT=1) ---
+// The Brick's display is a plain framebuffer (32bpp little-endian XRGB8888 => BGRA bytes). For the
+// MENU (native 1024x768, no scaling) we can convert+copy vid.screen (RGB565) directly to fb0 and skip
+// GLES entirely, so the PowerVR GPU can suspend while browsing. Games keep the GLES scaling path.
+static int   fb_present = 0;
+static int   fb_fd      = -1;
+static uint8_t* fb_mem  = NULL;
+static struct fb_var_screeninfo fb_vinfo;
+static struct fb_fix_screeninfo fb_finfo;
+
+static void PLAT_flipFB(void) {
+	// RGB565 -> XRGB8888 (BGRA in memory), native res, into the currently-visible fb page.
+	uint16_t* src = (uint16_t*)vid.screen->pixels;
+	int sp = vid.screen->pitch / 2;                 // src stride in uint16
+	int dp = fb_finfo.line_length / 4;              // dst stride in uint32
+	uint32_t* dst = (uint32_t*)(fb_mem + (long)fb_vinfo.yoffset * fb_finfo.line_length);
+	int w = vid.width, h = vid.height;
+	for (int y=0; y<h; y++) {
+		uint16_t* s = src + y*sp;
+		uint32_t* d = dst + y*dp;
+		for (int x=0; x<w; x++) {
+			uint16_t p = s[x];
+			uint32_t r = (p>>11)&0x1f, g = (p>>5)&0x3f, b = p&0x1f;
+			d[x] = 0xff000000u | ((r<<3|r>>2)<<16) | ((g<<2|g>>4)<<8) | (b<<3|b>>2);
+		}
+	}
+}
+
 SDL_Surface* PLAT_initVideo(void) {
 	char* device = getenv("DEVICE");
 	is_brick = exactMatch("brick", device);
@@ -119,7 +147,19 @@ SDL_Surface* PLAT_initVideo(void) {
 	device_pitch	= p;
 	
 	vid.sharpness = SHARPNESS_SOFT;
-	
+
+	fb_present = getenv("ZERO_FB_PRESENT") && getenv("ZERO_FB_PRESENT")[0]=='1';
+	if (fb_present) {
+		fb_fd = open("/dev/fb0", O_RDWR);
+		if (fb_fd>=0 && ioctl(fb_fd,FBIOGET_FSCREENINFO,&fb_finfo)==0 && ioctl(fb_fd,FBIOGET_VSCREENINFO,&fb_vinfo)==0) {
+			fb_mem = mmap(0, fb_finfo.smem_len, PROT_READ|PROT_WRITE, MAP_SHARED, fb_fd, 0);
+			if (fb_mem==MAP_FAILED) fb_mem = NULL;
+		}
+		if (!fb_mem) { fb_present = 0; if (fb_fd>=0) close(fb_fd); fb_fd = -1; }
+		LOG_info("ZERO_FB_PRESENT: %s (fb %ux%u %ubpp stride=%u yoff=%u)\n", fb_present?"ON":"FAILED",
+			fb_vinfo.xres, fb_vinfo.yres, fb_vinfo.bits_per_pixel, fb_finfo.line_length, fb_vinfo.yoffset);
+	}
+
 	return vid.screen;
 }
 
@@ -373,6 +413,7 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	
 	if (!vid.blit) {
+		if (fb_present) { PLAT_flipFB(); return; } // GPU-dark software present for the native-res menu
 		resizeVideo(device_width,device_height,FIXED_PITCH); // !!!???
 		SDL_UpdateTexture(vid.texture,NULL,vid.screen->pixels,vid.screen->pitch);
 		SDL_RenderCopy(vid.renderer, vid.texture, NULL,NULL);
