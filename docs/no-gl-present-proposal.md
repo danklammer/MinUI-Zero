@@ -86,3 +86,23 @@ On a high-res panel that is not obvious. The `charge_counter` meter exists preci
 Prototype behind a flag: **meaningful** (new present backend + NEON scale/convert + vblank sync +
 UI wiring), but bounded and reversible (flag-gated, GLES stays default until measured). The measurement
 is the deliverable — this is the one lever where the *answer itself is unknown* until we run it.
+
+## UPDATE (measured): the GPU CAN suspend → and the MENU is the smart place to dark it
+Probe of `/sys/devices/platform/gpu/power`: **`control = auto`**, `runtime_active_time = 8032244`,
+**`runtime_suspended_time = 671016`** — i.e. the GPU **does runtime-suspend** when no GL client uses it
+(~11 min suspended already this session). So "GPU dark" is *technically real*: it stays lit only because
+we present (games **and menu**) via GLES. The domain suspends the moment the last GL client releases it.
+
+This reframes the whole lever into a **hybrid**, and resolves the 1024×768 tradeoff by splitting by context:
+- **Games** — per-frame upscale (256×224 → 1024×768) is *exactly* what a GPU is efficient at, and the
+  CPU is often the bottleneck there. **Keep the GPU present for games** (the proven path; offloading
+  scaling to the already-good GPU is the "use GPU to idle the CPU" win NextUI describes).
+- **Menu / UI** — static, **native 1024×768, no scaling**. Software-presenting it is nearly free
+  (a convert+copy, no per-frame scale), and it lets the **GPU power domain suspend during all the time
+  spent browsing/idle in menus**. This is the low-risk, clear-win slice: the CPU-scaling cost that makes
+  the games case borderline **doesn't exist** for a native-res static menu.
+
+**Revised recommendation:** don't chase "all-software present." Do **software present for the menu/UI
+(GPU sleeps while navigating), GPU present for games (efficient scaling).** Start with the menu — small,
+safe, measurable — and leave the proven game path alone unless the meter later says otherwise. This is
+the synthesis of "use the GPU where it's efficient (games)" + "let it sleep where it's wasteful (menus)."
