@@ -106,3 +106,22 @@ This reframes the whole lever into a **hybrid**, and resolves the 1024×768 trad
 (GPU sleeps while navigating), GPU present for games (efficient scaling).** Start with the menu — small,
 safe, measurable — and leave the proven game path alone unless the meter later says otherwise. This is
 the synthesis of "use the GPU where it's efficient (games)" + "let it sleep where it's wasteful (menus)."
+
+## UPDATE 2 (recon, from MyMinUI audit): `/dev/disp` + `/dev/ion` EXIST → the tradeoff may dissolve
+Device probe: **`/dev/disp` (Allwinner DE2 display engine, 248,0) and `/dev/ion` (10,63) are both present**
+on the Brick — the exact nodes MyMinUI's **m21** uses for its zero-copy, **hardware-scaled** display layer
+(`mymin/main:workspace/m21/platform/platform.c:751,414`). The A133P is the same DE2 family. This opens a
+**third, better path** that wasn't on the table when this doc was written:
+
+- **DE2 hardware-scaled layer (à la m21):** hand the emulator's RGB565 frame (in an ION buffer) to the
+  display engine and let **fixed-function hardware scale crop→1024×768 and scan it out.** No GLES (GPU
+  dark) **and no CPU software-scale** — which is the cost that made the games case "borderline" above.
+  **If it works, it dissolves the 1024×768 tradeoff entirely: GPU-dark *without* burdening the CPU/DDR.**
+- fb0 also has 21 pages of pan room (double-buffer + `FBIOPAN_DISPLAY` viable) as the fallback software path.
+
+**So the marquee lever is more promising than first scoped** — but gated on one more recon step the shell
+can't do: **cross-compile a tiny `/dev/disp` probe** (sunxi disp2 `DISP_LAYER_SET_CONFIG` + ION alloc,
+lifted from m21) to confirm the DE2 will actually scale a layer crop→screen on the A133P. `modetest`/
+`drm_info` aren't on the device, so a small C probe is the way. **Do that before committing to any present
+rewrite** — it decides between (best) DE2 hardware layer, (fallback) fbdev software-scale, and (status quo)
+GPU. Confidence: `/dev/disp`+`/dev/ion` present is strong evidence, not proof, that the m21 path ports.
