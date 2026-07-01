@@ -426,9 +426,11 @@ static void SRAM_write(void) {
 		LOG_error("Error writing SRAM data to file\n");
 	}
 
+	// flush just this file to disk (was a global sync() — flushed every filesystem and
+	// stalled menu-open/sleep while unrelated dirty data drained)
+	fflush(sram_file);
+	fsync(fileno(sram_file));
 	fclose(sram_file);
-
-	sync();
 }
 
 ///////////////////////////////////////
@@ -475,9 +477,9 @@ static void RTC_write(void) {
 		LOG_error("Error writing RTC data to file\n");
 	}
 
+	fflush(rtc_file);
+	fsync(fileno(rtc_file));
 	fclose(rtc_file);
-
-	sync();
 }
 
 ///////////////////////////////////////
@@ -562,10 +564,12 @@ static void State_write(void) { // from picoarch
 
 error:
 	if (state) free(state);
-	if (state_file) fclose(state_file);
+	if (state_file) {
+		fflush(state_file);
+		fsync(fileno(state_file));
+		fclose(state_file);
+	}
 
-	sync();
-	
 	fast_forward = was_ff;
 }
 static void State_autosave(void) {
@@ -1338,9 +1342,10 @@ static void Config_write(int override) {
 		if (mapping->mod) j += LOCAL_BUTTON_COUNT;
 		fprintf(file, "bind %s = %s\n", mapping->name, button_labels[j]);
 	}
-	
+
+	fflush(file);
+	fsync(fileno(file));
 	fclose(file);
-	sync();
 }
 static void Config_restore(void) {
 	char path[MAX_PATH];
@@ -4671,11 +4676,13 @@ static void trackFPS(void) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
 		cpu_double = cpu_ticks / last_time;
-		use_ticks = getUsage();
-		if (use_ticks && last_use_ticks) {
-			use_double = (use_ticks - last_use_ticks) / last_time;
+		if (show_debug) { // use_double only renders in the debug HUD; skip the /proc parse otherwise
+			use_ticks = getUsage();
+			if (use_ticks && last_use_ticks) {
+				use_double = (use_ticks - last_use_ticks) / last_time;
+			}
+			last_use_ticks = use_ticks;
 		}
-		last_use_ticks = use_ticks;
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
@@ -4891,12 +4898,6 @@ int main(int argc , char* argv[]) {
 			// and ran WARMER, not cooler — "runs fine but feels warmer." So the audio-pacing "false slips"
 			// that held the ceiling high were actually PROTECTIVE (they let the CPU race-to-idle). The
 			// governor caps runaway spikes; it must NOT force schedutil below where it can finish-and-sleep.
-			static long prev_wait_ms = 0;
-			SND_Stats as; SND_getStats(&as);
-			long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
-			uint32_t raw_us  = GFX_getFrameWorkUs();
-			uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
-
 			if (gov_active) {
 				static int gov_frames = 0, gov_slips = 0;
 				if (GFX_didOverrun()) gov_slips++; // PROVEN signal (see note — pure-work sink ran warmer)
@@ -4910,7 +4911,12 @@ int main(int argc , char* argv[]) {
 					gov_slips = 0;
 				}
 			}
-			if (tlm_enabled()) {
+			if (tlm_enabled()) { // stats compute lives here: telemetry is its only consumer
+				static long prev_wait_ms = 0;
+				SND_Stats as; SND_getStats(&as);
+				long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
+				uint32_t raw_us  = GFX_getFrameWorkUs();
+				uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
 				tlm_frame(work_us);
 				tlm_audio(as.queue_frames, as.underruns, as.overruns);
 			}

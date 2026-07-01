@@ -209,6 +209,8 @@ typedef struct SND_Frame {
 
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
+void SND_pause(void);  // close the audio device during sleep (thread fully stops)
+void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
 void SND_quit(void);
 // audio-health telemetry (benchmark): cumulative counters + current ring fill.
 typedef struct SND_Stats { long underruns; long overruns; long wait_ms; int queue_frames; int frame_count; } SND_Stats;

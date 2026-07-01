@@ -1158,12 +1158,31 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
 }
-void SND_quit(void) { // plat_sound_finish
-	if (!snd.initialized) return;
-	
+void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
+	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
-	
+}
+void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffer was preserved
+	if (!snd.initialized) return;
+
+	SDL_AudioSpec spec_in;
+	SDL_AudioSpec spec_out;
+	spec_in.freq = snd.sample_rate_out;
+	spec_in.format = AUDIO_S16;
+	spec_in.channels = 2;
+	spec_in.samples = SAMPLES;
+	spec_in.callback = SND_audioCallback;
+
+	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error (resume): %s\n", SDL_GetError());
+	SDL_PauseAudio(0);
+}
+void SND_quit(void) { // plat_sound_finish
+	if (!snd.initialized) return;
+
+	SDL_PauseAudio(1);
+	SDL_CloseAudio();
+
 	if (snd.buffer) {
 		free(snd.buffer);
 		snd.buffer = NULL;
@@ -1726,7 +1745,7 @@ void PWR_powerOff(void) {
 }
 
 static void PWR_enterSleep(void) {
-	SDL_PauseAudio(1);
+	SND_pause(); // fully closes the audio device (thread stops); no-op when sound isn't initialized (minui)
 	if (GetHDMI()) {
 		PLAT_clearVideo(gfx.screen);
 		PLAT_flip(gfx.screen, 0);
@@ -1748,9 +1767,9 @@ static void PWR_exitSleep(void) {
 		PLAT_enableBacklight(1);
 		SetVolume(GetVolume());
 	}
-	SDL_PauseAudio(0);
-	
-	sync();
+	SND_resume();
+	// no sync() here: nothing was written during sleep, it only stalled resume
+	// (the enter-sleep sync() already flushed everything before suspend)
 }
 
 // How long to stay in light faux-sleep (screen off, polling) before escalating to true
