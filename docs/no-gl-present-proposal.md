@@ -125,3 +125,22 @@ lifted from m21) to confirm the DE2 will actually scale a layer crop→screen on
 `drm_info` aren't on the device, so a small C probe is the way. **Do that before committing to any present
 rewrite** — it decides between (best) DE2 hardware layer, (fallback) fbdev software-scale, and (status quo)
 GPU. Confidence: `/dev/disp`+`/dev/ion` present is strong evidence, not proof, that the m21 path ports.
+
+
+## PROBE RESULT (on-device, 2026-07-01): no free hardware-scale — display is fbdev-driven
+Ran `disp-probe` on the Brick. `DISP_LAYER_GET_CONFIG2` **succeeds (ret=0) but returns zero/empty for
+all 32 screen/channel/layer slots**, while `/sys/class/disp` shows a live 1024x768 layer. And **nothing
+holds `/dev/dri/card0`** (the KMS master) — only `renderD128` (GPU render) is held by minarch. So the
+scanout is driven by the **legacy framebuffer `/dev/fb0`** (32bpp, pannable), and the GPU is used only
+via **EGL->fbdev** (PowerVR NULL-WSEGL) to present+scale. Consequences:
+- **The m21 `/dev/disp` hardware-scale path does NOT apply** — that userspace layer API is unused here.
+- **DRM scaling-plane path is possible but heavy** — no libdrm/headers on device, nobody holds card0;
+  would require becoming DRM master + raw DRM ioctls. Not a cheap probe.
+- **The real path is the simplest: fbdev software present** (MyMinUI miyoomini-style — NEON-scale the
+  emu frame to a `/dev/fb0` back page, `FBIOPAN_DISPLAY` + `FBIO_WAITFORVSYNC`). GPU idle -> domain
+  suspends -> dark. **But this pays the CPU software-scale cost (256->1024) — i.e. back to the original
+  borderline 1024x768 tradeoff.** No free hardware-scale shortcut exists on this kernel.
+
+**Decision-gate unchanged, path now concrete:** prototype the fbdev software present behind a flag
+(NEON scaler lift -> fb0 pan -> measure with `charge_counter`); ship only if total drain drops. This is
+a real prototype (bigger than a probe), so it's a scoped follow-up, not this-session work.
