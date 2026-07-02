@@ -135,8 +135,15 @@ Shipped + on-device-validated (2026-07-01, on `integration`, build `MinUI-202607
   GLES** (~6h) → games keep GLES, GPU-dark is **menu-only**, flag off by default. Only real-win path =
   the DE hardware scaler (`/dev/disp` layer — no GPU *and* no CPU scale), a research project.
 
-Next: DE hardware scaler research (the only path to a real GPU-dark-games win); backlight is a limited
-lever (disp-controlled + user-set). See `docs/zero-efficiency-roadmap.md` + `docs/qol-backlog.md`.
+**Optimization sweep COMPLETE (2026-07-01, D21/D22 + probes)** — shipped: frontend `-O3 -mcpu=cortex-a53`
+(was accidentally `-Os`; −3.3% CPU), keymon blocking `poll()` + Brick hardware-mute discovery (65→**0**
+idle wakeups/sec), audio device closed in faux-sleep (~7%→0), targeted `fsync` (no global-sync stalls),
+`noatime`, model-detect cache. Closed with on-device evidence (don't re-chase): DE `/dev/disp` scaler
+(kernel exposes no layer API), DRAM rail (no driver bound), GPU rail (auto-suspends already), MMC-PM
+(already auto), vblank (sleeps, no spin), picodrive ARCH (no aarch64 M68K JIT), FMIN floors (D21: 408
+saturates for zero win), core hotplug (D22: exact break-even). Remaining: battery re-baseline after the
+sweep; DTB undervolt is the only big lever left (high effort/risk, deferred). See
+`docs/zero-efficiency-roadmap.md` + `docs/qol-backlog.md`.
 
 ## Working rules (these complement the global ~/.claude/CLAUDE.md)
 - **Read before edit.** Open the actual file and grep the symbol first; the line numbers in
