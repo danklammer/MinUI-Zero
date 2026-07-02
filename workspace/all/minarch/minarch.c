@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <signal.h>
 #include <msettings.h>
 
 #include <unistd.h>
@@ -480,6 +481,57 @@ static void RTC_write(void) {
 	fflush(rtc_file);
 	fsync(fileno(rtc_file));
 	fclose(rtc_file);
+}
+
+///////////////////////////////////////
+
+// Crash-safe saves (pillar 5): if the core segfaults, stock loses every bit of SRAM progress
+// since the last flush (menu-open/sleep). Cache the SRAM/RTC pointers + paths once at load;
+// on a fatal signal, emergency-write them using only async-signal-safe raw syscalls
+// (open/write/fsync/rename), atomically via a .tmp so a mid-write death can never corrupt an
+// existing good save. Then re-raise so the crash still crashes (exit code, launcher recovery).
+
+static struct {
+	void* data;
+	size_t size;
+	char path[MAX_PATH];
+	char tmp[MAX_PATH];
+} crash_save[2]; // [0]=SRAM [1]=RTC
+
+static void Crash_handler(int sig) {
+	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
+	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
+	static const char msg[] = "minarch: fatal signal — emergency-saving SRAM/RTC\n";
+	write(STDERR_FILENO, msg, sizeof(msg)-1);
+	for (int i=0; i<2; i++) {
+		if (!crash_save[i].data || !crash_save[i].size) continue;
+		int fd = open(crash_save[i].tmp, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+		if (fd < 0) continue;
+		ssize_t wrote = write(fd, crash_save[i].data, crash_save[i].size);
+		fsync(fd);
+		close(fd);
+		if (wrote == (ssize_t)crash_save[i].size) rename(crash_save[i].tmp, crash_save[i].path);
+		else unlink(crash_save[i].tmp);
+	}
+	raise(sig);
+}
+
+static void Crash_install(void) { // call after core.load_game + SRAM_read (pointers are live)
+	crash_save[0].size = core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
+	crash_save[0].data = crash_save[0].size ? core.get_memory_data(RETRO_MEMORY_SAVE_RAM) : NULL;
+	SRAM_getPath(crash_save[0].path);
+	crash_save[1].size = core.get_memory_size(RETRO_MEMORY_RTC);
+	crash_save[1].data = crash_save[1].size ? core.get_memory_data(RETRO_MEMORY_RTC) : NULL;
+	RTC_getPath(crash_save[1].path);
+	for (int i=0; i<2; i++) {
+		strcpy(crash_save[i].tmp, crash_save[i].path);
+		strcat(crash_save[i].tmp, ".tmp");
+	}
+	signal(SIGSEGV, Crash_handler);
+	signal(SIGBUS,  Crash_handler);
+	signal(SIGILL,  Crash_handler);
+	signal(SIGFPE,  Crash_handler);
+	signal(SIGABRT, Crash_handler);
 }
 
 ///////////////////////////////////////
@@ -3041,7 +3093,8 @@ int Core_load(void) {
 
 	SRAM_read();
 	RTC_read();
-	
+	Crash_install(); // crash-safe saves: arm the emergency SRAM/RTC writer (pointers live now)
+
 	// NOTE: must be called after core.load_game!
 	struct retro_system_av_info av_info = {};
 	core.get_system_av_info(&av_info);
