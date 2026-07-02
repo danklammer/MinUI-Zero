@@ -280,6 +280,19 @@ runs 65%@408 — nothing to win). Audit tally: one conviction (D25, 400MHz), two
 closed in ~10 min. The per-option A/B loop (guarded sweep + BENCH CSVs) is now the standard way to
 answer "does this option cost anything" — measure, don't debate.
 
+## D27 — Pillar 4/5 hardening: crash-safe saves shipped + 50-cycle deep-sleep soak passed (2026-07-02)
+**Crash-safe saves** (`minarch.c` Crash_install/Crash_handler): on SIGSEGV/BUS/ILL/FPE/ABRT,
+emergency-write the cached SRAM/RTC pointers using only async-signal-safe syscalls, atomic via
+.tmp+rename (a mid-write death can't corrupt a good save), then re-raise. Validated on-device:
+kill -SEGV on a live game → handler message → 32KB .sav written → clean crash → launcher recovered.
+A core crash no longer costs the session's progress.
+**Deep-sleep soak** (`tools/sleep-soak.sh`: RTC wakealarm + real `bin/suspend` choreography):
+50 unattended suspend/resume cycles with a live game — 49 flawless 42s round-trips, game survived
+all 50, 0 wake hangs; 1 cycle aborted suspend instantly (failed SAFE, awake — the runtime path
+retries 3× for this case). 3% battery over the 47-min gauntlet; 26-30°C. **Default-on deep sleep
+is now evidence-certified.** Known dev-only casualty: ~50 suspends can wedge wifi until reboot
+(users don't run wifi; soak logs go to SD, not tmpfs, for this reason).
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
