@@ -58,6 +58,7 @@ static int getInt(char* path) {
 }
 
 static pthread_t mute_pt;
+static int mute_pt_running = 0;
 static void* watchMute(void *arg) {
 	int is_muted,was_muted;
 	
@@ -83,7 +84,18 @@ int main (int argc, char *argv[]) {
 	sigaction(SIGTERM, &sa, NULL);
 	
 	InitSettings();
-	pthread_create(&mute_pt, NULL, &watchMute, NULL);
+	// The Brick's mute slider is a HARDWARE mute (verified on-device 2026-07-01: flipping it mutes
+	// with no evdev event and no claimed-GPIO change; PH19/gpio243 never toggles). The 5Hz poll
+	// thread only serves devices where PH19 is a live software-mute line — skip it on the Brick
+	// (launcher exports DEVICE=brick) so idle keymon schedules zero wakeups.
+	char* device = getenv("DEVICE");
+	if (device && strcmp(device, "brick")==0) {
+		SetMute(getInt(MUTE_STATE_PATH)); // still honor the boot-time state once
+	}
+	else {
+		pthread_create(&mute_pt, NULL, &watchMute, NULL);
+		mute_pt_running = 1;
+	}
 	
 	char path[32];
 	for (int i=0; i<INPUT_COUNT; i++) {
@@ -220,6 +232,8 @@ int main (int argc, char *argv[]) {
 		close(inputs[i]);
 	}
 	
-	pthread_cancel(mute_pt);
-	pthread_join(mute_pt, NULL);
+	if (mute_pt_running) {
+		pthread_cancel(mute_pt);
+		pthread_join(mute_pt, NULL);
+	}
 }
