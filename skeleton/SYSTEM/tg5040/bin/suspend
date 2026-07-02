@@ -76,7 +76,20 @@ after() {
 before
 
 >&2 echo "Suspending..."
+# The suspend write needs care under `set -e` (idea: NextUI #632):
+#  - if it fails (EBUSY etc.), -e would kill the script HERE and `after` would never run,
+#    leaving radios/audio torn down AND making PWR_deepSleep retry/power-off;
+#  - the A133P can return nonzero even when the device DID suspend — if we were gone
+#    >=5s, treat the suspend as a success so the C side doesn't spuriously retry.
+T0=$(date +%s)
+set +e
 echo mem >/sys/power/state
+rc=$?
+set -e
+T1=$(date +%s)
+if [ $rc -ne 0 ] && [ $((T1-T0)) -ge 5 ]; then rc=0; fi
 
-# Resume services in the background to reduce UI latency
+# Resume services in the background to reduce UI latency — ALWAYS, even on a failed suspend
 ( after & )
+
+exit $rc
