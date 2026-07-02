@@ -200,6 +200,9 @@ int GFX_hdmiChanged(void) {
 	return 1;
 }
 
+// MEASURED (Brick disp sysfs, 2026-07-02): the panel refreshes at 60.8 fps, not 60.0. That's FASTER
+// than every core we run (50-60.1), so vsync is never the pacing limiter and this budget math is
+// safe as-is — but don't assume 60.0 panel timing when reasoning about present/vblank behavior.
 #define FRAME_BUDGET 17 // 60fps
 static uint32_t frame_start = 0;
 static int frame_overran = 0; // closed-loop governor: did the last frame's CPU work exceed the budget?

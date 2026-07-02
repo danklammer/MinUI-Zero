@@ -81,7 +81,15 @@ if [ -f "$STOCK_JSON" ]; then
 	       -e "s/\"ledswitch\":[[:space:]]*[0-9]*/\"ledswitch\":\t0/" "$STOCK_JSON"
 fi
 
-# set default usb mode
+# USB: charge-only unless dev mode. Stock "data" mode enumerates MTP + adb when plugged into a
+# computer — MtpDaemon then indexes the whole SD while games stream from it (measured 2026-07-02:
+# the I/O contention visibly stretches frame times), plus two resident daemons of pure waste.
+# MinUI has no USB-data feature, so a plugged-in Zero should just charge. The enable-ssh dev flag
+# keeps stock "data" mode (adb as a wifi-less fallback for development).
+if [ ! -f "$SHARED_USERDATA_PATH/enable-ssh" ] && [ -f "$STOCK_JSON" ]; then
+	sed -i -e "s/\"usbmode\":[[:space:]]*\"[a-z]*\"/\"usbmode\":\t\"charge\"/" "$STOCK_JSON"
+fi
+# set default usb mode (reads usbmode from the stock config)
 usb_device.sh
 
 # match stock audio
@@ -112,6 +120,8 @@ if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then
 	sh "$SYSTEM_PATH/bin/dev-net.sh" &
 else
 	killall MtpDaemon
+	killall adbd 2>/dev/null
+	killall ntpd 2>/dev/null # MinUI keeps its own clock; no network to sync from anyway
 	killall wpa_supplicant
 	killall udhcpc
 	rfkill block bluetooth
