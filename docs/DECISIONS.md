@@ -322,6 +322,23 @@ impossible here: our ceiling re-asserts every tick), white-point gamma LUT (#760
 NOTED: the `/dev/disp` gamma ioctl WORKS on this kernel — a breadcrumb for the DE-scaler research).
 Open question for the user: NextUI's #461 2s-resume-mute (alsactl restore) — chase only if heard.
 
+## D30 — Full fork-archaeology campaign closed: 380 NextUI PRs + 811 MyMinUI commits triaged (2026-07-02)
+Every finding verified against our tree before verdict (three tempting "fixes" would have actively
+broken the software render path — #286 disables load-bearing GFX_resize/clearAll "because OpenGL").
+**Adopted (5 total):** suspend-script hardening (#632), RETRO_ENVIRONMENT_SHUTDOWN handler (#699),
+`/tmp/stay_awake`+`/tmp/stay_alive` suspend-inhibit locks (#756), msettings accessor null-guards
+(#273 class — guarded at the source, all 8 accessors), supafaust thread affinity emu=0x3/ppu=0xc
+(#161, documented in the core's own README; A/B pending).
+**Watch-items (symptom-tied, don't fix speculatively):** #461 2s-resume-mute (only if heard);
+MyMinUI `74934b9a` Config_readOptions in SET_CORE_OPTIONS (only if a core drops saved options).
+**Facts banked:** NextUI #300 independently converged on the 408 floor; Brick exposes
+`/sys/class/motor/voltage` (variable haptics, 0.5-3.3V); the `/dev/disp` gamma-LUT ioctl WORKS on
+this kernel (NextUI #760 — breadcrumb for DE-scaler research); MyMinUI's reliability fixes mostly
+fix its own refactor (its portable wins were already extracted in the optimization sweep).
+Method note: PR queues beat commit logs for this — they carry the discussion, the rejected
+alternatives, and fixes for code both forks inherited. Zero's edge is verify-then-adopt with
+on-device validation, which turned a rival's review queue into five shipped fixes in an afternoon.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
