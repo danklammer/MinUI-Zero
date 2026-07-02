@@ -10,17 +10,19 @@ measured on real hardware.
 
 ## What's different
 
-- **❄️ GPU-dark menu** — the launcher renders in software, so the GPU powers down while you
-  browse (~26°C, instant nav).
-- **🌡️ Closed-loop governor** — finds the lowest clock that holds frame rate, per game, in
-  real time. Never overclocks.
-- **💤 Deep sleep** — suspend-to-RAM by default: goes cold, wakes instantly where you left
-  off (50-cycle soak tested). The Deep Sleep tool in Extras turns it off.
-- **⚡ Zero idle waste** — no busy-polling daemons, radios and LEDs off, audio fully closed
-  during sleep, USB is charge-only.
-- **🛡️ Crash-safe saves** — if a core ever crashes, your save RAM is written on the way down.
-- **⚙️ Tuned everything** — cores built for the chip and pinned, drift-free frame pacing,
-  `noatime` mounts.
+- **❄️ GPU-dark menu**<br>
+  The launcher renders in software, so the GPU powers down while you browse (~26°C, instant nav).
+- **🌡️ Closed-loop governor**<br>
+  Finds the lowest clock that holds frame rate, per game, in real time. Never overclocks.
+- **💤 Deep sleep**<br>
+  Suspend-to-RAM by default: goes cold, wakes instantly where you left off (50-cycle soak tested).
+  The Deep Sleep tool in Extras turns it off.
+- **⚡ Zero idle waste**<br>
+  No busy-polling daemons, radios and LEDs off, audio fully closed during sleep, USB is charge-only.
+- **🛡️ Crash-safe saves**<br>
+  If a core ever crashes, your save RAM is written on the way down.
+- **⚙️ Tuned everything**<br>
+  Cores built for the chip and pinned, drift-free frame pacing, `noatime` mounts.
 
 **~7.5 hours on Game Boy** — up from ~6 before tuning.
 
