@@ -306,6 +306,22 @@ FMV/3D spikes keep p95 high) but schedutil lives at 1416 with dips to 1008 — t
 with burst headroom, arguably better than a hard cap. Note: the controller ladder is arithmetic
 (1800−216=1584); the kernel quantizes ceilings to real OPPs, so 1584 ≡ the 1416 OPP effectively.
 
+## D29 — NextUI PR mining: two real adopts, several verified non-applies (2026-07-02)
+Mined LoveRetro/NextUI's PR queue (open+merged+closed) for shared-ancestry fixes. Adopted, both
+validated on-device (3-cycle soak through the new path, 3/3 clean):
+1. **Suspend-script hardening** (idea: NextUI #632): our `bin/suspend` ran a bare `echo mem` under
+   `set -euo pipefail` — a failed suspend write aborted the script BEFORE the service-restore ran
+   (radios/audio left torn down) and fed `PWR_deepSleep` a failure → spurious retry/power-off. Also
+   guards the A133P quirk where the write returns nonzero despite a successful suspend (asleep ≥5s
+   → treat as success). Likely explains the D27 soak's single 1s-abort anomaly.
+2. **`RETRO_ENVIRONMENT_SHUTDOWN` handler** (idea: NextUI #699): env cmd 7 had no case, so cores
+   with in-game quit menus (PRBoom, PICO-8) hung on quit. Now sets `quit = 1`.
+Verified non-applies: picodrive `ARCH` (#636 — already falsified byte-identical here), rewind/
+cheat/SRM-compression/resampler fixes (NextUI-only subsystems), governor stuck-boost class (#733 —
+impossible here: our ceiling re-asserts every tick), white-point gamma LUT (#760 — feature, but
+NOTED: the `/dev/disp` gamma ioctl WORKS on this kernel — a breadcrumb for the DE-scaler research).
+Open question for the user: NextUI's #461 2s-resume-mute (alsactl restore) — chase only if heard.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
