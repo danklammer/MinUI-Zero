@@ -122,6 +122,34 @@ static void test_oscillation(void) {
 	CHECK(tail_min == p->f_max, "should not hunt below f_max once settled, dipped to %d", tail_min);
 }
 
+// ---- scenario 3b: boundary workload must not limit-cycle at the floor (D23 / Contra) ----
+// A game that slips at f_min but holds one step up used to cycle forever: sink to 600 ->
+// slip (a burst of slow frames) -> climb to 816 -> 4 clean ticks -> sink -> slip -> ...
+// Failed-floor memory (fail_khz/GOV_FAIL_HOLD) must bound the re-probes: at most one dip
+// per hold window, not one per DN_DWELL.
+static void test_boundary_no_limit_cycle(void) {
+	printf("[boundary] floor-slipping workload dips at most once per fail-hold window\n");
+	const GovProfile* p = &GOV_P_16BIT; // 600000..1416000
+	int f_req = 700000;                 // slips at 600, holds at 816 — the Contra shape
+	GovState st; gov_init(&st, p);
+	int dips = 0, prev_holds = 0;
+	const int TICKS = 600;              // ~5 minutes of ticks
+	for (int i = 0; i < TICKS; i++) {
+		int overrun = (st.ceil_khz < f_req);
+		int khz = gov_step(&st, p, 40 /*cool*/, overrun);
+		CHECK(khz >= p->f_min && khz <= p->f_max, "clock %d left bracket", khz);
+		int holds = (khz >= f_req);
+		if (prev_holds && !holds) dips++; // transitioned back into the failing clock
+		prev_holds = holds;
+	}
+	// Old controller: a dip every DN_DWELL+1 ticks (~120 dips in 600). With the 120-tick
+	// fail hold: the initial sink plus at most ~5 re-probes. Allow slack, but the cycle
+	// must be gone by an order of magnitude.
+	CHECK(dips <= 8, "limit cycle: %d dips into the failing clock over %d ticks", dips, TICKS);
+	CHECK(st.ceil_khz >= f_req, "should end settled at/above the requirement, got %d", st.ceil_khz);
+	printf("  dips into failing clock: %d over %d ticks (old controller: ~120)\n", dips, TICKS);
+}
+
 // ---- scenario 4: real workload converges to the lowest stable clock (a saving) ----
 static void test_converges_to_lowest_stable(void) {
 	printf("[converge] mid workload settles at/above requirement but below f_max\n");
@@ -159,6 +187,7 @@ int main(void) {
 	test_hot_ceiling();
 	test_hot_caps_below_max();
 	test_oscillation();
+	test_boundary_no_limit_cycle();
 	test_converges_to_lowest_stable();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");

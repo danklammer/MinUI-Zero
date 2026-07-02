@@ -29,6 +29,12 @@ NextUI commits informed the *direction* (kernel-governor architecture) but no co
 `6990d474` (userspace loop → kernel governors), `afb3783d` (ondemand→schedutil + caps),
 `e9e91137` (stuck-in-performance fix). See `docs/thermal-governor-design.md`.
 
+## Sleep audio-device close (technique, reimplemented)
+`SND_pause`/`SND_resume` in `workspace/all/common/api.c` (close the SDL audio device during sleep
+so its thread fully stops — was ~7% CPU while "asleep" — reopen at the negotiated rate on wake)
+implements the technique from MyMinUI (Turro75/MyMinUI) commit `5c0b3704` ("close audio device
+during sleep"). Reimplemented against our stock-MinUI `SND_*` engine, not copied.
+
 ## Allwinner disp2 / ION UAPI headers (tools/disp-probe/)
 `sunxi_display2.h` and `sunxi_ion.h` are Allwinner kernel UAPI headers, taken via MyMinUI
 (Turro75/MyMinUI, `workspace/m21/platform/`). Used only by the `/dev/disp` recon probe to match the
