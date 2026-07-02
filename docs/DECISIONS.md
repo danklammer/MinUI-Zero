@@ -209,3 +209,10 @@ race-to-idle headroom). Saturated-at-min-clock is the exact anti-pattern D14 doc
 C-state residency, fragile on heavy scenes, nothing gained. The shipped per-system floors (408 for
 8-bit, 600 for 16-bit, 1008 for PS1) are already at the race-to-idle sweet spot — don't lower them
 without new evidence.
+
+## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
+Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
+back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
+power-gates idle A53 cores, so hotplug only formalizes what the hardware does on its own — and with
+keymon at 0 idle wakeups/sec the spare cores genuinely stay parked. No per-system hotplug bracket;
+don't re-chase. (Break-even #3, after GPU-dark games and picodrive ARCH.)
