@@ -1800,7 +1800,7 @@ static void PWR_waitForWake(void) {
 				sleep_ticks += 60000; // check again in a minute
 				continue;
 			}
-			if (PLAT_supportsDeepSleep() && !exists(DEEP_SLEEP_OFF_PATH)) { // ON by default; opt-out via the Deep Sleep tool
+			if (PLAT_supportsDeepSleep() && !exists(DEEP_SLEEP_OFF_PATH) && !exists(STAY_ALIVE_PATH)) { // ON by default; opt-out via the Deep Sleep tool (+ /tmp/stay_alive inhibit)
 				int ret = PWR_deepSleep();
 				if (ret==0) {
 					return; // suspended and resumed
@@ -1860,7 +1860,7 @@ void PWR_enableAutosleep(void) {
 	pwr.can_autosleep = 1;
 }
 int PWR_preventAutosleep(void) {
-	return pwr.is_charging || !pwr.can_autosleep || GetHDMI();
+	return pwr.is_charging || !pwr.can_autosleep || GetHDMI() || exists(STAY_AWAKE_PATH);
 }
 
 // updated by PWR_updateBatteryStatus()
