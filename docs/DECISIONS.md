@@ -254,6 +254,23 @@ conservatism; tune only with BENCH telemetry data, not guesses.
 Meta-lesson: three detector designs in one day, each falsified by measurement, until the signal
 matched the thesis itself — measure "is the game running at full speed," not proxies for it.
 
+## D25 — Upstream's `fceumm_sndquality = High` default cost NES ~400MHz AND crackled; Low restored, D21 evidence retracted (2026-07-02)
+"Why is NES demanding?!" (user, correctly). Three-way BENCH A/B, Contra attract, 130s each:
+| run | p50 work | lived at | budget misses | audio underruns |
+|-----|----------|----------|---------------|-----------------|
+| fceumm **High** (as shipped) | 9.3ms | 1008 | 60 | **76** |
+| fceumm **Low** | 6.5ms | 600→408 | 0 | 10 |
+| **QuickNES** (`5ae7551`, -O3/A53) | **2.5ms** | **408 flat** | 0 | 10 |
+`fceumm_sndquality = High` ships in **stock MinUI's FC.pak default.cfg** — inherited by every fork;
+the expensive SexyFilter DSP path burned ~400MHz of clock headroom and STILL underran audio 7×
+more than Low. Nobody caught it because no other fork measures what NES costs. Fixed to Low in
+skeleton `default.cfg`/`default-brick.cfg`.
+**Retraction:** D21's "fceumm saturates at 408" data was collected under the hidden High regime —
+FC floor restored to 408 (at Low, the A/B recorded clean 408 windows; the gen-rate detector +
+fail-memory handle any climb). **QuickNES** measured 2.6× lighter than fceumm-Low and lives at the
+OPP floor like gambatte; kept as a validated option (fceumm-Low stays default for mapper coverage —
+swap only if a compat-vs-cost case emerges). Worth upstreaming the sndquality finding to MinUI.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
