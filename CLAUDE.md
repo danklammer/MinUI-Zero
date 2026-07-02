@@ -129,7 +129,8 @@ Shipped + on-device-validated (2026-07-01, on `integration`, build `MinUI-202607
   via the Deep Sleep tool (`disable-deep-sleep` flag).
 - **Radios + LEDs off** by default (`boot.sh`); **QoL** #4 (bail on failed `core.load_game`) + #6
   (`SET_SYSTEM_AV_INFO`/`SET_GEOMETRY` re-sync) in `minarch.c`; `-O3` pinned cores; drift-free pacer.
-- **Measured:** ~6h battery on GB (`charge_counter`); CPU OPP floor = **408 MHz** (no lower step — so a
+- **Measured:** **~7.7h** battery on GB/GBC post-optimization (2026-07-02 re-baseline: 390 units/h,
+  461 min est; was ~6h pre-sweep); CPU OPP floor = **408 MHz** (no lower step — so a
   sub-408 sleep clock is impossible; `schedutil` already idles there).
 - **GPU-dark GAMES: tested → SHELVED** — software-scale-to-fb0 (`ZERO_FB_GAME`, `PLAT_flipFB_game`)
   renders + GPU suspends + smooth (row-caching, 72% CPU), but a clean drain A/B = **exact break-even vs

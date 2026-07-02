@@ -28,7 +28,8 @@ substantial engineering earns those thermals — but never a new user-facing fea
 - **🛡️ Robustness** — bails cleanly on a bad/unsupported ROM instead of hanging; handles cores that
   change resolution/timing mid-run without desyncing pacing.
 
-Measured battery: **~6 hours** on Game Boy.
+Measured battery: **~7.5 hours** on Game Boy — up from ~6 before the optimization pass
+(60-min `charge_counter` drain, same conditions).
 
 ## Scope — TrimUI Brick + Smart Pro only
 
