@@ -293,6 +293,19 @@ retries 3× for this case). 3% battery over the 47-min gauntlet; 26-30°C. **Def
 is now evidence-certified.** Known dev-only casualty: ~50 suspends can wedge wifi until reboot
 (users don't run wifi; soak logs go to SD, not tmpfs, for this reason).
 
+## D28 — Predictive sink gate replaces the busy-hold; NES recovered 600MHz of ceiling (2026-07-02)
+The D24 busy-hold (25% of frames over budget → never sink) counted audio-BLOCKED frames as work and
+held NES at 1008 / PS1 at 1800. Replacement (`gov_sink_target`/`gov_sink_fits`, unit-tested):
+per-batch p95 of PURE work (audio-pacing wait subtracted), scaled to the next-lower clock
+(work ∝ 1/clock); sink allowed only if predicted p95 fits **85% of the frame budget** — the 15%
+idle headroom is D14's race-to-idle rule made quantitative. Mistakes stay bounded: the fps SLIP
+signal climbs back and D23 fail-memory prevents cycling.
+On-device: **Contra sinks 1008→792→576→408, gen 60.2/60.1 — full speed at the OPP floor**
+(post-D25 NES is 8-bit-cheap and now runs like it). PS1 Tony Hawk: ceiling stays 1800 (attract's
+FMV/3D spikes keep p95 high) but schedutil lives at 1416 with dips to 1008 — the D14 sweet spot
+with burst headroom, arguably better than a hard cap. Note: the controller ladder is arithmetic
+(1800−216=1584); the kernel quantizes ceilings to real OPPs, so 1584 ≡ the 1416 OPP effectively.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
