@@ -217,6 +217,22 @@ A floor must leave real idle headroom, not merely "usually hold" — fceumm's fl
 (gambatte/GBC stays 408; it holds 54% util there). If a future game stutters periodically, check the
 gov log for this oscillation signature first.
 
+## D23 — The governor was blind to real slowdowns; fixed with period-based slip + failed-floor memory (2026-07-01)
+Contra stayed slow at the 600 floor with **zero overruns logged** ("way better" pinned at 1008 = clock-
+bound, yet the detector saw nothing). Two compounding blind spots, fixed in `api.c`/`governor.c`:
+1. **The slip signal measured only pre-present work.** `frame_work_us` stops at `GFX_flip` entry, so
+   `PLAT_flip`'s CPU cost (GL texture upload + PowerVR driver submission — expensive at low clocks)
+   was invisible: work "under budget," vblank missed anyway. And the PowerVR stack **late-swaps**
+   rather than snapping to 33ms, so the game floats at ~50-55fps (18-22ms periods). Fix: slip = frame
+   PERIOD > core budget + ~6% (`GFX_setFrameBudget` tracks the core's real fps, incl. AV re-sync).
+2. **The controller had no memory** — 4 clean ticks and it sank right back into the clock that just
+   failed (600↔816 limit cycle, one slowdown burst per cycle). Fix: `fail_khz`/`fail_hold` — a ceiling
+   that slips isn't re-probed for ~60s (`GOV_FAIL_HOLD`), then one probe is allowed (scene may have
+   lightened). Unit tests extended pass (`make test-governor`).
+Result: Contra rides a steady 816 ceiling (stock max 1800 — no OC), schedutil still dips to 600 in
+light moments, temp unchanged (36-37°C), gameplay confirmed right. The thesis is "lowest clock that
+HOLDS FRAME RATE" — a detector that can't see dropped frames silently optimizes the wrong half.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
