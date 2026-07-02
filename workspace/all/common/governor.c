@@ -22,6 +22,9 @@ void PLAT_setCPUMaxFreq(int khz);
 #define GOV_STEP_KHZ   216000  // one real OPP step (MEASURED gaps 192-216MHz; 108k snapped back up)
 #define GOV_UP_DWELL   1       // ticks of slip before climbing (climb fast)
 #define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
+#define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
+                               // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
+                               // -> 600 slip -> ... = periodic slowdown bursts; Contra 2026-07-01)
 
 // CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
@@ -49,6 +52,8 @@ void gov_init(GovState* st, const GovProfile* p) {
 	st->ceil_khz = p->f_max; // start high so the first frames never starve; sink from there
 	st->slip_run = 0;
 	st->slack_run = 0;
+	st->fail_khz = 0;
+	st->fail_hold = 0;
 }
 
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
@@ -60,8 +65,13 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		return st->ceil_khz;
 	}
 
+	// failed-floor memory decays each tick; on expiry allow one re-probe (scene may have lightened)
+	if (st->fail_hold > 0 && --st->fail_hold == 0) st->fail_khz = 0;
+
 	if (frame_overrun) {
-		// 2) need more performance — climb fast
+		// 2) need more performance — climb fast, and remember the ceiling that proved too low
+		if (st->ceil_khz > st->fail_khz) st->fail_khz = st->ceil_khz;
+		st->fail_hold = GOV_FAIL_HOLD;
 		st->slip_run++;
 		st->slack_run = 0;
 		if (st->slip_run >= GOV_UP_DWELL && st->ceil_khz < p->f_max) {
@@ -70,13 +80,16 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 			st->slip_run = 0;
 		}
 	} else {
-		// 3) have slack — probe downward (the cold win), but only when cool enough
+		// 3) have slack — probe downward (the cold win), but only when cool enough and not
+		//    back into a ceiling that recently slipped (see GOV_FAIL_HOLD)
 		st->slack_run++;
 		st->slip_run = 0;
 		int cool_enough = (temp_c < 0) || (temp_c <= GOV_T_TARGET_C);
-		if (st->slack_run >= GOV_DN_DWELL && cool_enough && st->ceil_khz > p->f_min) {
-			st->ceil_khz -= GOV_STEP_KHZ;
-			if (st->ceil_khz < p->f_min) st->ceil_khz = p->f_min;
+		int next_khz = st->ceil_khz - GOV_STEP_KHZ;
+		if (next_khz < p->f_min) next_khz = p->f_min;
+		int not_failed = (st->fail_hold == 0) || (next_khz > st->fail_khz);
+		if (st->slack_run >= GOV_DN_DWELL && cool_enough && not_failed && st->ceil_khz > p->f_min) {
+			st->ceil_khz = next_khz;
 			st->slack_run = 0;
 		}
 	}
