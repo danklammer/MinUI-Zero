@@ -1803,7 +1803,7 @@ static void PWR_waitForWake(void) {
 				sleep_ticks += 60000; // check again in a minute
 				continue;
 			}
-			if (PLAT_supportsDeepSleep() && exists(DEEP_SLEEP_PATH)) { // opt-in only (see DEEP_SLEEP_PATH)
+			if (PLAT_supportsDeepSleep() && !exists(DEEP_SLEEP_OFF_PATH)) { // ON by default; opt-out via the Deep Sleep tool
 				int ret = PWR_deepSleep();
 				if (ret==0) {
 					return; // suspended and resumed

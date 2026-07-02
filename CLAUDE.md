@@ -125,7 +125,8 @@ Shipped + on-device-validated (2026-07-01, on `integration`, build `MinUI-202607
   ceiling, `schedutil` picks beneath it, measured OPP values, capped at the verified-stock 1.8 GHz OPP
   (2.0 GHz OC dropped). **Race-to-idle** (`DECISIONS` D14): the ceiling must not force `schedutil` below
   the clock where it finishes-the-frame-and-idles. ~4-5°C cooler than stock, validated GBC→PS1.
-- **Deep sleep** — validated on-device (33→27°C, clean resume) + enabled (`enable-deep-sleep` opt-in).
+- **Deep sleep** — validated on-device (33→27°C, clean resume). **ON by default** (2026-07-01); opt-out
+  via the Deep Sleep tool (`disable-deep-sleep` flag).
 - **Radios + LEDs off** by default (`boot.sh`); **QoL** #4 (bail on failed `core.load_game`) + #6
   (`SET_SYSTEM_AV_INFO`/`SET_GEOMETRY` re-sync) in `minarch.c`; `-O3` pinned cores; drift-free pacer.
 - **Measured:** ~6h battery on GB (`charge_counter`); CPU OPP floor = **408 MHz** (no lower step — so a

@@ -21,7 +21,7 @@
 #define BIN_PATH SYSTEM_PATH "/bin"
 #define RECENT_PATH SHARED_USERDATA_PATH "/.minui/recent.txt"
 #define SIMPLE_MODE_PATH SHARED_USERDATA_PATH "/enable-simple-mode"
-#define DEEP_SLEEP_PATH SHARED_USERDATA_PATH "/enable-deep-sleep" // opt-in: deep sleep OFF unless this exists
+#define DEEP_SLEEP_OFF_PATH SHARED_USERDATA_PATH "/disable-deep-sleep" // deep sleep is ON by default; this file opts out (Deep Sleep tool)
 #define AUTO_RESUME_PATH SHARED_USERDATA_PATH "/.minui/auto_resume.txt"
 #define AUTO_RESUME_SLOT 9
 

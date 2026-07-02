@@ -20,7 +20,7 @@ substantial engineering earns those thermals — but never a new user-facing fea
   overclocks** (capped at the verified-stock 1.8 GHz OPP).
 - **💤 Deep-sleep** — real suspend-to-RAM (ported from [zhaofengli](https://github.com/zhaofengli/MinUI)),
   so an idle device goes genuinely *cold* (measured 33→27°C) and resumes where you left off instead of
-  powering off. Opt-in (`enable-deep-sleep` flag).
+  powering off. On by default; the **Deep Sleep** tool (Extras) turns it off.
 - **🔋 Radios & LEDs off** — MinUI has no networking, so wifi/Bluetooth and the ambient RGB LEDs are off
   by default. Less idle drain and heat, zero features lost.
 - **⚙️ Tuned cores + pacing** — stock cores rebuilt `-O3` and pinned to reproducible revisions;
