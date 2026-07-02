@@ -208,20 +208,14 @@ static uint32_t frame_start = 0;
 static int frame_overran = 0; // closed-loop governor: did the last frame's CPU work exceed the budget?
 static uint64_t frame_start_us = 0; // benchmark telemetry: us timestamp at frame start
 static uint32_t frame_work_us = 0;  // us of CPU work from GFX_startFrame to GFX_flip
-static uint32_t frame_budget_us = 16667; // set from the core's real fps via GFX_setFrameBudget
-void GFX_setFrameBudget(int us) {
-	if (us > 0) frame_budget_us = (uint32_t)us;
-}
 void GFX_startFrame(void) {
-	uint64_t now_us = getMicroseconds();
-	// vsync-slip detection: frame_work_us can't see PLAT_flip's CPU cost (GL texture upload +
-	// driver submission — expensive at low clocks), so "work under budget" can still miss the
-	// vblank. The frame PERIOD tells the truth: healthy = the core's budget (16.7ms @60fps,
-	// 20ms @50fps); a pipeline that can't hold floats above it (~18-22ms = 50-55fps, the Contra
-	// case — PowerVR late-swaps rather than snapping to 33ms). Threshold = budget + ~6% jitter.
-	frame_overran = (frame_start_us && (now_us - frame_start_us) > frame_budget_us + frame_budget_us/16);
+	// NOTE: an earlier per-frame PERIOD check here (frame gap vs core budget) was removed — the
+	// pipeline is bursty by design (audio-block pacing + GL buffering), so a healthy 60fps
+	// average still contains >17ms gaps and the check false-slipped every system to its max
+	// ceiling (clean sweep, 2026-07-02). The governor's slowdown signal is the core generation
+	// rate (cpu_double vs core.fps in minarch's gov tick) — jitter-immune ground truth.
 	frame_start = SDL_GetTicks();
-	frame_start_us = now_us;
+	frame_start_us = getMicroseconds();
 }
 uint32_t GFX_getFrameWorkUs(void) {
 	return frame_work_us;
@@ -233,10 +227,10 @@ int GFX_didOverrun(void) {
 void GFX_flip(SDL_Surface* screen) {
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
-	// governor frame-slip signal, us precision, OR'd with the period check set in GFX_startFrame
-	// (which catches PLAT_flip/GL cost this pre-present measurement can't see — the Contra case:
-	// work "under budget" at 600MHz yet visibly ~40fps because the present missed the vblank).
-	if (frame_start!=0 && frame_work_us > 16667) frame_overran = 1;
+	// per-frame pure-work slip at us precision. Feeds the governor's BUSY (hold, don't sink)
+	// signal — includes audio-pacing blocks inside core.run, which overcounts "work" on some
+	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
+	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
 	PLAT_flip(screen, should_vsync);
 }

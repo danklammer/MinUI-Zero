@@ -2196,7 +2196,6 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		if (info) {
 			core.fps = info->timing.fps;
 			core.sample_rate = info->timing.sample_rate;
-			if (core.fps>0) GFX_setFrameBudget((int)(1000000.0/core.fps)); // keep the slip threshold in sync
 			double a = info->geometry.aspect_ratio;
 			if (a<=0) a = (double)info->geometry.base_width / info->geometry.base_height;
 			core.aspect_ratio = a;
@@ -4829,7 +4828,6 @@ int main(int argc , char* argv[]) {
 	Gov_start(); // closed-loop governor takes the clock for gameplay (overrides static overclock)
 	// benchmark telemetry (no-op unless BENCH=1): budget_us from the core frame rate
 	tlm_init(tag_name, core.fps>0 ? (int)(1000000.0/core.fps) : 16667);
-	GFX_setFrameBudget(core.fps>0 ? (int)(1000000.0/core.fps) : 16667); // period-slip threshold tracks the core's real fps
 
 	sec_start = SDL_GetTicks();
 	while (!quit) {
@@ -4853,8 +4851,16 @@ int main(int argc , char* argv[]) {
 			pthread_mutex_unlock(&core_mx);
 		}
 		
-		if (show_menu) Menu_loop();
-		
+		if (show_menu) {
+			Menu_loop();
+			// reset the rate window: a second that spans the menu would read as a false
+			// generation-rate drop and spuriously climb the governor on menu exit
+			sec_start = SDL_GetTicks();
+			cpu_ticks = 0;
+			fps_ticks = 0;
+			cpu_double = 0;
+		}
+
 		if (toggle_thread) {
 			toggle_thread = 0;
 			if (was_threaded && !thread_video) {
@@ -4902,13 +4908,21 @@ int main(int argc , char* argv[]) {
 			// governor caps runaway spikes; it must NOT force schedutil below where it can finish-and-sleep.
 			if (gov_active) {
 				static int gov_frames = 0, gov_slips = 0;
-				if (GFX_didOverrun()) gov_slips++; // PROVEN signal (see note — pure-work sink ran warmer)
+				if (GFX_didOverrun()) gov_slips++; // per-frame pure-work slips: the "busy" (don't-sink) signal
 				if (++gov_frames >= GOV_TICK_FRAMES) {
-					int frame_overrun = (gov_slips*4 >= gov_frames);
+					// PRIMARY signal: the core's generation rate (core.run iterations/sec, from
+					// trackFPS) vs its target fps. This is the ground truth of "holding frame
+					// rate" and is immune to pipeline jitter — per-frame period checks false-slip
+					// on burst pacing (clean-sweep 2026-07-02: every system maxed its ceiling at
+					// 60-70% CPU). SECONDARY: heavy per-frame work = hold, don't probe lower
+					// (D14 race-to-idle: saturated-at-low-clock runs warmer, not cooler).
+					int fps_short = (cpu_double > 0 && core.fps > 0 && cpu_double < core.fps * 0.975);
+					int busy = (gov_slips*4 >= gov_frames);
+					int frame_overrun = fps_short ? GOV_SIGNAL_SLIP : (busy ? GOV_SIGNAL_BUSY : GOV_SIGNAL_SLACK);
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
-						LOG_info("gov: ceil %d->%d kHz (temp=%dC, overrun=%d)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun);
+						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, core.fps);
 					gov_frames = 0;
 					gov_slips = 0;
 				}

@@ -47,9 +47,14 @@ extern const GovProfile GOV_P_DEFAULT;
 // Does not write hardware (caller writes the initial ceiling, e.g. via PLAT_setCPUMaxFreq).
 void gov_init(GovState* st, const GovProfile* p);
 
+// Slip-signal values for gov_step's frame_overrun input.
+#define GOV_SIGNAL_SLACK 0 // holding frame rate with headroom -> may sink
+#define GOV_SIGNAL_SLIP  1 // NOT holding frame rate -> climb + remember the failed ceiling
+#define GOV_SIGNAL_BUSY  2 // holding, but saturated (no idle headroom) -> hold, don't probe lower
+
 // Pure controller step. No I/O.
 //   temp_c        : current temperature in Celsius, or <0 if unknown/unavailable.
-//   frame_overrun : 1 if the last batch of frames missed the frame budget.
+//   frame_overrun : a GOV_SIGNAL_* value (legacy 0/1 remain valid: slack/slip).
 // Returns the next commanded ceiling (kHz) and updates *st. Clamped to [p->f_min, p->f_max];
 // the thermal ceiling always wins.
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun);

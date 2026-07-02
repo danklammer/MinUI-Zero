@@ -159,7 +159,6 @@ int GFX_hdmiChanged(void);
 #define GFX_clearAll PLAT_clearAll // (void)
 
 void GFX_startFrame(void);
-void GFX_setFrameBudget(int us); // per-core frame budget for the period-based slip signal (default 16667 = 60fps)
 void GFX_flip(SDL_Surface* screen);
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame

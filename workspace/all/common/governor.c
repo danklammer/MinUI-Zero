@@ -68,7 +68,14 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	// failed-floor memory decays each tick; on expiry allow one re-probe (scene may have lightened)
 	if (st->fail_hold > 0 && --st->fail_hold == 0) st->fail_khz = 0;
 
-	if (frame_overrun) {
+	if (frame_overrun == GOV_SIGNAL_BUSY) {
+		// 2a) holding frame rate but with little headroom — do not probe lower (race-to-idle,
+		// D14/D21: saturated-at-a-low-clock is the anti-pattern), but nothing is slipping, so
+		// don't climb either.
+		st->slip_run = 0;
+		st->slack_run = 0;
+	}
+	else if (frame_overrun) {
 		// 2) need more performance — climb fast, and remember the ceiling that proved too low
 		if (st->ceil_khz > st->fail_khz) st->fail_khz = st->ceil_khz;
 		st->fail_hold = GOV_FAIL_HOLD;
