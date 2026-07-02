@@ -328,7 +328,8 @@ broken the software render path — #286 disables load-bearing GFX_resize/clearA
 **Adopted (5 total):** suspend-script hardening (#632), RETRO_ENVIRONMENT_SHUTDOWN handler (#699),
 `/tmp/stay_awake`+`/tmp/stay_alive` suspend-inhibit locks (#756), msettings accessor null-guards
 (#273 class — guarded at the source, all 8 accessors), supafaust thread affinity emu=0x3/ppu=0xc
-(#161, documented in the core's own README; A/B pending).
+(#161, documented in the core's own README; A/B on Aladdin: work within noise, pinned trended lower
+clocks with zero excursions above 600 — kept; the claimed big win is Mode7/SuperFX, untested).
 **Watch-items (symptom-tied, don't fix speculatively):** #461 2s-resume-mute (only if heard);
 MyMinUI `74934b9a` Config_readOptions in SET_CORE_OPTIONS (only if a core drops saved options).
 **Facts banked:** NextUI #300 independently converged on the 408 floor; Brick exposes
