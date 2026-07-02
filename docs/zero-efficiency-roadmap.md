@@ -86,3 +86,18 @@ on *every* rail (CPU+GPU+DRAM). Largest single lever, largest effort/risk. Defer
    (none on the test device) + a 10-min meter window — deferred, not blocking.
 3. Prototype the no-GL DRM page-flip present (①) and measure GPU-dark savings — the marquee win.
 4. DRAM cap (④) + frame-pacing (⑤) as follow-ons; DTB undervolt (⑥) as the long game.
+
+## 2026-07-01 — SWEEP COMPLETE: final disposition of every lever
+- **① no-GL present:** GPU-dark **menu** SHIPPED (`ZERO_FB_PRESENT`, PowerVR suspends, ~26°C).
+  GPU-dark **games** measured exact break-even vs GLES → shelved. DE `/dev/disp` hardware-scale layer:
+  **probed unavailable** (GET_CONFIG2 returns empty on this kernel; display is legacy fb0-only). CLOSED.
+- **④ DRAM cap:** `dramfreq` DT node exists but **no driver bound**, no devfreq class anywhere. CLOSED
+  (not tunable on the stock kernel).
+- **⑤ pacing spins:** verified minarch sleeps (54% util in-game — a vblank busy-spin would pin ~100%).
+  Non-issue. CLOSED.
+- **⑥ DTB undervolt:** still the only big lever left. Deferred (effort/risk).
+- **Shipped instead (measured):** frontend `-O3 -mcpu=cortex-a53` (−3.3% CPU; was accidentally `-Os`),
+  keymon 65→0 idle wakeups/sec (blocking `poll()` + Brick mute is hardware — thread skipped),
+  audio device closed in faux-sleep (~7%→0), targeted `fsync`, `noatime`, model-detect cache.
+- **Also closed by measurement:** FMIN floors (D21) and core hotplug (D22) — both zero-win.
+Next: battery re-baseline post-sweep; then reliability soak (pillars 4/5) — the efficiency chapter is done.
