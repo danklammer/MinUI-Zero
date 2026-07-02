@@ -22,6 +22,10 @@
 #define RECENT_PATH SHARED_USERDATA_PATH "/.minui/recent.txt"
 #define SIMPLE_MODE_PATH SHARED_USERDATA_PATH "/enable-simple-mode"
 #define DEEP_SLEEP_OFF_PATH SHARED_USERDATA_PATH "/disable-deep-sleep" // deep sleep is ON by default; this file opts out (Deep Sleep tool)
+// Suspend-inhibit lock files (idea: NextUI #756). tmpfs, so they self-clear on reboot.
+// Touch from scripts/harnesses that need the device to stay up (sweeps, benches, deploys).
+#define STAY_AWAKE_PATH "/tmp/stay_awake" // blocks autosleep entirely (no screen-off, no sleep)
+#define STAY_ALIVE_PATH "/tmp/stay_alive" // blocks the deep-sleep escalation only (light sleep still ok)
 #define AUTO_RESUME_PATH SHARED_USERDATA_PATH "/.minui/auto_resume.txt"
 #define AUTO_RESUME_SLOT 9
 
