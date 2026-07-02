@@ -125,10 +125,12 @@ static inline void SaveSettings(void) {
 }
 
 int GetBrightness(void) { // 0-10
+	if (!settings) return 0; // callable before InitSettings (NextUI #273 class)
 	return settings->brightness;
 }
 void SetBrightness(int value) {
-	
+	if (!settings) return;
+
 	int raw;
 	if (is_brick) {
 		switch (value) {
@@ -166,10 +168,12 @@ void SetBrightness(int value) {
 }
 
 int GetVolume(void) { // 0-20
+	if (!settings) return 0;
 	if (settings->mute) return 0;
 	return settings->jack ? settings->headphones : settings->speaker;
 }
 void SetVolume(int value) { // 0-20
+	if (!settings) return;
 	if (settings->mute) return SetRawVolume(0);
 	// if (settings->hdmi) return;
 	
@@ -234,11 +238,13 @@ void SetRawVolume(int val) { // 0-100
 
 // monitored and set by thread in keymon
 int GetJack(void) {
+	if (!settings) return 0;
 	return settings->jack;
 }
 void SetJack(int value) {
+	if (!settings) return;
 	printf("SetJack(%i)\n", value); fflush(stdout);
-	
+
 	settings->jack = value;
 	SetVolume(GetVolume());
 }
@@ -258,9 +264,11 @@ void SetHDMI(int value) {
 	// else SetVolume(GetVolume()); // restore
 }
 int GetMute(void) {
+	if (!settings) return 0; // latent null-deref pre-InitSettings (NextUI #273)
 	return settings->mute;
 }
 void SetMute(int value) {
+	if (!settings) return;
 	settings->mute = value;
 	if (settings->mute) SetRawVolume(0);
 	else SetVolume(GetVolume());
