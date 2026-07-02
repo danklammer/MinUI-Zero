@@ -59,6 +59,15 @@ void gov_init(GovState* st, const GovProfile* p);
 // the thermal ceiling always wins.
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun);
 
+// Predictive sink gate (pure, unit-tested). Where the controller would sink next
+// (one OPP step below the current ceiling, clamped to f_min); and whether the workload
+// would still fit there: frame work scales ~ inversely with clock, so predicted p95 at
+// the lower clock is p95_us * cur/next. Fits = predicted < budget * 85% — the 15% idle
+// headroom is the quantitative form of D14's race-to-idle rule (never sink into saturation).
+// Callers feed PURE work p95 (audio-pacing wait excluded) or the gate over-holds.
+int gov_sink_target(const GovState* st, const GovProfile* p);
+int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us);
+
 // Device entry point: read temp, run gov_step(), and write the ceiling via
 // PLAT_setCPUMaxFreq(). Honors GOV_DISABLE=1 (no-op). Call once per GOV_TICK_FRAMES.
 void gov_tick(GovState* st, const GovProfile* p, int frame_overrun);

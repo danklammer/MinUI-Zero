@@ -150,6 +150,40 @@ static void test_boundary_no_limit_cycle(void) {
 	printf("  dips into failing clock: %d over %d ticks (old controller: ~120)\n", dips, TICKS);
 }
 
+// ---- scenario 3c: predictive sink gate (D24 refinement) ----
+// gov_sink_fits: predicted p95 at the lower clock (p95 * cur/next) must fit 85% of budget.
+// Validated against measured device data: Contra@Low fits 408, PS1 settles at 1416.
+static void test_predictive_sink_gate(void) {
+	printf("[sink-gate] predictive fit reproduces the measured per-system sweet spots\n");
+	// Contra@Low measured p95 ~7500us at 600 -> predicted 11029 at 408 < 14166 (85%% of 16667): fits
+	CHECK(gov_sink_fits(600000, 408000, 7500, 16667) == 1, "Contra-shape should fit at 408");
+	// PS1 measured pure p95 ~12000us at 1800 (arithmetic ladder: 1800 -> 1584 -> 1368):
+	CHECK(gov_sink_fits(1800000, 1584000, 12000, 16667) == 1, "PS1 should fit at 1584");
+	CHECK(gov_sink_fits(1584000, 1368000, 13636, 16667) == 0, "PS1 must NOT sink to 1368 (D14 trap)"); // 12000*1800/1584
+	// guards
+	CHECK(gov_sink_fits(600000, 600000, 99999, 16667) == 1, "not-a-sink is always allowed");
+	CHECK(gov_sink_fits(600000, 408000, 0, 16667) == 1, "no work data must not block (fps signal guards)");
+
+	// full trace: PS1-shaped workload — p95 scales with the live ceiling from a 12ms@1800 base.
+	// The controller's ladder is arithmetic (1800-216=1584); on device the kernel quantizes a
+	// 1584 ceiling down to the 1416 OPP — i.e. settling at 1584 IS the D14-validated 1416 spot.
+	const GovProfile* p = &GOV_P_PS1; // 1008000..1800000
+	GovState st; gov_init(&st, p);
+	int min_seen = p->f_max;
+	for (int i = 0; i < 200; i++) {
+		long long p95 = 12000LL * p->f_max / st.ceil_khz;      // work at the current ceiling
+		int fps_short = (st.ceil_khz < 1584000);               // below the 1416-OPP band the game drops rate
+		int next = gov_sink_target(&st, p);
+		int sig = fps_short ? GOV_SIGNAL_SLIP
+		        : (gov_sink_fits(st.ceil_khz, next, (int)p95, 16667) ? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY);
+		gov_step(&st, p, 45 /*cool*/, sig);
+		if (st.ceil_khz < min_seen) min_seen = st.ceil_khz;
+	}
+	CHECK(st.ceil_khz == 1584000, "PS1 trace should settle at 1584 (=1416 OPP effective), got %d", st.ceil_khz);
+	CHECK(min_seen >= 1584000, "PS1 trace must never probe below 1584 (gate holds), dipped to %d", min_seen);
+	printf("  PS1 trace settled at %d (kernel quantizes to the 1416 OPP; never below %d)\n", st.ceil_khz, min_seen);
+}
+
 // ---- scenario 4: real workload converges to the lowest stable clock (a saving) ----
 static void test_converges_to_lowest_stable(void) {
 	printf("[converge] mid workload settles at/above requirement but below f_max\n");
@@ -188,6 +222,7 @@ int main(void) {
 	test_hot_caps_below_max();
 	test_oscillation();
 	test_boundary_no_limit_cycle();
+	test_predictive_sink_gate();
 	test_converges_to_lowest_stable();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");

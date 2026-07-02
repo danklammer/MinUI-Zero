@@ -103,6 +103,24 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	return st->ceil_khz;
 }
 
+// ---- predictive sink gate (pure; see governor.h) ----
+#define GOV_SINK_MARGIN_PCT 85 // sink only if predicted p95 fits this % of the frame budget
+
+int gov_sink_target(const GovState* st, const GovProfile* p) {
+	int next = st->ceil_khz - GOV_STEP_KHZ;
+	if (next < p->f_min) next = p->f_min;
+	return next;
+}
+
+int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us) {
+	if (next_khz <= 0 || cur_khz <= 0 || budget_us <= 0) return 0;
+	if (next_khz >= cur_khz) return 1;               // not actually sinking
+	if (p95_pure_us <= 0) return 1;                  // no work data -> don't block (fps signal still guards)
+	// predicted post-sink p95: work scales ~ inversely with clock (CPU-bound frame)
+	long long predicted = (long long)p95_pure_us * cur_khz / next_khz;
+	return predicted < (long long)budget_us * GOV_SINK_MARGIN_PCT / 100;
+}
+
 void gov_tick(GovState* st, const GovProfile* p, int frame_overrun) {
 	// Safety hatch: GOV_DISABLE=1 leaves the static menu clock in charge.
 	static int disabled = -1;

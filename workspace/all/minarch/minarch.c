@@ -4948,36 +4948,54 @@ int main(int argc , char* argv[]) {
 		// own clock). A batch "overran" when >=25% of its frames missed the budget,
 		// so rare hiccups don't pin the clock high (threshold is a tuning knob).
 		if (!show_menu && (gov_active || tlm_enabled())) {
-			// Bench metric: PURE CPU work = frame work (startFrame->flip) MINUS the audio-pacing block
-			// (SND_batchSamples blocking on a full buffer during core.run). Used ONLY for the bench
-			// percentiles below. (thread_video sync waits are not subtracted, so it's cleaner-than-raw,
-			// not perfectly pure.)
-			//
-			// NOTE: the GOVERNOR deliberately keeps its original GFX_didOverrun() signal. An on-device
-			// test (2026-07-01) showed that sinking the ceiling on the pure-work signal capped schedutil
-			// BELOW its race-to-idle sweet spot (PS1 forced to 100% util at 1008 instead of 1416-then-idle)
-			// and ran WARMER, not cooler — "runs fine but feels warmer." So the audio-pacing "false slips"
-			// that held the ceiling high were actually PROTECTIVE (they let the CPU race-to-idle). The
-			// governor caps runaway spikes; it must NOT force schedutil below where it can finish-and-sleep.
+			// PURE CPU work = frame work (startFrame->flip) MINUS the audio-pacing block
+			// (SND_batchSamples blocking on a full buffer during core.run) — blocked frames are
+			// pacing, not load. Used by both the governor's predictive sink gate and the bench
+			// percentiles. (thread_video sync waits are not subtracted: cleaner-than-raw, not perfect.)
+			// History (D14/D23/D24): sinking on raw work ran PS1 warmer (saturation, no race-to-idle);
+			// the blunt busy-hold then over-held NES/PS1 one OPP step high. The predictive gate
+			// (gov_sink_fits: p95 pure work scaled to the next clock must fit 85% of budget) replaces
+			// both — quantitative race-to-idle instead of a binary guess.
 			if (gov_active) {
-				static int gov_frames = 0, gov_slips = 0;
-				if (GFX_didOverrun()) gov_slips++; // per-frame pure-work slips: the "busy" (don't-sink) signal
+				static int gov_frames = 0;
+				static long gov_prev_wait_ms = 0;
+				static uint32_t gov_work[GOV_TICK_FRAMES];
+				// per-frame PURE work: frame work minus the audio-pacing block inside core.run
+				// (blocked frames are pacing, not load — counting them as work over-holds the sink)
+				{
+					SND_Stats as; SND_getStats(&as);
+					long pace_us = (as.wait_ms - gov_prev_wait_ms) * 1000; gov_prev_wait_ms = as.wait_ms;
+					uint32_t raw_us = GFX_getFrameWorkUs();
+					gov_work[gov_frames] = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
+				}
 				if (++gov_frames >= GOV_TICK_FRAMES) {
 					// PRIMARY signal: the core's generation rate (core.run iterations/sec, from
-					// trackFPS) vs its target fps. This is the ground truth of "holding frame
-					// rate" and is immune to pipeline jitter — per-frame period checks false-slip
-					// on burst pacing (clean-sweep 2026-07-02: every system maxed its ceiling at
-					// 60-70% CPU). SECONDARY: heavy per-frame work = hold, don't probe lower
-					// (D14 race-to-idle: saturated-at-low-clock runs warmer, not cooler).
+					// trackFPS) vs its target fps — jitter-immune ground truth of game speed.
+					// SECONDARY: the PREDICTIVE SINK GATE — sort the batch's pure work, take p95,
+					// and only allow a sink if the workload would still fit at the lower clock
+					// with >=15% idle headroom (gov_sink_fits: the quantitative form of D14's
+					// race-to-idle rule; replaces the blunt busy-hold that kept NES/PS1 one OPP
+					// step above their proven minimums).
 					int fps_short = (cpu_double > 0 && core.fps > 0 && cpu_double < core.fps * 0.975);
-					int busy = (gov_slips*4 >= gov_frames);
-					int frame_overrun = fps_short ? GOV_SIGNAL_SLIP : (busy ? GOV_SIGNAL_BUSY : GOV_SIGNAL_SLACK);
+					int frame_overrun;
+					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
+					else {
+						for (int a=1; a<GOV_TICK_FRAMES; a++) { // insertion sort (30 ints, once per 0.5s)
+							uint32_t v = gov_work[a]; int b = a-1;
+							while (b>=0 && gov_work[b]>v) { gov_work[b+1]=gov_work[b]; b--; }
+							gov_work[b+1] = v;
+						}
+						int p95 = (int)gov_work[GOV_TICK_FRAMES - 2]; // ~93rd percentile of 30
+						int budget_us = core.fps > 0 ? (int)(1000000.0 / core.fps) : 16667;
+						int next = gov_sink_target(&gov_state, &gov_profile);
+						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
+							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+					}
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, core.fps);
 					gov_frames = 0;
-					gov_slips = 0;
 				}
 			}
 			if (tlm_enabled()) { // stats compute lives here: telemetry is its only consumer
