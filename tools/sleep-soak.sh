@@ -8,7 +8,9 @@
 # Usage: sh /tmp/sleep-soak.sh [cycles]   (default 3 = smoke test; 50 = overnight soak)
 
 CYCLES=${1:-3}
-OUT=/tmp/soak.log
+# log to SD, not /tmp: repeated suspends can wedge wifi (dev-mode), and rescuing results
+# from tmpfs without a network means a reboot that erases them (learned 2026-07-02)
+OUT=/mnt/SDCARD/.userdata/tg5040/logs/soak.log
 RTC=/sys/class/rtc/rtc0/wakealarm
 SUSPEND=/mnt/SDCARD/.system/tg5040/bin/suspend
 BAT=/sys/class/power_supply/axp2202-battery
