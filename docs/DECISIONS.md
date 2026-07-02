@@ -233,6 +233,27 @@ Result: Contra rides a steady 816 ceiling (stock max 1800 — no OC), schedutil 
 light moments, temp unchanged (36-37°C), gameplay confirmed right. The thesis is "lowest clock that
 HOLDS FRAME RATE" — a detector that can't see dropped frames silently optimizes the wrong half.
 
+## D24 — Period-based slip detection was over-sensitive; the true signal is the core generation rate (2026-07-02)
+Two clean automated sweeps (100%/95% battery, discharging, no USB — and the identical "dirty" run
+that falsified the MTP-contamination theory) showed the D23 period detector false-slipping EVERY
+system to its max ceiling at 60-70% CPU: the pipeline is bursty by design (audio-block pacing + GL
+buffering), so a flawless 60fps average still contains >17ms frame gaps. Zelda "needed" 1008 by
+period while an hour of validated play proved 408.
+Redesign (`minarch.c` gov tick + `governor.h` GOV_SIGNAL_*):
+- **SLIP (climb)** = core generation rate short of target: `cpu_double < core.fps × 0.975`
+  (core.run iterations/sec from trackFPS — jitter-immune ground truth of game speed; rate window
+  reset on menu exit to avoid a false drop).
+- **BUSY (hold, don't sink)** = ≥25% of frames' pure work over budget — D14's protection against
+  probing into saturation (audio-block noise overcounts work; that bias is protective).
+- **SLACK (may sink)** = neither; fail-memory (D23) still bounds boundary re-probes.
+Decisive sweep: GBC 45×408 `gen=59.6/59.7` (proven baseline restored), MD 600@75%, GBA 600@71%,
+**supafaust holds full rate at 600 (131% CPU = multi-threaded across the quad — the saturation
+scare was detector artifact; it may be the coolest SNES core)**. Known refinement: the BUSY hold
+keeps NES/PS1 one OPP step above their proven minimums (1008 vs 816, 1800 vs 1416) — safe-direction
+conservatism; tune only with BENCH telemetry data, not guesses.
+Meta-lesson: three detector designs in one day, each falsified by measurement, until the signal
+matched the thesis itself — measure "is the game running at full speed," not proxies for it.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
