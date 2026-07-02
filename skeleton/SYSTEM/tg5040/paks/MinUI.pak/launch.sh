@@ -70,6 +70,16 @@ if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	echo 0 > /sys/class/led_anim/max_scale_lr
 	echo 0 > /sys/class/led_anim/max_scale_f1f2
 fi
+# ...and keep them off: trimui_inputd re-arms the scales from /mnt/UDISK/system.json on every
+# button press (verified on-device 2026-07-01 — first keypress after boot relit the LEDs at
+# scale 60). Zero the stock config too, BEFORE inputd starts, so it reads "off" at startup.
+STOCK_JSON=/mnt/UDISK/system.json
+if [ -f "$STOCK_JSON" ]; then
+	sed -i -e "s/\"topled\":[[:space:]]*[0-9]*/\"topled\":\t0/" \
+	       -e "s/\"shoulderled\":[[:space:]]*[0-9]*/\"shoulderled\":\t0/" \
+	       -e "s/\"f1f2led\":[[:space:]]*[0-9]*/\"f1f2led\":\t0/" \
+	       -e "s/\"ledswitch\":[[:space:]]*[0-9]*/\"ledswitch\":\t0/" "$STOCK_JSON"
+fi
 
 # set default usb mode
 usb_device.sh
