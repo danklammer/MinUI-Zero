@@ -271,6 +271,15 @@ fail-memory handle any climb). **QuickNES** measured 2.6× lighter than fceumm-L
 OPP floor like gambatte; kept as a validated option (fceumm-Low stays default for mapper coverage —
 swap only if a compat-vs-cost case emerges). Worth upstreaming the sndquality finding to MinUI.
 
+## D26 — Option-cost audit of the remaining suspects: dithering + h_filter measured FREE, keep both (2026-07-02)
+Same BENCH A/B harness, 130s runs: **PS1 `pcsx_rearmed_dithering`** enabled-vs-disabled = p50 9.0 vs
+8.9ms, identical clock profile — the NEON GPU plugin dithers for free; keep the authentic look.
+**supafaust `h_filter`** blend-vs-plain-512 = 8.6 vs 8.4ms — `phr256blend_auto512` only blends in
+512-wide hires mode (rare); keep the core default. gambatte color-correction not tested (GBC already
+runs 65%@408 — nothing to win). Audit tally: one conviction (D25, 400MHz), two acquittals, each
+closed in ~10 min. The per-option A/B loop (guarded sweep + BENCH CSVs) is now the standard way to
+answer "does this option cost anything" — measure, don't debate.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
