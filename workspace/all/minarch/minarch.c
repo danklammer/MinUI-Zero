@@ -2196,6 +2196,7 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		if (info) {
 			core.fps = info->timing.fps;
 			core.sample_rate = info->timing.sample_rate;
+			if (core.fps>0) GFX_setFrameBudget((int)(1000000.0/core.fps)); // keep the slip threshold in sync
 			double a = info->geometry.aspect_ratio;
 			if (a<=0) a = (double)info->geometry.base_width / info->geometry.base_height;
 			core.aspect_ratio = a;
@@ -4828,6 +4829,7 @@ int main(int argc , char* argv[]) {
 	Gov_start(); // closed-loop governor takes the clock for gameplay (overrides static overclock)
 	// benchmark telemetry (no-op unless BENCH=1): budget_us from the core frame rate
 	tlm_init(tag_name, core.fps>0 ? (int)(1000000.0/core.fps) : 16667);
+	GFX_setFrameBudget(core.fps>0 ? (int)(1000000.0/core.fps) : 16667); // period-slip threshold tracks the core's real fps
 
 	sec_start = SDL_GetTicks();
 	while (!quit) {

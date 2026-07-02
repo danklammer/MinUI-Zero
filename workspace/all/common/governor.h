@@ -30,6 +30,8 @@ typedef struct {
 	int ceil_khz;  // current commanded frequency ceiling (kHz) -> scaling_max_freq
 	int slip_run;  // consecutive ticks of frame overrun (slip)
 	int slack_run; // consecutive ticks of frame slack
+	int fail_khz;  // highest ceiling that recently slipped — don't sink back to it while fail_hold>0
+	int fail_hold; // ticks until we may re-probe at/below fail_khz (prevents 600<->816 limit cycling)
 } GovState;
 
 // Named brackets from docs/thermal-governor-design.md (ASSUMED — verify the OPP ladder and
