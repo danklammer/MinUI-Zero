@@ -210,6 +210,13 @@ C-state residency, fragile on heavy scenes, nothing gained. The shipped per-syst
 8-bit, 600 for 16-bit, 1008 for PS1) are already at the race-to-idle sweet spot — don't lower them
 without new evidence.
 
+**Field addendum (same day):** user-reported "serious slowdowns" in Contra (NES/fceumm) turned out to
+be the governor **limit-cycling** at the FC floor: `408 overrun → 624 clean → sink → 408 overrun → …`
+(visible in the FC log as alternating ceiling moves). Every re-probe of 408 = a burst of slow frames.
+A floor must leave real idle headroom, not merely "usually hold" — fceumm's floor raised 408→600
+(gambatte/GBC stays 408; it holds 54% util there). If a future game stutters periodically, check the
+gov log for this oscillation signature first.
+
 ## D22 — CPU core hotplug: exact break-even, closed (2026-07-01, on-device drain A/B)
 Offlining cpu2/3 for a light workload (Genesis attract loop, 12-min `charge_counter` windows,
 back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cpuidle` already
