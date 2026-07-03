@@ -10,13 +10,15 @@ measured on real hardware.
 
 ## What's different
 
-- GPU-dark menu — the launcher renders in software so the GPU powers down (~26°C)
-- Closed-loop governor — the lowest clock that holds frame rate, per game (never overclocks)
-- Deep sleep, default-on + soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras)
-- Zero idle waste — no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
-- Hard to break — bad-ROM bail, mid-game resolution changes, crash-safe saves
-- Tuned/pinned cores, drift-free pacing, `noatime`
-- Stock bugs fixed — NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves
+| Feature | Details |
+|---|---|
+| **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) |
+| **Closed-loop governor** | The lowest clock that holds frame rate, per game — never overclocks |
+| **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras) |
+| **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
+| **Hard to break** | Bad-ROM bail, mid-game resolution changes, crash-safe saves |
+| **Tuned everything** | Cores built for the chip and pinned, drift-free pacing, `noatime` |
+| **Stock bugs fixed** | NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves |
 
 **~7.5 hours on Game Boy** — up from ~6 before tuning.
 
