@@ -24,6 +24,9 @@ measured on real hardware.
   core ever crashes, your save RAM is written on the way down.
 - **⚙️ Tuned everything**<br>
   Cores built for the chip and pinned, drift-free frame pacing, `noatime` mounts.
+- **🐛 Stock bugs fixed**<br>
+  NES ran hot with crackling audio on every MinUI device (a config bug, found by measuring),
+  in-game quit menus hung, and the ambient LEDs quietly re-enabled themselves on keypress.
 
 **~7.5 hours on Game Boy** — up from ~6 before tuning.
 
