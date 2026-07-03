@@ -1,154 +1,62 @@
-MinUI Zero is a performance- and efficiency-focused fork of MinUI for the TrimUI Brick and TrimUI Smart Pro (tg5040). It keeps MinUI's simple, appliance-like experience while running cooler, leaner, and longer on battery. Only the TrimUI Brick / Smart Pro are supported; the multi-device install notes below apply to upstream MinUI.
+MinUI Zero is a performance-focused fork of MinUI for the TrimUI Brick and TrimUI Smart Pro. Runs cool, sleeps deep, lasts longer — same simple MinUI, tuned underneath, every change measured on real hardware.
 
-Source:
-https://github.com/danklammer/MinUI-Zero  (built on MinUI by Shaun Inman: https://github.com/shauninman/minui)
+Source and releases:
+https://github.com/danklammer/MinUI-Zero
+(built on MinUI by Shaun Inman: https://github.com/shauninman/MinUI)
+
+----------------------------------------
+What's different
+
+  Closed-loop governor  the lowest clock that holds frame rate, per game — never overclocks
+  GPU-dark menu         the launcher renders in software so the GPU powers down
+  Zero idle waste       no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
+  Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool in Extras)
+  Stock bugs fixed      NES ran hot with crackling audio, quit menus hung, LEDs re-lit themselves
+  Tuned everything      cores built for the chip and pinned, drift-free pacing
+  Hard to break         bad-ROM bail, mid-game resolution changes, crash-safe saves
+
+About 7.5 hours on Game Boy — up from about 6 before tuning.
+
+There is no CPU Speed setting: the governor measures each game's real frame rate every half second and finds the lowest clock that verifiably holds it. The machine answers that question better than a menu can.
 
 ----------------------------------------
 Installing
 
-PREFACE
+Only the TrimUI Brick and TrimUI Smart Pro are supported.
 
-MinUI has two essential parts: an installer/updater zip archive named "MinUI.zip" and a bootstrap file or folder with names that vary by platform.
-
-On devices that support two SD cards (eg. RG35XX) I will use the name "TF1" to refer to the card that goes into slot one of the device. All other instances of "SD card" or "primary card" refer to the card that goes into the second slot or to the sole SD card of devices that only support a single card. To be able to use MinUI from a single SD card on multiple devices you must install it on the second card of devices that support two SD cards.
-
-The primary card should be a reputable brand and freshly formatted as FAT32 (MBR).
-
-CAVEATS
-
-While MinUI can be updated from any device once installed, some devices require (minor) changes to NAND or TF1 (via the aforementioned bootstrap file or folder) and therefore need to be installed from the specific device before using. The same is true when trying to use an existing card in a new device of the same type. When in doubt, follow the installation instructions; if all the necessary bits are already installed, the installer will just act as an updater instead.
-
-ALL
-
-Preload the "Bios" and "Roms" folders then copy both to the root of your primary card.
-
-RGB30
-
-MinUI is meant to be used with Moss installed on the SD card that goes into the left slot (labeled TF-OS) of the RGB30. Download and flash the latest version:
-
-	https://github.com/shauninman/Moss/releases
-
-Copy "MinUI.zip" (without unzipping) to the root of the SD card that goes into the right slot (labeled TFGAME) of the RGB30.
-
-MAGICX XU MINI M
-
-MinUI is meant to be used with a heavily modified stock SD card that goes into the left slot (labeled TF1/INT). Download and flash the latest version:
-
-	https://github.com/shauninman/Moss-magicmini/releases
-
-Copy "MinUI.zip" (without unzipping) to the root of the SD card that goes into the right slot (labeled TF2/EXT).
-
-MAGICX MINI ZERO 28
-
-MinUI is meant to be used with Moss installed on the SD card that goes into the left slot (labeled TF1/INT). Download and flash the latest version:
-
-	https://github.com/shauninman/Moss-zero28/releases
-
-Copy the "magicx" folder and "MinUI.zip" (without unzipping) to the root of the SD card that goes into the right slot (labeled TF2/EXT).
-
-TRIMUI SMART / TRIMUI SMART PRO / TRIMUI BRICK
-
-Copy the "trimui" folder and "MinUI.zip" (without unzipping) to the root of the SD card.
-
-MIYOO MINI / MIYOO A30
-
-Copy the "miyoo" folder and "MinUI.zip" (without unzipping) to the root of the SD card.
-
-MIYOO MINI PLUS
-
-Copy the "miyoo354" folder and "MinUI.zip" (without unzipping) to the root of the SD card.
-
-If you have a device with working RTC, you can enable it by creating an empty file named "enable-rtc" (no extension) in "/.userdata/miyoomini/".
-
-MIYOO FLIP
-
-Copy the "miyoo355" folder and "MinUI.zip" (without unzipping) to the root of the SD card. Put the SD card into the right slot (beneath the power button).
-
-MIYOO MINI FLIP
-
-Copy the "miyoo285" folder and "MinUI.zip" (without unzipping) to the root of the SD card.
-
-M17
-
-Copy the "em_ui.sh" file and "MinUI.zip" (without unzipping) to the root of the SD card.
-
-RG35XX PLUS / RG35XX H / RG35XX 2024 / RG28XX / RG35XXSP / RG40XXH / RGCUBEXX / RG34XX / RG34XXSP
-
-MinUI is meant to be installed over a fresh copy of the stock Anbernic firmware. You can use the stock TF1 card, reports of its poor quality are greatly exaggerated and, as long as you are using the recommended two card setup, no userdata is stored on it. (Note that the PLUS/H/2024/SP stock TF1 is not compatible with the 28XX/40XXH and vice versa.)
-
-Copy "/rg35xxplus/dmenu.bin" (just the file) to the root of the "NO NAME" partition (FAT32 with an "anbernic" folder) of the TF1 card. Copy "MinUI.zip" (without unzipping) to the root of the TF2 card.
-
-GKD PIXEL / GKD MINI
-
-An important caveat: this device is not cross-compatible with other MinUI-supported devices because its firmware lives on the SD card and its presence trips up all the other devices.
-
-Backup your stock SD card (not just the "ROMS" partition but the entire thing). If you like to live on the edge just create a folder named "stock" on the "ROMS" partition and copy everything into that folder.
-
-Copy the "gkdpixel" folder and "MinUI.zip" (without unzipping) to the root of the "ROMS" partition of the SD card. (On the GKD Mini should be TF1.)
-
-Boot stock, navigate to the "APP" folder and launch "file manager". Then use the d-pad and A button to navigate to "/media/roms/gkdpixel". Highlight the "install.sh" file and press A to open a menu and select "Execute" to install MinUI.
-
-RG35XX (original)
-
-MinUI is meant to be installed over a fresh copy of the stock Anbernic firmware. You can use the stock TF1 card, reports of its poor quality are greatly exaggerated and, as long as you are using the recommended two card setup, no userdata is stored on it.
-
-Copy "/rg35xx/dmenu.bin" (just the file) to the root of the MISC partition of the TF1 card. Copy "MinUI.zip" (without unzipping) to the root of the TF2 card.
+Use a reputable SD card, freshly formatted as FAT32 (MBR). Preload the "Bios" and "Roms" folders (see below), then copy everything in this zip — the "trimui" folder, "MinUI.zip" (without unzipping), "Bios", "Roms", "Saves", and this README — to the root of the card. Insert the card and power on; MinUI Zero installs automatically.
 
 ----------------------------------------
 Updating
 
-ALL
-
-Copy "MinUI.zip" (without unzipping) to the root of the SD card containing your Roms.
+Copy a newer "MinUI.zip" (without unzipping) to the root of the SD card and power on. It updates in place; your roms, saves, and settings are untouched.
 
 ----------------------------------------
 Shortcuts
 
-For devices without a dedicated MENU button
-
-	RGB30: use L3 or R3 for MENU
-	M17:   use + or - for MENU
-
-RGB30 / MIYOO MINI PLUS / RG35XX (PLUS) / TRIMUI SMART PRO / TRIMUI BRICK / GKD PIXEL / MIYOO A30 / MAGICX XU MINI M / MIYOO FLIP / MAGICX MINI ZERO 28
-  
-  Brightness: MENU + VOLUME UP
-                  or VOLUME DOWN
-  
-MIYOO MINI / TRIMUI SMART / M17
-
-  Volume: SELECT + L or R
-  Brightness: START + L or R
-
-RGB30 / MIYOO MINI (PLUS) / RG35XX (PLUS) / TRIMUI SMART PRO / TRIMUI BRICK / GKD PIXEL / MIYOO A30 / MAGICX XU MINI M / MIYOO FLIP / MAGICX MINI ZERO 28
-  
+  Brightness: MENU + VOLUME UP or VOLUME DOWN
   Sleep: POWER
   Wake: POWER
-  
-TRIMUI SMART / M17
-  
-  Sleep: MENU (twice)
-  Wake: MENU
-
-TRIMUI SMART PRO / TRIMUI BRICK
-
-  Mute: FN switch (volume and rumble)
+  Mute: FN switch
 
 ----------------------------------------
-Quicksave & auto-resume
+Sleep, quicksave & auto-resume
 
-MinUI will create a quicksave when powering off in-game. The next time you power on the device it will automatically resume from where you left off. A quicksave is created when powering off manually or automatically after a short sleep. On devices without a POWER button (eg. the Trimui Smart or M17) press the MENU button twice to put the device to sleep before flipping the POWER switch.
+A short press of POWER sleeps the device. After two minutes asleep it suspends to RAM: the device goes fully cold and wakes instantly right where you left off. To disable suspend, run the "Deep Sleep" tool (in the extras zip) — sleep then behaves like stock MinUI and the device powers off on a timer instead.
+
+MinUI creates a quicksave when powering off in-game and resumes from it automatically on the next boot.
 
 ----------------------------------------
 Roms
 
-Included in this zip is a "Roms" folder containing folders for each console MinUI currently supports. You can rename these folders but you must keep the uppercase tag name in parentheses in order to retain the mapping to the correct emulator (eg. "Nintendo Entertainment System (FC)" could be renamed to "Nintendo (FC)", "NES (FC)", or "Famicom (FC)"). 
+The "Roms" folder contains a folder for each console. You can rename these folders but you must keep the uppercase tag in parentheses — it maps the folder to the correct emulator (eg. "Nintendo (FC)" or "Famicom (FC)" both work).
 
-When one or more folder share the same display name (eg. "Game Boy Advance (GBA)" and "Game Boy Advance (MGBA)") they will be combined into a single menu item containing the roms from both folders (continuing the previous example, "Game Boy Advance"). This allows opening specific roms with an alternate pak.
+When two folders share a display name (eg. "Game Boy Advance (GBA)" and "Game Boy Advance (MGBA)") they combine into a single menu item, letting you open specific roms with an alternate pak.
 
 ----------------------------------------
 Bios
 
-Some emulators require or perform much better with official bios. MinUI is strictly BYOB. Place the bios for each system in a folder that matches the tag in the corresponding "Roms" folder name (eg. bios for "Sony PlayStation (PS)" roms goes in "/Bios/PS/"),
+Some emulators require or run better with official bios files. MinUI Zero is strictly BYOB. Place each system's bios in the "Bios" folder under the matching tag (eg. PlayStation bios goes in "/Bios/PS/").
 
 Bios file names are case-sensitive:
 
@@ -164,13 +72,13 @@ Bios file names are case-sensitive:
 ----------------------------------------
 Disc-based games
 
-To streamline launching multi-file disc-based games with MinUI place your bin/cue (and/or iso/wav files) in a folder with the same name as the cue file. MinUI will automatically launch the cue file instead of navigating into the folder when selected, eg. 
+Place bin/cue (and/or iso/wav) files in a folder named after the cue file; MinUI launches the cue directly instead of opening the folder, eg.
 
   Harmful Park (English v1.0)/
     Harmful Park (English v1.0).bin
     Harmful Park (English v1.0).cue
 
-For multi-disc games, put all the files for all the discs in a single folder. Then create an m3u file in that folder (just a text file containing the relative path to each disc's cue file on a separate line) with the same name as the folder. Instead of showing the entire messy contents of the folder, MinUI will launch the appropriate cue file, eg. For a "Policenauts" folder structured like this:
+For multi-disc games, put every disc in one folder and add an m3u file (a text file listing each disc's cue on its own line) named after the folder, eg. a "Policenauts" folder:
 
   Policenauts (English v1.0)/
     Policenauts (English v1.0).m3u
@@ -179,19 +87,17 @@ For multi-disc games, put all the files for all the discs in a single folder. Th
     Policenauts (Japan) (Disc 2).bin
     Policenauts (Japan) (Disc 2).cue
 
-The m3u file would contain just:
+The m3u contains just:
 
   Policenauts (Japan) (Disc 1).cue
   Policenauts (Japan) (Disc 2).cue
 
-When a multi-disc game is detected the in-game menu's Continue item will also show the current disc. Press left or right to switch between discs.
-
-MinUI also supports chd files and official pbp files (multi-disc pbp files larger than 2GB are not supported). Regardless of the multi-disc file format used, every disc of the same game share the same memory card and save state slots.
+With a multi-disc game, the in-game menu's Continue item shows the current disc; press left or right to switch. chd and official pbp files are also supported (multi-disc pbp over 2GB is not). All discs of a game share the same memory card and save-state slots.
 
 ----------------------------------------
 Collections
 
-A collection is just a text file containing an ordered list of full paths to rom, cue, or m3u files. These text files live in the "Collections" folder at the root of your SD card, eg. "/Collections/Metroid series.txt" might look like this:
+A collection is a text file of full rom paths, one per line, living in "/Collections/" at the card root, eg. "/Collections/Metroid series.txt":
 
   /Roms/GBA/Metroid Zero Mission.gba
   /Roms/GB/Metroid II.gb
@@ -199,75 +105,29 @@ A collection is just a text file containing an ordered list of full paths to rom
   /Roms/GBA/Metroid Fusion.gba
 
 ----------------------------------------
-
 Display names
 
-Certain (unsupported arcade) cores require roms to use arcane file names. You can override the display name used throughout MinUI by creating a map.txt in the same folder as the files you want to rename. One line per file, `rom.ext` followed by a single tab followed by `Display Name`. You can hide a file by adding a `.` at the beginning of the display name. eg.
-	
+Override a file's display name by creating a map.txt in the same folder: one line per file, "rom.ext" then a single tab then "Display Name". Start the display name with "." to hide the file, eg.
+
   neogeo.zip	.Neo Geo Bios
   mslug.zip	Metal Slug
-  sf2.zip	Street Fighter II
 
 ----------------------------------------
 Simple mode
 
-Not simple enough for you (or maybe your kids)? MinUI has a simple mode that hides the Tools folder and replaces Options in the in-game menu with Reset. Perfect for handing off to littles (and olds too I guess). Just create an empty file named "enable-simple-mode" (no extension) in "/.userdata/shared/".
+MinUI Zero has a simple mode that hides the Tools folder and replaces Options with Reset in the in-game menu — perfect for handing off to kids. Create an empty file named "enable-simple-mode" (no extension) in "/.userdata/shared/".
 
 ----------------------------------------
 Advanced
 
-MinUI can automatically run a user-authored shell script on boot. Just place a file named "auto.sh" in "/.userdata/<DEVICE>/". If you're on Windows, make sure your text editor uses Unix line-endings (eg. `\n`), these devices usually choke on Windows line-endings (eg. `\r\n`).
+A user-authored shell script named "auto.sh" in "/.userdata/tg5040/" runs on every boot. Use Unix line-endings.
 
 ----------------------------------------
 Thanks
 
-To eggs, for his NEON scalers, years of top-notch example code, and patience in the face of my endless questions.
+MinUI Zero stands on MinUI by Shaun Inman — the launcher, the frontend, and the philosophy are his, as are the thanks owed to the wider community documented in upstream MinUI. Deep sleep was ported from zhaofengli's MinUI branch; techniques were borrowed from MyMinUI (Turro75) and NextUI (LoveRetro). MinUI Zero is an independent fork, not affiliated with or endorsed by any of them.
 
-Check out eggs' releases (includes source code): 
-
-  RG35XX https://www.dropbox.com/sh/3av70t99ffdgzk1/AAAKPQ4y0kBtTsO3e_Xlrhqha
-  Miyoo Mini https://www.dropbox.com/sh/hqcsr1h1d7f8nr3/AABtSOygIX_e4mio3rkLetWTa
-  Trimui Model S https://www.dropbox.com/sh/5e9xwvp672vt8cr/AAAkfmYQeqdAalPiTramOz9Ma
-
-To neonloop, for putting together the original Trimui toolchain from which I learned everything I know about docker and buildroot and is the basis for every toolchain I've put together since, and for picoarch, the inspiration for minarch.
-
-Check out neonloop's repos: 
-
-  https://git.crowdedwood.com
-
-To adixial and acmeplus and the entire muOS community, for sharing their discoveries for the h700 family of Anbernic devices.
-
-Check out muOS and Knulli:
-
-	https://muos.dev
-	https://knulli.org
-
-To fewt and the entire JELOS community, for JELOS (without which MinUI would not exist on the RGB30) and for sharing their knowledge with this perpetual Linux kernel novice.
-
-Check out JELOS:
-
-  https://github.com/JustEnoughLinuxOS/distribution
-
-To Steward, for maintaining exhaustive documentation on a plethora of devices:
-
-	https://steward-fu.github.io/website/
-
-To Gamma, for his efforts unlocking more performance on the MagicX XU Mini M (before we all realized its RG3562 was surreptitiously an RK3266).
-
-Check out his repos (including GammaOS):
-
-	https://github.com/TheGammaSqueeze/
-
-To BlackSeraph, for introducing me to chroot.
-
-Check out the GarlicOS repos:
-
-	https://github.com/GarlicOS
-
-To Jim Gray, for commiserating during development, for early alpha testing, and for providing the soundtrack for much of MinUI's development.
-
-Check out Jim's music: 
-
-  https://ourghosts.bandcamp.com/music
-  https://www.patreon.com/ourghosts/
- 
+  https://github.com/shauninman/MinUI
+  https://github.com/zhaofengli/MinUI
+  https://github.com/Turro75/MyMinUI
+  https://github.com/LoveRetro/NextUI

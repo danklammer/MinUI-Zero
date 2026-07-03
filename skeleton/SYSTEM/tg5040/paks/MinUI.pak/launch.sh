@@ -22,6 +22,16 @@ mkdir -p "$USERDATA_PATH"
 mkdir -p "$LOGS_PATH"
 mkdir -p "$SHARED_USERDATA_PATH/.minui"
 
+# macs and windows leave droppings on any card they mount (Spotlight index, fsevents logs,
+# ._* resource forks, .DS_Store, System Volume Information). Sweep them each boot; the
+# .metadata_never_index and .fseventsd/no_log markers shipped in the zip prevent most of it.
+rm -rf "$SDCARD_PATH/.Spotlight-V100" "$SDCARD_PATH/.Trashes" "$SDCARD_PATH/System Volume Information" 2>/dev/null
+touch "$SDCARD_PATH/.metadata_never_index" 2>/dev/null
+mkdir -p "$SDCARD_PATH/.fseventsd" && touch "$SDCARD_PATH/.fseventsd/no_log" 2>/dev/null
+find "$SDCARD_PATH/.fseventsd" -type f ! -name no_log -delete 2>/dev/null
+rm -f "$SDCARD_PATH/.DS_Store" "$SDCARD_PATH"/._* 2>/dev/null
+( find "$ROMS_PATH" "$BIOS_PATH" "$SAVES_PATH" \( -name "._*" -o -name ".DS_Store" \) -delete 2>/dev/null & )
+
 # model detection: NO caching — the SD card can move between a Brick and a Smart Pro
 # (same tg5040 platform), and a cached model would misdetect after the swap (wrong pad
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
