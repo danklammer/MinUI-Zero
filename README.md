@@ -32,6 +32,8 @@ Everyone else handles CPU speed one of two ways:
 - **Kernel governors** (NextUI) — Linux picks the clock from CPU *utilization*. Better, but
   utilization can't see the game: it can't tell "60fps with headroom" from "55fps and
   struggling."
+- **Closed loop** (MinUI Zero) — measure the game's *actual frame rate* and find the lowest
+  clock that verifiably holds it, per game, continuously.
 
 Zero closes the loop. The frontend measures the **actual outcome** — the core's real frame
 rate against its target — every half second, and walks the clock ceiling down to the lowest
@@ -45,11 +47,6 @@ That's why the CPU Speed setting is gone: the machine answers the question bette
 can — per game, continuously, with receipts. It's also how a stock config bug was caught that
 makes NES run hot on every MinUI device: a system that measures game speed notices when a
 1985 console demands a 1 GHz clock.
-
-The idea is the oldest one in engineering — feedback control, the same principle as Watt's
-steam governor of 1788, which is where the word "governor" comes from. Kernel CPU governors
-kept the name but dropped the loop; Zero puts the loop back. As far as we know, it's the
-first frame-feedback clock control in the scene.
 
 ## What's left out
 
