@@ -43,11 +43,22 @@ LOG="$SHARED/ssh-ip.txt"
     chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null
   fi
 
-  # 5) start the SSH daemon (TrimUI uses dropbear on :2022)
+  # 5) start the SSH daemon. Try the device's own dropbear first (the Brick's firmware has
+  #    one; the Smart Pro's does NOT — its dev-net log read "dropbear: NOT-running"), then
+  #    fall back to the static dropbearmulti we ship in .system. Host key lives on the CARD
+  #    so the fingerprint stays stable across boots and devices.
   /etc/init.d/dropbear start 2>/dev/null \
     || dropbear -p 2022 2>/dev/null \
     || /usr/sbin/dropbear -p 2022 2>/dev/null \
     || true
+  if ! pgrep dropbear >/dev/null 2>&1 && ! netstat -tln 2>/dev/null | grep -q ':22 '; then
+    DBM="$SD/.system/tg5040/bin/dropbearmulti"
+    KEY="$SHARED/dropbear_ed25519_host_key"
+    if [ -x "$DBM" ]; then
+      [ -f "$KEY" ] || "$DBM" dropbearkey -t ed25519 -f "$KEY" 2>/dev/null
+      "$DBM" dropbear -r "$KEY" -p 2022 2>/dev/null || true
+    fi
+  fi
 
   # 6) wait for an IP, then log it + the exact ssh command
   ip=""
