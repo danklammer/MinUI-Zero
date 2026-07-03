@@ -384,3 +384,20 @@ firmware has no SSH server; the static build segfaulted, the dynamic build shipp
   entries (same safe class as the Brick's single one; runtime retries cover it). 30-33°C, ~2%/hour
   while cycling. Default-on deep sleep is now evidence-backed on BOTH devices.
 Remaining (user thumb-tests): analog sticks in a PS1 title, FN mute switch behavior.
+
+## D33 — Smart Pro audio saga: stock had it right; the bug was elsewhere (2026-07-03)
+User report: "volume doesn't work at all" on the Smart Pro (+ FN does nothing + aspect wrong).
+Diagnosis wandered through two WRONG fixes before the ear tests settled it:
+- WRONG #1: "DAC restore should be a percent" — the SP DAC range runs 0-255, but 255 = +72dB of
+  digital GAIN (blown-out audio, ear-verified). Raw 160 IS the 0dB reference on BOTH devices.
+- WRONG #2: "digital volume direction is normal on the SP per its dB table" — ear test showed
+  volume-up got quieter. The control is attenuation-coded (reversed) on BOTH devices.
+- The REAL story: the card's saved volume was 0 (silent boot state) + keymon had been killed by a
+  deploy and never restarted (launch.sh starts it once per boot — remember to restart it manually
+  after killall). Stock/NextUI semantics were correct all along and are now restored verbatim,
+  with comments warning future readers off both traps. Fixes that DID survive: proper sh redirects
+  (">/dev/null 2>&1", not the ash-mangled "&>"), Aspect default in system.cfg (non-brick file was
+  missed when the brick one was set), SP menu layout (D32), FN mute confirmed handled natively by
+  trimui_inputd (nothing of ours in the path; gpio243 is NOT the FN switch on the SP).
+Lesson enshrined: dB tables suggest; ears verify. Trust the fork lineage (stock == NextUI == ours
+now) over a clever reading of sysfs.
