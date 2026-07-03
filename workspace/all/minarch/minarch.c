@@ -2387,7 +2387,47 @@ static void MSG_quit(void) {
 ///////////////////////////////
 
 static const char* bitmap_font[] = {
-	['0'] = 
+	['M'] =
+		"1   1"
+		"11 11"
+		"1 1 1"
+		"1 1 1"
+		"1   1"
+		"1   1"
+		"1   1"
+		"1   1"
+		"1   1",
+	['H'] =
+		"1   1"
+		"1   1"
+		"1   1"
+		"11111"
+		"1   1"
+		"1   1"
+		"1   1"
+		"1   1"
+		"1   1",
+	['Z'] =
+		"11111"
+		"    1"
+		"    1"
+		"   1 "
+		"  1  "
+		" 1   "
+		"1    "
+		"1    "
+		"11111",
+	['C'] =
+		" 111 "
+		"1   1"
+		"1    "
+		"1    "
+		"1    "
+		"1    "
+		"1    "
+		"1   1"
+		" 111 ",
+	['0'] =
 		" 111 "
 		"1   1"
 		"1   1"
@@ -2947,7 +2987,12 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		sprintf(debug_text, "%i,%i %ix%i", renderer.dst_x,renderer.dst_y, renderer.src_w*scale,renderer.src_h*scale);
 		blitBitmapText(debug_text,-x,y,(uint16_t*)data,pitch/2, width,height);
 	
-		sprintf(debug_text, "%.01f/%.01f %i%%", fps_double, cpu_double, (int)use_double);
+		// governor dashboard: ceiling / temp / generation-vs-target fps / % of total CPU
+		static int hud_temp = -1;
+		static uint32_t hud_temp_at = 0;
+		uint32_t hud_now = SDL_GetTicks();
+		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
+		sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
 	
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
@@ -3874,26 +3919,7 @@ static int Menu_options(MenuList* list) {
 		
 		if (dirty) {
 			GFX_clear(screen);
-			int hw_w = GFX_blitHardwareGroup(screen, show_settings);
-
-			// Zero dashboard: last-second gameplay stats + live temp, tucked next to the battery
-			// on the settings screens (the numbers page) — the governor showing its work.
-			{
-				char stats[128];
-				int temp_c = gov_read_temp_c();
-				sprintf(stats, "%d MHz", gov_state.ceil_khz/1000);
-				if (temp_c >= 0) sprintf(stats+strlen(stats), "  %d\xc2\xb0""C", temp_c);
-				if (cpu_double > 0) sprintf(stats+strlen(stats), "  %.0f/%.0f fps", cpu_double, core.fps);
-				if (use_double > 0) sprintf(stats+strlen(stats), "  %.0f%% CPU", use_double);
-				SDL_Surface* st = TTF_RenderUTF8_Blended(font.tiny, stats, COLOR_GRAY);
-				if (st) {
-					SDL_BlitSurface(st, NULL, screen, &(SDL_Rect){
-						screen->w - SCALE1(PADDING) - hw_w - SCALE1(BUTTON_PADDING) - st->w,
-						SCALE1(PADDING) + (SCALE1(PILL_SIZE) - st->h) / 2
-					});
-					SDL_FreeSurface(st);
-				}
-			}
+			GFX_blitHardwareGroup(screen, show_settings);
 
 			char* desc = NULL;
 			SDL_Surface* text;
