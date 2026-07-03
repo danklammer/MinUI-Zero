@@ -22,6 +22,35 @@ measured on real hardware.
 
 **~7.5 hours on Game Boy** — up from ~6 before tuning.
 
+## The governor (and why there's no CPU Speed setting)
+
+Everyone else handles CPU speed one of two ways:
+
+- **Static clocks** (stock MinUI, most forks) — a hand-picked speed per console, exposed as a
+  "CPU Speed" menu. One number has to cover the heaviest game on the system, so it runs hot
+  for everything else, and tuning it is your problem.
+- **Kernel governors** (NextUI) — Linux picks the clock from CPU *utilization*. Better, but
+  utilization can't see the game: it can't tell "60fps with headroom" from "55fps and
+  struggling."
+
+Zero closes the loop. The frontend measures the **actual outcome** — the core's real frame
+rate against its target — every half second, and walks the clock ceiling down to the lowest
+point where the game *verifiably* runs full speed. Every game gets its own answer (Zelda DX
+settles at 408 MHz; Contra needs ~800 — same console family, different truths). Heavy scene?
+It climbs within a second. A clock that failed is remembered and not re-tried. And it never
+probes into saturation, because a maxed-out low clock measures *warmer* than a relaxed higher
+one that finishes early and sleeps.
+
+That's why the CPU Speed setting is gone: the machine answers the question better than a menu
+can — per game, continuously, with receipts. It's also how a stock config bug was caught that
+makes NES run hot on every MinUI device: a system that measures game speed notices when a
+1985 console demands a 1 GHz clock.
+
+The idea is the oldest one in engineering — feedback control, the same principle as Watt's
+steam governor of 1788, which is where the word "governor" comes from. Kernel CPU governors
+kept the name but dropped the loop; Zero puts the loop back. As far as we know, it's the
+first frame-feedback clock control in the scene.
+
 ## What's left out
 
 No boxart, wifi, store, achievements, LED effects, shaders, or themes. Anything that adds
