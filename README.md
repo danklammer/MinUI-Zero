@@ -19,8 +19,9 @@ measured on real hardware.
   The Deep Sleep tool in Extras turns it off.
 - **⚡ Zero idle waste**<br>
   No busy-polling daemons, radios and LEDs off, audio fully closed during sleep, USB is charge-only.
-- **🛡️ Crash-safe saves**<br>
-  If a core ever crashes, your save RAM is written on the way down.
+- **🛡️ Hard to break**<br>
+  Bad ROMs bail cleanly instead of hanging, mid-game resolution changes are handled, and if a
+  core ever crashes, your save RAM is written on the way down.
 - **⚙️ Tuned everything**<br>
   Cores built for the chip and pinned, drift-free frame pacing, `noatime` mounts.
 
