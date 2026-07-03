@@ -365,3 +365,22 @@ stop pretending otherwise.
    accept it's a bad fit for the device. The 2.0GHz OPP stays untouched — "never overclocks" is in
    the README as a product promise, and D14's race-to-idle work shows raw clock is rarely the answer
    anyway.
+
+## D32 — Smart Pro fully validated: the second device now has the same evidence file as the first (2026-07-03)
+First-ever instrumented session on Smart Pro hardware (via our own shipped dropbear — the device
+firmware has no SSH server; the static build segfaulted, the dynamic build shipped). Findings:
+- **Governor sweep: PASS, numbers rhyme with the Brick** — GBC 408@65%, NES ~816@100%, SNES 600@140%
+  (multi-threaded), MD/GBA 600, PS1 hunting 1008-1584 with the demo's varying load exactly as the
+  closed loop should. Panel runs ~61Hz vs the Brick's 60.8; the generation-rate detector is
+  indifferent, as designed.
+- **GPU-dark menu: UNGATED — works on both devices.** The Smart Pro "black menu" that motivated the
+  gate was the model-cache misdetection (D-note 2026-07-02), not the fb path: PLAT_flipFB is
+  geometry-agnostic (runtime vinfo/stride), fb verified 1280x720/5120 pixel-perfect by screenshot
+  WITH the GPU suspended. Gate removed; the earlier gate was a misdiagnosis bandage.
+- **Menu layout: upstream shipped the Smart Pro an 80px inset** (PADDING 40 vs the Brick's 5) and
+  8 rows tuned to it — the "too much padding" report. Now PADDING 10 (20px ring) + 10 rows,
+  fb-screenshot verified, user-approved.
+- **Deep-sleep certification: 50 cycles, 0 wake-hangs**, game survived all 50, 2 benign insta-abort
+  entries (same safe class as the Brick's single one; runtime retries cover it). 30-33°C, ~2%/hour
+  while cycling. Default-on deep sleep is now evidence-backed on BOTH devices.
+Remaining (user thumb-tests): analog sticks in a PS1 title, FN mute switch behavior.
