@@ -3874,8 +3874,27 @@ static int Menu_options(MenuList* list) {
 		
 		if (dirty) {
 			GFX_clear(screen);
-			GFX_blitHardwareGroup(screen, show_settings);
-			
+			int hw_w = GFX_blitHardwareGroup(screen, show_settings);
+
+			// Zero dashboard: last-second gameplay stats + live temp, tucked next to the battery
+			// on the settings screens (the numbers page) — the governor showing its work.
+			{
+				char stats[128];
+				int temp_c = gov_read_temp_c();
+				sprintf(stats, "%d MHz", gov_state.ceil_khz/1000);
+				if (temp_c >= 0) sprintf(stats+strlen(stats), "  %d\xc2\xb0""C", temp_c);
+				if (cpu_double > 0) sprintf(stats+strlen(stats), "  %.0f/%.0f fps", cpu_double, core.fps);
+				if (use_double > 0) sprintf(stats+strlen(stats), "  %.0f%% CPU", use_double);
+				SDL_Surface* st = TTF_RenderUTF8_Blended(font.tiny, stats, COLOR_GRAY);
+				if (st) {
+					SDL_BlitSurface(st, NULL, screen, &(SDL_Rect){
+						screen->w - SCALE1(PADDING) - hw_w - SCALE1(BUTTON_PADDING) - st->w,
+						SCALE1(PADDING) + (SCALE1(PILL_SIZE) - st->h) / 2
+					});
+					SDL_FreeSurface(st);
+				}
+			}
+
 			char* desc = NULL;
 			SDL_Surface* text;
 
@@ -4555,31 +4574,6 @@ static void Menu_loop(void) {
 				SCALE1(PADDING+4)
 			});
 			SDL_FreeSurface(text);
-
-			// Zero dashboard: last-second gameplay stats + live temp, under the game name —
-			// the governor showing its work (clock ceiling / temp / real fps vs target / CPU%)
-			{
-				char stats[128];
-				int temp_c = gov_read_temp_c();
-				sprintf(stats, "%d MHz", gov_state.ceil_khz/1000);
-				if (temp_c >= 0) sprintf(stats+strlen(stats), "  %d\xc2\xb0""C", temp_c);
-				if (cpu_double > 0) sprintf(stats+strlen(stats), "  %.0f/%.0f fps", cpu_double, core.fps);
-				if (use_double > 0) sprintf(stats+strlen(stats), "  %.0f%% CPU", use_double);
-				SDL_Surface* st = TTF_RenderUTF8_Blended(font.tiny, stats, COLOR_WHITE);
-				if (st) {
-					GFX_blitPill(ASSET_BLACK_PILL, screen, &(SDL_Rect){
-						SCALE1(PADDING),
-						SCALE1(PADDING + PILL_SIZE + 2),
-						st->w + SCALE1(BUTTON_PADDING*2),
-						SCALE1(PILL_SIZE - 4)
-					});
-					SDL_BlitSurface(st, NULL, screen, &(SDL_Rect){
-						SCALE1(PADDING+BUTTON_PADDING),
-						SCALE1(PADDING + PILL_SIZE + 2) + (SCALE1(PILL_SIZE-4)-st->h)/2
-					});
-					SDL_FreeSurface(st);
-				}
-			}
 
 			if (show_setting && !GetHDMI()) GFX_blitHardwareHints(screen, show_setting);
 			else GFX_blitButtonGroup((char*[]){ BTN_SLEEP==BTN_POWER?"POWER":"MENU","SLEEP", NULL }, 0, screen, 0);
