@@ -4555,7 +4555,32 @@ static void Menu_loop(void) {
 				SCALE1(PADDING+4)
 			});
 			SDL_FreeSurface(text);
-			
+
+			// Zero dashboard: last-second gameplay stats + live temp, under the game name —
+			// the governor showing its work (clock ceiling / temp / real fps vs target / CPU%)
+			{
+				char stats[128];
+				int temp_c = gov_read_temp_c();
+				sprintf(stats, "%d MHz", gov_state.ceil_khz/1000);
+				if (temp_c >= 0) sprintf(stats+strlen(stats), "  %d\xc2\xb0""C", temp_c);
+				if (cpu_double > 0) sprintf(stats+strlen(stats), "  %.0f/%.0f fps", cpu_double, core.fps);
+				if (use_double > 0) sprintf(stats+strlen(stats), "  %.0f%% CPU", use_double);
+				SDL_Surface* st = TTF_RenderUTF8_Blended(font.tiny, stats, COLOR_WHITE);
+				if (st) {
+					GFX_blitPill(ASSET_BLACK_PILL, screen, &(SDL_Rect){
+						SCALE1(PADDING),
+						SCALE1(PADDING + PILL_SIZE + 2),
+						st->w + SCALE1(BUTTON_PADDING*2),
+						SCALE1(PILL_SIZE - 4)
+					});
+					SDL_BlitSurface(st, NULL, screen, &(SDL_Rect){
+						SCALE1(PADDING+BUTTON_PADDING),
+						SCALE1(PADDING + PILL_SIZE + 2) + (SCALE1(PILL_SIZE-4)-st->h)/2
+					});
+					SDL_FreeSurface(st);
+				}
+			}
+
 			if (show_setting && !GetHDMI()) GFX_blitHardwareHints(screen, show_setting);
 			else GFX_blitButtonGroup((char*[]){ BTN_SLEEP==BTN_POWER?"POWER":"MENU","SLEEP", NULL }, 0, screen, 0);
 			GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OKAY", NULL }, 1, screen, 1);
@@ -4735,13 +4760,12 @@ static void trackFPS(void) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
 		cpu_double = cpu_ticks / last_time;
-		if (show_debug) { // use_double only renders in the debug HUD; skip the /proc parse otherwise
-			use_ticks = getUsage();
-			if (use_ticks && last_use_ticks) {
-				use_double = (use_ticks - last_use_ticks) / last_time;
-			}
-			last_use_ticks = use_ticks;
+		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line
+		use_ticks = getUsage();
+		if (use_ticks && last_use_ticks) {
+			use_double = (use_ticks - last_use_ticks) / last_time;
 		}
+		last_use_ticks = use_ticks;
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
