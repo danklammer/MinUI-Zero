@@ -10,23 +10,13 @@ measured on real hardware.
 
 ## What's different
 
-- **❄️ GPU-dark menu**<br>
-  The launcher renders in software, so the GPU powers down while you browse (~26°C, instant nav).
-- **🌡️ Closed-loop governor**<br>
-  Finds the lowest clock that holds frame rate, per game, in real time. Never overclocks.
-- **💤 Deep sleep**<br>
-  Suspend-to-RAM by default: goes cold, wakes instantly where you left off (50-cycle soak tested).
-  The Deep Sleep tool in Extras turns it off.
-- **⚡ Zero idle waste**<br>
-  No busy-polling daemons, radios and LEDs off, audio fully closed during sleep, USB is charge-only.
-- **🛡️ Hard to break**<br>
-  Bad ROMs bail cleanly instead of hanging, mid-game resolution changes are handled, and if a
-  core ever crashes, your save RAM is written on the way down.
-- **⚙️ Tuned everything**<br>
-  Cores built for the chip and pinned, drift-free frame pacing, `noatime` mounts.
-- **🐛 Stock bugs fixed**<br>
-  NES ran hot with crackling audio on every MinUI device (a config bug, found by measuring),
-  in-game quit menus hung, and the ambient LEDs quietly re-enabled themselves on keypress.
+- GPU-dark menu — the launcher renders in software so the GPU powers down (~26°C)
+- Closed-loop governor — the lowest clock that holds frame rate, per game (never overclocks)
+- Deep sleep, default-on + soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras)
+- Zero idle waste — no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
+- Hard to break — bad-ROM bail, mid-game resolution changes, crash-safe saves
+- Tuned/pinned cores, drift-free pacing, `noatime`
+- Stock bugs fixed — NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves
 
 **~7.5 hours on Game Boy** — up from ~6 before tuning.
 
