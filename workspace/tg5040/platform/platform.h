@@ -127,8 +127,8 @@ extern int is_brick;
 
 ///////////////////////////////
 
-#define MAIN_ROW_COUNT (is_brick?7:8)
-#define PADDING (is_brick?5:40)
+#define MAIN_ROW_COUNT (is_brick?7:10) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
+#define PADDING (is_brick?5:10) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
 
 ///////////////////////////////
 
