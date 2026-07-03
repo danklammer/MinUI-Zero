@@ -202,18 +202,19 @@ void SetRawVolume(int val) { // 0-100
 	printf("SetRawVolume(%i)\n", val); fflush(stdout);
 	if (settings->mute) val = 0;
 	
-	// 'digital volume' direction differs per codec build: the Brick's is reversed
-	// (attenuation-coded), the Smart Pro's dB scale is normal (63=0dB=loud).
+	// Note: 'digital volume' mapping is reversed (attenuation-coded) on BOTH devices —
+	// verified by ear on the Smart Pro 2026-07-03 (a "normal direction" branch made
+	// volume-up quieter). Do not "fix" this from the dB table; trust the ear test.
 	char cmd[256];
-	sprintf(cmd, "amixer sset 'digital volume' -M %i%% >/dev/null 2>&1", is_brick ? 100-val : val);
+	sprintf(cmd, "amixer sset 'digital volume' -M %i%% >/dev/null 2>&1", 100-val);
 	system(cmd);
 
 	// Setting just 'digital volume' to 0 still plays audio quietly. Also set DAC volume to 0.
-	// DAC restore must be a PERCENT, not raw: the DAC range is ~0-160 on the Brick but 0-255 on
-	// the Smart Pro — raw 160 there is -71dB (near-silence; this was "volume doesn't work at
-	// all" on the Smart Pro, found on-device 2026-07-03).
-	if (val == 0) system("amixer sset 'DAC volume' 0% >/dev/null 2>&1");
-	else system("amixer sset 'DAC volume' 100% >/dev/null 2>&1");
+	// The DAC restore must stay RAW 160: that is the 0dB reference on BOTH devices (the Smart
+	// Pro's DAC range runs to 255 = +72dB of digital GAIN — restoring "100%" there blows the
+	// audio out; verified by ear on-device 2026-07-03). Same values stock and NextUI use.
+	if (val == 0) system("amixer sset 'DAC volume' 0 >/dev/null 2>&1");
+	else system("amixer sset 'DAC volume' 160 >/dev/null 2>&1");
 
 	// TODO: unfortunately doing it this way creating a linker nightmare
 	// struct mixer *mixer = mixer_open(0);
