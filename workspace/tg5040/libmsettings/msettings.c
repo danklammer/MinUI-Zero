@@ -202,14 +202,18 @@ void SetRawVolume(int val) { // 0-100
 	printf("SetRawVolume(%i)\n", val); fflush(stdout);
 	if (settings->mute) val = 0;
 	
-	// Note: 'digital volume' mapping is reversed
+	// 'digital volume' direction differs per codec build: the Brick's is reversed
+	// (attenuation-coded), the Smart Pro's dB scale is normal (63=0dB=loud).
 	char cmd[256];
-	sprintf(cmd, "amixer sset 'digital volume' -M %i%% &> /dev/null", 100-val);
+	sprintf(cmd, "amixer sset 'digital volume' -M %i%% >/dev/null 2>&1", is_brick ? 100-val : val);
 	system(cmd);
-	
-	// Setting just 'digital volume' to 0 still plays audio quietly. Also set DAC volume to 0
-	if (val == 0) system("amixer sset 'DAC volume' 0 &> /dev/null");
-	else system("amixer sset 'DAC volume' 160 &> /dev/null"); // 160=0dB=max for 'DAC volume'
+
+	// Setting just 'digital volume' to 0 still plays audio quietly. Also set DAC volume to 0.
+	// DAC restore must be a PERCENT, not raw: the DAC range is ~0-160 on the Brick but 0-255 on
+	// the Smart Pro — raw 160 there is -71dB (near-silence; this was "volume doesn't work at
+	// all" on the Smart Pro, found on-device 2026-07-03).
+	if (val == 0) system("amixer sset 'DAC volume' 0% >/dev/null 2>&1");
+	else system("amixer sset 'DAC volume' 100% >/dev/null 2>&1");
 
 	// TODO: unfortunately doing it this way creating a linker nightmare
 	// struct mixer *mixer = mixer_open(0);
