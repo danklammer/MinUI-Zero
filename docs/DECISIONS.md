@@ -346,3 +346,22 @@ back-to-back same scene): 4 cores = 60 units, 2 cores = 60 units. Dead heat. `cp
 power-gates idle A53 cores, so hotplug only formalizes what the hardware does on its own — and with
 keymon at 0 idle wakeups/sec the spare cores genuinely stay parked. No per-system hotplug bracket;
 don't re-chase. (Break-even #3, after GPU-dark games and picodrive ARCH.)
+
+## D31 — CPU Speed menu item hidden; the no-overclock stance reaffirmed (2026-07-03)
+**The knob was dead:** since the closed-loop governor shipped, it re-asserts its ceiling every tick
+(~0.5s), so the static CPU Speed pick (Powersave/Normal/Performance/Overclock) was overridden almost
+immediately. A knob that does nothing is worse than no knob. Hidden via the cfg lock (`-minarch_cpu_speed`
+in `system.cfg`/`system-brick.cfg` — zero code), and the seven inert per-pak `minarch_cpu_speed` relics
+removed. The dev escape hatch remains `GOV_DISABLE=1` (D9). Considered and rejected: adding a "Smart
+Variable" choice — the governor IS smart-variable, always, for every game; the fix was making the UI
+stop pretending otherwise.
+**Overclock stance (user asked "would there ever be a reason?"):** NO — reaffirmed, with reasoning:
+1. Every "needs more clock" case this project has ever hit turned out to be a BUG, not a clock
+   shortage (Contra = upstream sndquality config, D25; SNES "saturation" = detector artifact, D24).
+   "Needs overclock" is a debugging smell, not a requirement.
+2. No documented title slips at the 1800 stock max. Building OC support for a hypothetical violates
+   the lean rule.
+3. If such a title ever appears, the escalation ladder is: core option audit → alternate core →
+   accept it's a bad fit for the device. The 2.0GHz OPP stays untouched — "never overclocks" is in
+   the README as a product promise, and D14's race-to-idle work shows raw clock is rarely the answer
+   anyway.
