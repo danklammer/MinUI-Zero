@@ -142,7 +142,13 @@ EXEC_PATH="/tmp/minui_exec"
 NEXT_PATH="/tmp/next"
 touch "$EXEC_PATH" # tmpfs; a sync here would flush every filesystem for a file that never touches disk
 while [ -f $EXEC_PATH ]; do
-	ZERO_FB_PRESENT=1 minui.elf &> $LOGS_PATH/minui.txt
+	if [ "$DEVICE" = "brick" ]; then
+		# GPU-dark menu is calibrated for the Brick panel (1024x768). The Smart Pro (1280x720)
+		# renders BLACK with it — it gets the stock GLES menu until its fb is calibrated.
+		ZERO_FB_PRESENT=1 minui.elf &> $LOGS_PATH/minui.txt
+	else
+		minui.elf &> $LOGS_PATH/minui.txt
+	fi
 	[ -f $EXEC_PATH ] && echo $CPU_SPEED_PERF > $CPU_PATH
 	echo `date +'%F %T'` > "$DATETIME_PATH"
 	sync
