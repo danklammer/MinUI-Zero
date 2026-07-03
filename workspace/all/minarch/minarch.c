@@ -4760,10 +4760,14 @@ static void trackFPS(void) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
 		cpu_double = cpu_ticks / last_time;
-		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line
+		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line.
+		// Normalized to % of TOTAL CPU (all cores), not one core — multi-threaded cores
+		// (supafaust spans the quad) read >100% otherwise, which looks like broken math.
+		static long ncores = 0;
+		if (!ncores) { ncores = sysconf(_SC_NPROCESSORS_ONLN); if (ncores < 1) ncores = 1; }
 		use_ticks = getUsage();
 		if (use_ticks && last_use_ticks) {
-			use_double = (use_ticks - last_use_ticks) / last_time;
+			use_double = (use_ticks - last_use_ticks) / last_time / ncores;
 		}
 		last_use_ticks = use_ticks;
 		sec_start = now;
