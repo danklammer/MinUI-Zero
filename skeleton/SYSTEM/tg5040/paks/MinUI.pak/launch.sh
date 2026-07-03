@@ -22,18 +22,15 @@ mkdir -p "$USERDATA_PATH"
 mkdir -p "$LOGS_PATH"
 mkdir -p "$SHARED_USERDATA_PATH/.minui"
 
-# model detection: `strings` reads the entire MainUI binary — do it once and cache
-# (the model can't change out from under a device); later boots skip the read
-MODEL_CACHE="$SHARED_USERDATA_PATH/.minui/model"
-if [ -s "$MODEL_CACHE" ]; then
-	export TRIMUI_MODEL=`cat "$MODEL_CACHE"`
-else
-	export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
-	echo "$TRIMUI_MODEL" > "$MODEL_CACHE"
-fi
+# model detection: NO caching — the SD card can move between a Brick and a Smart Pro
+# (same tg5040 platform), and a cached model would misdetect after the swap (wrong pad
+# init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
+# so it must be read fresh each boot. (A cache shipped briefly on 2026-07-02 — reverted.)
+export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
 if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	export DEVICE="brick"
 fi
+rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
 
 #######################################
 
