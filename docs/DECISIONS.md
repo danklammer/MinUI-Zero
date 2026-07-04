@@ -431,3 +431,12 @@ freeze it, heavy games self-disable (ratchet to 0 = stock), ZERO_NO_DRC kill swi
 the D-resampler (linear interpolation, same commit series) — nearest-neighbor would have turned
 the ppm adjustments into zipper noise. User-verified on Sonic 2: no stutter, no tears.
 Pillar 3 (tear-free, stutter-free, drift-free pacing) is complete.
+
+## D36 — Latency: swap chain shrunk to 2 buffers via driver hint, fence not needed (2026-07-04)
+The PowerVR present queue held ~3 frames of input latency. Probed the driver before writing code:
+libpvrNULL_WSEGL honors NULLWS_BUFFERS_COUNT (validated range starts at 2). setenv in minarch main
+= one frame (~16ms) less input lag for zero CPU/heat — no glFinish/fence needed (that path risked
+spin-waiting against race-to-idle and stays unbuilt). Verified on-device: governor, DRC lock, and
+temps unchanged; user-approved feel on Sonic 2. This closes the NextUI-claims triage: resampling
+(linear, D-resampler), sync stutter (D35 feedback DRC), latency (this) — all three shipped as
+measured, lean adaptations instead of an engine rebuild.
