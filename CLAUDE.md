@@ -147,6 +147,16 @@ saturates for zero win), core hotplug (D22: exact break-even). Remaining: batter
 sweep; DTB undervolt is the only big lever left (high effort/risk, deferred). See
 `docs/zero-efficiency-roadmap.md` + `docs/qol-backlog.md`.
 
+**2026-07-04 update — v1.0.0 live, BOTH devices validated (D24-D33):** generation-rate slip detector +
+predictive sink gate (D24/D28); Smart Pro fully brought up: sweep matches Brick, deep sleep 50-cycle
+certified, menu layout fixed (PADDING 40→10, 10 rows), audio saga resolved (D33 — DAC raw 160 = 0dB on
+BOTH devices, digital volume reversed on BOTH; stock semantics correct, don't "fix" from dB tables);
+own dropbear ships in .system (SP firmware has no sshd; dynamic build only — static segfaults);
+**GPU-dark menu is Brick-ONLY** (SP panel scans the GLES layer, not fb0 — content ≠ scanout, D-logged);
+card hygiene sweeper + no-index markers ship in base zip. Battery 7.5h figure = Brick-measured.
+Dev access: Brick root@.90:22 (stock sshd), SP root@.249:2022 (our dropbear); deep sleep kills SSH
+after 2 min idle — have Dan power-tap; after `killall keymon.elf` RESTART it manually.
+
 ## Working rules (these complement the global ~/.claude/CLAUDE.md)
 - **Read before edit.** Open the actual file and grep the symbol first; the line numbers in
   these docs are approximate.
