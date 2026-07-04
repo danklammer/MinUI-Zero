@@ -513,6 +513,10 @@ static void Crash_handler(int sig) {
 		if (wrote == (ssize_t)crash_save[i].size) rename(crash_save[i].tmp, crash_save[i].path);
 		else unlink(crash_save[i].tmp);
 	}
+	// voltage authority: restore stock volts before dying — the launcher raises max_freq
+	// right after minarch exits, and a lean gaming-range voltage must not meet 1.8GHz.
+	// (i2c ioctl is not on the async-signal-safe list; acceptable as the last act here.)
+	PLAT_restoreCPUVolt();
 	raise(sig);
 }
 
@@ -5123,6 +5127,7 @@ int main(int argc , char* argv[]) {
 		hdmimon();
 	}
 	
+	PLAT_restoreCPUVolt(); // before the launcher touches max_freq (always-safe stock write)
 	Menu_quit();
 	QuitSettings();
 	

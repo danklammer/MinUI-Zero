@@ -24,6 +24,8 @@
 // ---- gov_tick's platform dependency, stubbed so governor.c links standalone ----
 static int g_last_set_khz = -1;
 void PLAT_setCPUMaxFreq(int khz) { g_last_set_khz = khz; }
+static int g_last_volt_khz = 0;
+void PLAT_setCPUVoltForCeil(int khz) { g_last_volt_khz = khz; } // voltage authority stub
 
 // ---- tiny assert framework ----
 static int g_fail = 0;

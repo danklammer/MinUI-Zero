@@ -13,6 +13,7 @@
 // Platform primitive: set the cpufreq ceiling (scaling_max_freq); the kernel schedutil
 // governor picks beneath it. Real impl in <platform>/platform.c, stub in governor_test.c.
 void PLAT_setCPUMaxFreq(int khz);
+void PLAT_setCPUVoltForCeil(int khz);
 
 // ---- Tunables (ASSUMED — safe by construction; confirm on device, see design doc) ----
 // Why safe if wrong: (1) writes snap to the nearest valid OPP, (2) the loop self-corrects
@@ -131,8 +132,19 @@ void gov_tick(GovState* st, const GovProfile* p, int frame_overrun) {
 	if (disabled) return;
 
 	int temp_c = gov_read_temp_c();
+	static int last_ceil = 0;
 	int ceil_khz = gov_step(st, p, temp_c, frame_overrun);
 	// Re-assert the ceiling every tick: keeps the controller authoritative over the static
 	// CPU-speed cap and over whatever the menu restores. ~once/0.5s, negligible cost.
-	PLAT_setCPUMaxFreq(ceil_khz);
+	// Voltage authority ordering (Optimize Device): voltage must cover the ceiling at every
+	// instant — raise volts BEFORE raising the ceiling, lower the ceiling BEFORE lowering
+	// volts. No-op unless a calibrated table armed the platform layer.
+	if (ceil_khz > last_ceil) {
+		PLAT_setCPUVoltForCeil(ceil_khz);
+		PLAT_setCPUMaxFreq(ceil_khz);
+	} else {
+		PLAT_setCPUMaxFreq(ceil_khz);
+		PLAT_setCPUVoltForCeil(ceil_khz);
+	}
+	last_ceil = ceil_khz;
 }

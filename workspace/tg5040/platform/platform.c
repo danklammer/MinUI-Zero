@@ -654,18 +654,112 @@ void PLAT_setCPUMaxFreq(int khz) {
 	putInt(MAX_FREQ_PATH, khz);
 }
 
-// Undervolt SPIKE (see docs/undervolt-spike-design.md): OFF until on-device recon
-// (tools/brick-recon.sh) confirms a runtime mechanism. The A133P CPU rail is usually
-// read-only on the stock kernel (voltage lives in the DTB OPP table), so this returns 0
-// and the setter is a logged no-op — a clear home for the real impl, harmless if called.
-int PLAT_supportsUndervolt(void) { return 0; }
-void PLAT_setUndervolt(int millivolts) {
-	// CANDIDATE mechanisms to wire once recon proves one (NONE confirmed -> do nothing):
-	//   1) writable CPU-rail regulator: putInt("/sys/class/regulator/regulator.N/microvolts", base+millivolts*1000)
-	//   2) OPP-table voltage override via /sys/kernel/debug/opp/...
-	//   3) custom DTB with patched OPP voltages (no runtime write).
-	LOG_info("PLAT_setUndervolt: %dmV requested but undervolt is unsupported (spike OFF)\n", millivolts);
+// ============================ Optimize Device: voltage authority ============================
+// Runtime per-device undervolt (P2 campaign result, docs/dtb-undervolt-primer.md). The CPU
+// rail is the external TCS4838 buck at i2c-6 0x41 (FAN53555-family VSEL registers,
+// 712.5mV base + 12.5mV/step). Voltages are RAM-only: any reboot/crash returns to the
+// kernel's stock OPP table by construction.
+//
+// SAFETY MODEL (all gates must pass or this stays a permanent no-op):
+//   - table file present (written only by a completed calibration campaign)
+//   - VSEL register decode matches the kernel regulator's reported voltage at init
+//   - requested voltage within [table floor .. stock max], on a 12.5mV step
+//   - ZERO_NO_UV=1 env kills it
+// The GOVERNOR is the only caller and owns the ordering (volt-up before clock-up,
+// clock-down before volt-down) — see gov_tick.
+#include <linux/i2c-dev.h>
+#include <sys/ioctl.h>
+
+#define SHARED_UV_DIR  "/mnt/SDCARD/.userdata/tg5040/undervolt"
+#define UV_TABLE_PATH  SHARED_UV_DIR "/table.conf"
+#define UV_I2C_DEV     "/dev/i2c-6"
+#define UV_I2C_ADDR    0x41
+#define UV_BASE_UV     712500
+#define UV_STEP_UV     12500
+#define UV_STOCK_MAX   1187500 // stock voltage of the top OPP: always-safe restore value
+
+static struct { int khz; int uv; } uv_table[16];
+static int uv_n = 0;
+static int uv_fd = -1;      // -1 = uninitialized, -2 = permanently disabled
+static int uv_applied = 0;  // last commanded uV (0 = stock/untouched)
+
+static int uv_reg_read(int reg) {
+	unsigned char r = (unsigned char)reg, v;
+	if (write(uv_fd, &r, 1) != 1 || read(uv_fd, &v, 1) != 1) return -1;
+	return v;
 }
+static int uv_init(void) {
+	if (uv_fd == -2) return 0;
+	if (uv_fd >= 0) return 1;
+	uv_fd = -2; // assume failure; prove otherwise
+	char* e = getenv("ZERO_NO_UV");
+	if (e && e[0] && e[0] != '0') return 0;
+	FILE* f = fopen(UV_TABLE_PATH, "r");
+	if (!f) return 0; // no calibration -> stock, silently
+	uv_n = 0;
+	int khz, uv;
+	while (uv_n < 16 && fscanf(f, "%d %d", &khz, &uv) == 2) {
+		if (uv < UV_BASE_UV || uv > UV_STOCK_MAX || (uv - UV_BASE_UV) % UV_STEP_UV) { uv_n = 0; break; }
+		uv_table[uv_n].khz = khz; uv_table[uv_n].uv = uv; uv_n++;
+	}
+	fclose(f);
+	if (!uv_n) { LOG_info("uv: table invalid, staying stock\n"); return 0; }
+	int fd = open(UV_I2C_DEV, O_RDWR);
+	if (fd < 0) return 0;
+	if (ioctl(fd, I2C_SLAVE_FORCE, UV_I2C_ADDR) < 0) { close(fd); return 0; }
+	uv_fd = fd;
+	// decode-match gate: VSEL must agree with the kernel regulator before we ever write
+	int v0 = uv_reg_read(0x00);
+	int kuv = -1;
+	for (int i = 0; i < 32; i++) {
+		char path[96], name[32];
+		snprintf(path, sizeof path, "/sys/class/regulator/regulator.%d/name", i);
+		FILE* rf = fopen(path, "r");
+		if (!rf) continue;
+		if (fgets(name, sizeof name, rf) && !strncmp(name, "tcs4838-dcdc0", 13)) {
+			fclose(rf);
+			snprintf(path, sizeof path, "/sys/class/regulator/regulator.%d/microvolts", i);
+			rf = fopen(path, "r");
+			if (rf) { if (fscanf(rf, "%d", &kuv) != 1) kuv = -1; fclose(rf); }
+			break;
+		}
+		fclose(rf);
+	}
+	if (v0 < 0 || kuv < 0 || UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != kuv) {
+		LOG_info("uv: decode mismatch (reg=%d kernel=%d) — staying stock\n", v0, kuv);
+		close(uv_fd); uv_fd = -2; return 0;
+	}
+	LOG_info("uv: voltage authority armed (%d table entries)\n", uv_n);
+	return 1;
+}
+static void uv_write(int uv) {
+	if (uv < UV_BASE_UV || uv > UV_STOCK_MAX) return;
+	int vsel = (uv - UV_BASE_UV) / UV_STEP_UV;
+	int v0 = uv_reg_read(0x00), v1 = uv_reg_read(0x01);
+	if (v0 < 0 || v1 < 0) return;
+	unsigned char b0[2] = { 0x00, (unsigned char)((v0 & 0xC0) | vsel) };
+	unsigned char b1[2] = { 0x01, (unsigned char)((v1 & 0xC0) | vsel) };
+	if (write(uv_fd, b0, 2) != 2) return;
+	write(uv_fd, b1, 2);
+	uv_applied = uv;
+}
+int PLAT_supportsUndervolt(void) { return uv_init(); }
+void PLAT_setCPUVoltForCeil(int khz) {
+	// voltage that covers the highest OPP the kernel may round the ceiling UP to:
+	// smallest table entry >= khz (table sorted ascending); above the table -> stock.
+	if (!uv_init()) return;
+	int uv = 0;
+	for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
+	if (!uv) uv = UV_STOCK_MAX; // ceiling above table: run stock volts
+	if (uv != uv_applied) uv_write(uv);
+}
+void PLAT_restoreCPUVolt(void) {
+	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the
+	// next OPP transition. Called on quit and from the crash handler.
+	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);
+	uv_applied = 0;
+}
+void PLAT_setUndervolt(int millivolts) { (void)millivolts; } // superseded by the table API
 
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"
 void PLAT_setRumble(int strength) {
