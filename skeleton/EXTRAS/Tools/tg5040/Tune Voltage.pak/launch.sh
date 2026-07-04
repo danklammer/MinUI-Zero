@@ -22,24 +22,29 @@ STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 # ---------- STATE 3: already calibrated ----------
 if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	. "$UV_DIR/calibration" 2>/dev/null
-	confirm.elf "Device Tuned  [OK]
-
-Calibrated: ${calibrated:-unknown}
-Your chip's margin: ${min_margin_mv:-?}mV (measured)
-
-Running lean saves power and heat
+	confirm.elf --ok "Device Optimized" "Runs cooler and lasts longer
 in every game -- most on PlayStation.
-Any reboot is always factory-safe." "RE-RUN" "BACK" "REVERT"
+Tuned to this exact chip:
+${min_margin_mv:-?}mV of measured headroom.
+
+Calibrated ${calibrated:-unknown}. Nothing to do --
+just play. Any reboot is factory-safe." "" "BACK" "MANAGE"
 	RC=$?
-	if [ "$RC" = "1" ]; then
-		exit 0 # B: straight back to the menu, no questions
-	elif [ "$RC" = "2" ]; then
+	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
+
+	# MANAGE: the deliberate second level
+	confirm.elf "Manage tuning
+
+Re-run the measurement (~90 min,
+on the charger), or revert this
+device to factory voltages." "RE-RUN" "BACK" "REVERT"
+	RC=$?
+	if [ "$RC" = "2" ]; then
 		confirm.elf "Revert to factory voltages?
 
-Removes the tuning. Your device
-goes back to stock voltages on the
-next game launch. You can re-tune
-any time." "REVERT" "BACK" || exit 0
+Removes the tuning. Stock voltages
+apply from the next game launch.
+You can re-tune any time." "REVERT" "BACK" || exit 0
 		mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
 		rm -f "$UV_DIR/calibration"
 		sync
@@ -47,6 +52,8 @@ any time." "REVERT" "BACK" || exit 0
 
 Launch a game to apply."
 		exit 0
+	elif [ "$RC" != "0" ]; then
+		exit 0 # B: back
 	fi
 	# A: re-run measurement
 	confirm.elf "Re-measure this device?
