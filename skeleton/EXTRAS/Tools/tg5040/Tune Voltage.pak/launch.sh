@@ -22,29 +22,23 @@ STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 # ---------- STATE 3: already calibrated ----------
 if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	. "$UV_DIR/calibration" 2>/dev/null
-	confirm.elf --ok "Device Optimized" "Runs cooler and lasts longer
-in every game -- most on PlayStation.
-Tuned to this exact chip:
-${min_margin_mv:-?}mV of measured headroom.
-
-Calibrated ${calibrated:-unknown}. Nothing to do --
-just play. Any reboot is factory-safe." "" "BACK" "MANAGE"
+	confirm.elf --ok "Device Optimized" "Cooler and longer-lasting in every game. Just play." "" "BACK" "MANAGE"
 	RC=$?
 	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
 
 	# MANAGE: the deliberate second level
 	confirm.elf "Manage tuning
 
-Re-run the measurement (~90 min,
-on the charger), or revert this
-device to factory voltages." "RE-RUN" "BACK" "REVERT"
+Calibrated ${calibrated:-unknown} -- measured headroom: ${min_margin_mv:-?}mV
+
+Re-run the measurement (~90 minutes, on the charger),
+or revert this device to factory voltages." "RE-RUN" "BACK" "REVERT"
 	RC=$?
 	if [ "$RC" = "2" ]; then
 		confirm.elf "Revert to factory voltages?
 
-Removes the tuning. Stock voltages
-apply from the next game launch.
-You can re-tune any time." "REVERT" "BACK" || exit 0
+Removes the tuning. Stock voltages apply from the
+next game launch. You can re-tune any time." "REVERT" "BACK" || exit 0
 		mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
 		rm -f "$UV_DIR/calibration"
 		sync
@@ -58,8 +52,7 @@ Launch a game to apply."
 	# A: re-run measurement
 	confirm.elf "Re-measure this device?
 
-This runs the ~90-minute calibration
-again. Keep it on the charger." "RE-RUN" "BACK" || exit 0
+Runs the ~90-minute calibration again. Keep it on the charger." "RE-RUN" "BACK" || exit 0
 	rm -f "$UV_DIR/calibration"
 	# fall through to arm
 fi
@@ -79,26 +72,21 @@ fi
 # ---------- STATE 1: not calibrated -> the pitch + disclaimer ----------
 confirm.elf "Tune Device Voltage
 
-Every chip is a little different. This
-measures YOUR device's lowest safe
-voltage and runs it there -- cooler
-hands, more play time per charge
-(most on PlayStation). Frame rates
-are unchanged.
+Every chip is a little different. This measures YOUR
+device's lowest safe voltage and runs it there --
+cooler hands, more play time per charge (most on
+PlayStation). Frame rates are unchanged.
 
 Continue to the details?" "NEXT" "BACK" || exit 0
 
 confirm.elf "How it works  (please read)
 
-* Takes about 90 minutes.
-* MUST stay on the charger.
-* The device WILL restart itself
-  several times -- this is normal,
-  it's how the measurement works.
+* Takes about 90 minutes -- MUST stay on the charger.
+* The device WILL restart itself several times.
+  That is normal: it is how the measurement works.
 * Play is unaffected afterward.
-* Any reboot always returns to
-  factory-safe voltages -- this
-  cannot damage your device.
+* Any reboot always returns to factory-safe
+  voltages. This cannot damage your device.
 
 Start the measurement?" "START" "CANCEL" || exit 0
 
