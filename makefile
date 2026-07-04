@@ -157,16 +157,8 @@ package: tidy
 	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
-	# base ships the essential tools (Input, Files, Clock, Deep Sleep); the rest stay in extras.
-	# NOTE: Tools are card-root payload, not part of MinUI.zip — self-updates don't add them.
-	mkdir -p "./build/BASE/Tools/tg5040"
-	cp -R "./build/EXTRAS/Tools/tg5040/Input.pak" "./build/BASE/Tools/tg5040/"
-	cp -R "./build/EXTRAS/Tools/tg5040/Files.pak" "./build/BASE/Tools/tg5040/"
-	cp -R "./build/EXTRAS/Tools/tg5040/Clock.pak" "./build/BASE/Tools/tg5040/"
-	cp -R "./build/EXTRAS/Tools/tg5040/Deep Sleep.pak" "./build/BASE/Tools/tg5040/"
-
 	# TODO: can I just add everything in BASE to zip?
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools trimui MinUI.zip README.txt .metadata_never_index .fseventsd
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves trimui MinUI.zip README.txt .metadata_never_index .fseventsd
 	cd ./build/EXTRAS && zip -r ../../releases/$(RELEASE_NAME)-extras.zip Bios Emus Roms Saves Tools README.txt
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
