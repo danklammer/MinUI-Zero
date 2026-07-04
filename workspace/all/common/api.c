@@ -234,6 +234,8 @@ void GFX_flip(SDL_Surface* screen) {
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
 	PLAT_flip(screen, should_vsync);
 }
+static uint32_t gfx_pace_period_us = 0; // 0 = stock FRAME_BUDGET; set by DRC to the panel period
+void GFX_setPacePeriodUs(uint32_t us) { gfx_pace_period_us = us; }
 void GFX_sync(void) {
 	uint32_t frame_duration = SDL_GetTicks() - frame_start;
 	// Preserve the original gate (the "under budget / strict / first frame" condition helps SuperFX
@@ -249,7 +251,7 @@ void GFX_sync(void) {
 	// than 2 frames (a stall/jump) so we re-anchor instead of bursting to catch up.
 	static uint64_t anchor_us = 0;
 	static int64_t  frame_index = -1;
-	const uint64_t  period_us = (uint64_t)FRAME_BUDGET * 1000;
+	uint64_t period_us = gfx_pace_period_us ? gfx_pace_period_us : (uint64_t)FRAME_BUDGET * 1000;
 
 	if (!paced) { anchor_us = 0; frame_index = -1; return; } // not pacing this frame -> resync next time
 
@@ -977,7 +979,9 @@ static struct SND_Context {
 	double frame_rate;
 	
 	int sample_rate_in;
+	int sample_rate_in_adj; // sample_rate_in scaled by the DRC ratio (== _in when DRC off)
 	int sample_rate_out;
+	int rate_adjust_ppm;    // dynamic rate control: pace the core to the panel's true rate
 	
 	int buffer_seconds;     // current_audio_buffer_size
 	SND_Frame* buffer;		// buf
@@ -1061,7 +1065,7 @@ static int SND_resampleNear(SND_Frame frame) { // audio_resample_nearest
 	if (diff < snd.sample_rate_out) {
 		snd.buffer[snd.frame_in++] = frame;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in;
+		diff += snd.sample_rate_in_adj;
 	}
 
 	if (diff >= snd.sample_rate_out) {
@@ -1087,7 +1091,7 @@ static int SND_resampleLinear(SND_Frame frame) { // audio_resample_linear
 		out.right = prev.right + (int16_t)(((int32_t)(frame.right - prev.right) * diff) / snd.sample_rate_out);
 		snd.buffer[snd.frame_in++] = out;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in;
+		diff += snd.sample_rate_in_adj;
 	}
 
 	if (diff >= snd.sample_rate_out) {
@@ -1099,7 +1103,7 @@ static int SND_resampleLinear(SND_Frame frame) { // audio_resample_linear
 	return consumed;
 }
 static void SND_selectResampler(void) { // plat_sound_select_resampler
-	if (snd.sample_rate_in==snd.sample_rate_out) {
+	if (snd.sample_rate_in_adj==snd.sample_rate_out) {
 		snd.resample =  SND_resampleNone;
 	}
 	else if (getenv("ZERO_RESAMPLE_NEAR")) { // A/B escape hatch: stock nearest-neighbor
@@ -1108,6 +1112,11 @@ static void SND_selectResampler(void) { // plat_sound_select_resampler
 	else {
 		snd.resample = SND_resampleLinear;
 	}
+}
+void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc block)
+	snd.rate_adjust_ppm = ppm;
+	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
+	SND_selectResampler();
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	
@@ -1189,6 +1198,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	snd.buffer_seconds = 5;
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
+	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000);
 	
 	SND_selectResampler();
 	SND_resizeBuffer();

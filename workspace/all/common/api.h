@@ -162,6 +162,7 @@ void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen);
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
+void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)
 int GFX_didOverrun(void); // 1 if the most recent frame's CPU work exceeded the frame budget (closed-loop governor signal)
 uint32_t GFX_getFrameWorkUs(void); // benchmark: us of CPU work in the last frame (GFX_startFrame->GFX_flip)
 void GFX_quit(void);
@@ -209,6 +210,7 @@ typedef struct SND_Frame {
 
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
+void SND_setRateAdjustPPM(int ppm); // dynamic rate control: scale audio-paced core speed
 void SND_pause(void);  // close the audio device during sleep (thread fully stops)
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
 void SND_quit(void);

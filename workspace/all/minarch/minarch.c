@@ -4780,6 +4780,7 @@ static void trackFPS(void) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
 		cpu_double = cpu_ticks / last_time;
+
 		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line.
 		// Normalized to % of TOTAL CPU (all cores), not one core — multi-threaded cores
 		// (supafaust spans the quad) read >100% otherwise, which looks like broken math.
@@ -5060,6 +5061,56 @@ int main(int argc , char* argv[]) {
 				uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
 				tlm_frame(work_us);
 				tlm_audio(as.queue_frames, as.underruns, as.overruns);
+			}
+		}
+
+		// Dynamic rate control (sync-stutter fix): the panel's true refresh runs faster than
+		// the cores' 60.0 (Brick 60.8Hz, SP ~61Hz measured), and with three clocks in play
+		// (audio-blocking pace, drift-free pacer, vsync) the slowest wins — so stock shows a
+		// duplicated frame every ~1.3s. Feedback controller, no rate measurement needed: if
+		// audio blocked during the window we are audio-bound (below panel rate) -> nudge the
+		// resample ratio up; if it never blocked, vsync is the binding clock (at panel rate)
+		// -> nudge down. Equilibrium hovers +/-150ppm around the true panel ratio. Games run
+		// ~1.3% fast, pitch +23 cents — the industry-standard imperceptible trade (RetroArch
+		// does the same). Heavy games that can't hold rate self-disable (no audio blocking ->
+		// ratchets to 0 = stock). ~60fps cores under strict vsync only; ZERO_NO_DRC disables.
+		if (!show_menu) {
+			static int drc_ppm = 0;
+			static int drc_frames = 0;
+			static long drc_prev_wait = 0;
+			static int drc_disabled = -1;
+			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
+			int drc_eligible = (!drc_disabled && !fast_forward
+				&& core.fps >= 58.0 && core.fps <= 61.0
+				&& GFX_getVsync()==VSYNC_STRICT);
+			if (!drc_eligible) {
+				if (drc_ppm) { // revert cleanly (vsync toggled off / fast-forward)
+					drc_ppm = 0;
+					SND_setRateAdjustPPM(0);
+					GFX_setPacePeriodUs(0);
+				}
+			}
+			else if (++drc_frames >= 30) { // ~2Hz
+				drc_frames = 0;
+				SND_Stats das; SND_getStats(&das);
+				long dwait = das.wait_ms - drc_prev_wait;
+				drc_prev_wait = das.wait_ms;
+				int prev = drc_ppm;
+				if (dwait > 1) drc_ppm += 150; // audio-bound: still below the panel rate
+				else           drc_ppm -= 150; // vsync-bound (or struggling): back off
+				if (drc_ppm < 0) drc_ppm = 0;
+				if (drc_ppm > 25000) drc_ppm = 25000;
+				if (drc_ppm != prev) {
+					SND_setRateAdjustPPM(drc_ppm);
+					// pace the drift-free pacer slightly above any 60-class panel so it only
+					// backstops; vsync + audio are the fine clocks while DRC is active
+					GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
+					static int drc_logged = 0;
+					if (!drc_logged && drc_ppm >= 6000) {
+						LOG_info("drc: converged past +%dppm (panel-locked pacing)\n", drc_ppm);
+						drc_logged = 1;
+					}
+				}
 			}
 		}
 

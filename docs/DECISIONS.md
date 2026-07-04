@@ -415,3 +415,19 @@ Recon of hardware the Brick lacks, looking for idle waste. Verdicts, all on-devi
 Conclusion: the Smart Pro has no device-specific waste; its only real deltas vs the Brick are
 the panel scanout (no GPU-dark, D-logged) and the DAC range (D33). Remaining SP data gap:
 its own battery baseline (the 7.5h figure is Brick-measured).
+
+## D35 — Dynamic rate control ships: sync stutter fixed by feedback, not measurement (2026-07-04)
+The classic MinUI stutter (one duplicated frame every ~1.3s) is a clock mismatch: cores generate
+60.0, the present path runs faster. Fix = retune the audio-paced core speed to the display, the
+RetroArch-proven idea, adapted to MinUI's audio-blocking architecture as a FEEDBACK controller:
+audio blocked during the window -> below the present rate, +150ppm; never blocked -> vsync is
+binding, -150ppm. Equilibrium = the true present rate, self-tracking, no constants to trust.
+Two attempts documented: (1) measuring flip intervals FAILED (the 60.0 pacer contaminates the
+measurement — you measure the system's cadence, not the panel's); (2) the controller cannot be
+fooled by definition. And it promptly proved the point: the Brick's LCD advertises 60.8Hz but the
+GLES present path actually gates at ~60.2 — a wrong constant we WOULD have shipped. Cost at lock:
++0.33% speed, +6 cents pitch (imperceptible). Guards: ~60fps cores + strict vsync only, FF/menu
+freeze it, heavy games self-disable (ratchet to 0 = stock), ZERO_NO_DRC kill switch. Foundation:
+the D-resampler (linear interpolation, same commit series) — nearest-neighbor would have turned
+the ppm adjustments into zipper noise. User-verified on Sonic 2: no stutter, no tears.
+Pillar 3 (tear-free, stutter-free, drift-free pacing) is complete.

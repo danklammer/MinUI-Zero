@@ -17,7 +17,7 @@ measured on real hardware.
 | **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
 | **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras) |
 | **Stock bugs fixed** | NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves |
-| **Tuned everything** | Cores built for the chip and pinned, drift-free pacing, `noatime` |
+| **Tuned everything** | Cores built for the chip and pinned, stutter-free panel-locked pacing, `noatime` |
 | **Hard to break** | Bad-ROM bail, mid-game resolution changes, crash-safe saves |
 
 **~7.5 hours on Game Boy** (measured on the Brick) — up from ~6 before tuning.
