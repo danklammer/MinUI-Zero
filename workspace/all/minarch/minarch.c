@@ -4850,6 +4850,12 @@ static void* coreThread(void *arg) {
 int main(int argc , char* argv[]) {
 	LOG_info("MinArch\n");
 
+	// PowerVR swap chain: 2 buffers instead of the default 3 = one frame less input
+	// latency at zero CPU/heat cost (NULLWS_BUFFERS_COUNT is read by libpvrNULL_WSEGL
+	// at EGL init; driver-validated range starts at 2). Overridable from the environment
+	// (setenv overwrite=0). Verified on-device 2026-07-04: gov/DRC/temps unchanged.
+	setenv("NULLWS_BUFFERS_COUNT", "2", 0);
+
 	setOverclock(overclock); // default to normal
 	// force a stack overflow to ensure asan is linked and actually working
 	// char tmp[2];
