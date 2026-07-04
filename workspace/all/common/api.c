@@ -1071,12 +1071,42 @@ static int SND_resampleNear(SND_Frame frame) { // audio_resample_nearest
 
 	return consumed;
 }
+static int SND_resampleLinear(SND_Frame frame) { // audio_resample_linear
+	// Same accumulator scheme as SND_resampleNear, but each output is interpolated
+	// between the previous and current input frame instead of duplicated/dropped.
+	// Two multiplies per sample — audibly smoother on non-native rates (GBA 32.8kHz,
+	// PS1 44.1kHz -> 48kHz) for effectively zero CPU. Sinc/libsamplerate rejected:
+	// real CPU cost for fidelity this speaker can't reproduce.
+	static SND_Frame prev = {0,0};
+	static int diff = 0;
+	int consumed = 0;
+
+	if (diff < snd.sample_rate_out) {
+		SND_Frame out;
+		out.left  = prev.left  + (int16_t)(((int32_t)(frame.left  - prev.left ) * diff) / snd.sample_rate_out);
+		out.right = prev.right + (int16_t)(((int32_t)(frame.right - prev.right) * diff) / snd.sample_rate_out);
+		snd.buffer[snd.frame_in++] = out;
+		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
+		diff += snd.sample_rate_in;
+	}
+
+	if (diff >= snd.sample_rate_out) {
+		consumed++;
+		diff -= snd.sample_rate_out;
+		prev = frame;
+	}
+
+	return consumed;
+}
 static void SND_selectResampler(void) { // plat_sound_select_resampler
 	if (snd.sample_rate_in==snd.sample_rate_out) {
 		snd.resample =  SND_resampleNone;
 	}
-	else {
+	else if (getenv("ZERO_RESAMPLE_NEAR")) { // A/B escape hatch: stock nearest-neighbor
 		snd.resample = SND_resampleNear;
+	}
+	else {
+		snd.resample = SND_resampleLinear;
 	}
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
