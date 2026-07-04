@@ -29,23 +29,17 @@ Your chip's margin: ${min_margin_mv:-?}mV (measured)
 
 Running lean saves power and heat
 in every game -- most on PlayStation.
-Any reboot is always factory-safe.
-
-Re-run measurement, or revert?" "RE-RUN" "DONE"
-	if [ $? -eq 0 ]; then
-		confirm.elf "Re-measure this device?
-
-This runs the ~90-minute calibration
-again. Keep it on the charger." "RE-RUN" "BACK" || exit 0
-		rm -f "$UV_DIR/calibration"
-		# fall through to arm
-	else
+Any reboot is always factory-safe." "RE-RUN" "BACK" "REVERT"
+	RC=$?
+	if [ "$RC" = "1" ]; then
+		exit 0 # B: straight back to the menu, no questions
+	elif [ "$RC" = "2" ]; then
 		confirm.elf "Revert to factory voltages?
 
 Removes the tuning. Your device
 goes back to stock voltages on the
 next game launch. You can re-tune
-any time." "REVERT" "KEEP" || exit 0
+any time." "REVERT" "BACK" || exit 0
 		mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
 		rm -f "$UV_DIR/calibration"
 		sync
@@ -54,6 +48,13 @@ any time." "REVERT" "KEEP" || exit 0
 Launch a game to apply."
 		exit 0
 	fi
+	# A: re-run measurement
+	confirm.elf "Re-measure this device?
+
+This runs the ~90-minute calibration
+again. Keep it on the charger." "RE-RUN" "BACK" || exit 0
+	rm -f "$UV_DIR/calibration"
+	# fall through to arm
 fi
 
 # ---------- STATE 2: calibration in progress (armed, resuming across reboots) ----------
