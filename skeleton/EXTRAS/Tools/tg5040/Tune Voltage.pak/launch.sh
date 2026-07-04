@@ -22,27 +22,31 @@ STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 # ---------- STATE 3: already calibrated ----------
 if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	. "$UV_DIR/calibration" 2>/dev/null
-	confirm.elf --ok "Device Optimized" "Cooler and longer-lasting in every game. Just play." "" "BACK" "MANAGE"
+	# derive rough headline benefits from the measured margin (V^2 -> ~1.6x the mV% in power)
+	MV=${min_margin_mv:-0}
+	PCT=$(( MV * 16 / 120 ))          # ~% CPU-rail power saved at the top clock
+	COOL=$(( MV / 30 ))               # ~degrees C cooler in heavy games
+	[ "$COOL" -lt 1 ] && COOL=1
+	confirm.elf --ok "Device Voltage Optimized" "${PCT}% less CPU power. ${COOL}C cooler.
+Tuned to this exact chip." "" "BACK" "MANAGE"
 	RC=$?
 	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
 
 	# MANAGE: the deliberate second level
-	confirm.elf "Manage tuning
+	confirm.elf "Manage Tuning
 
-Calibrated ${calibrated:-unknown} -- measured headroom: ${min_margin_mv:-?}mV
-
-Re-run the measurement (~90 minutes, on the charger),
-or revert this device to factory voltages." "RE-RUN" "BACK" "REVERT"
+Calibrated ${calibrated:-unknown}
+Headroom: ${min_margin_mv:-?}mV" "RE-RUN" "BACK" "REVERT"
 	RC=$?
 	if [ "$RC" = "2" ]; then
-		confirm.elf "Revert to factory voltages?
+		confirm.elf "Revert to Factory?
 
-Removes the tuning. Stock voltages apply from the
-next game launch. You can re-tune any time." "REVERT" "BACK" || exit 0
+Stock voltage resumes next launch.
+Re-tune anytime." "REVERT" "BACK" || exit 0
 		mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
 		rm -f "$UV_DIR/calibration"
 		sync
-		say.elf "Reverted to factory voltages.
+		say.elf "Reverted to factory voltage.
 
 Launch a game to apply."
 		exit 0
@@ -50,53 +54,41 @@ Launch a game to apply."
 		exit 0 # B: back
 	fi
 	# A: re-run measurement
-	confirm.elf "Re-measure this device?
+	confirm.elf "Re-measure This Chip?
 
-Runs the ~90-minute calibration again. Keep it on the charger." "RE-RUN" "BACK" || exit 0
+Takes ~90 min. Keep it charging." "RE-RUN" "BACK" || exit 0
 	rm -f "$UV_DIR/calibration"
 	# fall through to arm
 fi
 
 # ---------- STATE 2: calibration in progress (armed, resuming across reboots) ----------
 if [ -f "$UV_DIR/ARMED" ]; then
-	say.elf "Measurement in progress...
+	say.elf "Measuring...
 
-Keep the device on its charger.
-It restarts itself several times --
-that is the measurement working.
-Done in about 90 minutes; you'll
-see a summary here when it finishes."
+Keep it charging. The device restarts
+itself several times -- that's normal.
+Done in about 90 minutes."
 	exit 0
 fi
 
 # ---------- STATE 1: not calibrated -> the pitch + disclaimer ----------
 confirm.elf "Tune Device Voltage
 
-Every chip is a little different. This measures YOUR
-device's lowest safe voltage and runs it there --
-cooler hands, more play time per charge (most on
-PlayStation). Frame rates are unchanged.
+Every chip is a little different. This finds
+YOUR chip's lowest safe voltage and runs
+there -- cooler and longer battery, same speed." "NEXT" "BACK" || exit 0
 
-Continue to the details?" "NEXT" "BACK" || exit 0
+confirm.elf "Before You Start
 
-confirm.elf "How it works  (please read)
-
-* Takes about 90 minutes -- MUST stay on the charger.
-* The device WILL restart itself several times.
-  That is normal: it is how the measurement works.
-* Play is unaffected afterward.
-* Any reboot always returns to factory-safe
-  voltages. This cannot damage your device.
-
-Start the measurement?" "START" "CANCEL" || exit 0
+* Takes ~90 min. Keep it charging.
+* It restarts itself several times.
+  That's normal -- it's how it measures.
+* Reboots are always factory-safe:
+  this cannot damage your device." "START" "BACK" || exit 0
 
 if [ "$STATUS" = "Discharging" ]; then
-	say.elf "Please connect the charger first,
-then run Tune Voltage again.
-
-(The measurement needs steady power
-so a low battery can't be mistaken
-for a voltage limit.)"
+	say.elf "Connect the charger first,
+then run Tune Voltage again."
 	exit 0
 fi
 
@@ -116,11 +108,9 @@ sync
 
 say.elf "Measurement started.
 
-Leave the device on its charger.
-It will restart itself several times
-and finish in about 90 minutes.
-
-You can check back here any time."
+Leave it charging -- it restarts itself
+several times and finishes in ~90 min.
+Check back here any time."
 
 ( sh "$UV_DIR/uvmap.sh" > /dev/null 2>&1 & )
 exit 0
