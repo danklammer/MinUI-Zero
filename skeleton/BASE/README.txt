@@ -12,7 +12,8 @@ What's different
   Zero idle waste       no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
   Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool in Extras)
   Stock bugs fixed      NES ran hot with crackling audio, quit menus hung, LEDs re-lit themselves
-  Tuned everything      cores built for the chip and pinned, drift-free pacing
+  Plays better          stutter-free panel-locked pacing, a frame less input lag, smoother audio
+  Tuned everything      cores built for the chip and pinned
   Hard to break         bad-ROM bail, mid-game resolution changes, crash-safe saves
 
 About 7.5 hours on Game Boy (measured on the Brick) — up from about 6 before tuning.
@@ -125,7 +126,7 @@ A user-authored shell script named "auto.sh" in "/.userdata/tg5040/" runs on eve
 ----------------------------------------
 Thanks
 
-MinUI Zero stands on MinUI by Shaun Inman — the launcher, the frontend, and the philosophy are his, as are the thanks owed to the wider community documented in upstream MinUI. Deep sleep was ported from zhaofengli's MinUI branch; techniques were borrowed from MyMinUI (Turro75) and NextUI (LoveRetro). MinUI Zero is an independent fork, not affiliated with or endorsed by any of them.
+MinUI Zero stands on MinUI by Shaun Inman — the launcher, the frontend, and the philosophy are his, as are the thanks owed to the wider community documented in upstream MinUI. Deep sleep was ported from zhaofengli's MinUI branch; techniques were borrowed from MyMinUI (Turro75) and NextUI (LoveRetro); the rate-control idea comes from RetroArch. MinUI Zero is an independent fork, not affiliated with or endorsed by any of them.
 
   https://github.com/shauninman/MinUI
   https://github.com/zhaofengli/MinUI
