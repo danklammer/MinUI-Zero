@@ -66,8 +66,7 @@ if [ -f "$UV_DIR/ARMED" ]; then
 	say.elf "Measuring...
 
 Keep it charging. The device restarts
-itself several times -- that's normal.
-Done in about 90 minutes."
+itself several times. Done in about 90 minutes."
 	exit 0
 fi
 
@@ -81,8 +80,8 @@ there -- cooler and longer battery, same speed." "NEXT" "BACK" || exit 0
 confirm.elf "Before You Start
 
 * Takes ~90 min. Keep it charging.
-* It restarts itself several times.
-  That's normal -- it's how it measures.
+* It restarts itself several times --
+  this is how it measures.
 * Reboots are always factory-safe:
   this cannot damage your device." "START" "BACK" || exit 0
 
