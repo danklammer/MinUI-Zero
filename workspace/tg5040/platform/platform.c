@@ -469,6 +469,7 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 }
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
+	PLAT_uvReassert(); // voltage authority: out-persist the kernel (no-op unless armed)
 	
 	if (!vid.blit) {
 		if (fb_present) { PLAT_flipFB(); return; } // GPU-dark software present for the native-res menu
@@ -682,6 +683,7 @@ static struct { int khz; int uv; } uv_table[16];
 static int uv_n = 0;
 static int uv_fd = -1;      // -1 = uninitialized, -2 = permanently disabled
 static int uv_applied = 0;  // last commanded uV (0 = stock/untouched)
+static int uv_target = 0;   // the voltage the authority wants HELD right now (0 = none)
 
 static int uv_reg_read(int reg) {
 	unsigned char r = (unsigned char)reg, v;
@@ -751,11 +753,29 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	int uv = 0;
 	for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
 	if (!uv) uv = UV_STOCK_MAX; // ceiling above table: run stock volts
-	if (uv != uv_applied) uv_write(uv);
+	// The kernel RE-ASSERTS its stock voltage on every DVFS transition, so the register is
+	// the only truth — read it and rewrite when it drifted (one i2c read per tick, ~2Hz).
+	uv_target = uv;
+	int v0 = uv_reg_read(0x00);
+	if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv) uv_write(uv);
+	else if (v0 < 0 && uv != uv_applied) uv_write(uv);
+}
+void PLAT_uvReassert(void) {
+	// Per-frame: the kernel re-stocks the rail on every DVFS transition; out-persist it.
+	// One i2c register read per frame; a write only when the kernel actually drifted us
+	// (~1-2x/s under schedutil). Wired into PLAT_flip; no-op unless the authority armed.
+	if (uv_fd < 0 || !uv_target) return;
+	int v0 = uv_reg_read(0x00);
+	if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target) {
+		uv_write(uv_target);
+		static int logged = 0;
+		if (!logged) { LOG_info("uv: reassert active (holding %duV against the kernel)\n", uv_target); logged = 1; }
+	}
 }
 void PLAT_restoreCPUVolt(void) {
 	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the
 	// next OPP transition. Called on quit and from the crash handler.
+	uv_target = 0; // stop the per-frame reassert before the safe write
 	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);
 	uv_applied = 0;
 }
