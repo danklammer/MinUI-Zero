@@ -13,14 +13,14 @@ measured on real hardware.
 | Feature | Details |
 |---|---|
 | **Closed-loop governor** | The lowest clock that holds frame rate, per game — never overclocks |
-| **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) |
+| **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) — Brick only |
 | **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
 | **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras) |
 | **Stock bugs fixed** | NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves |
 | **Tuned everything** | Cores built for the chip and pinned, drift-free pacing, `noatime` |
 | **Hard to break** | Bad-ROM bail, mid-game resolution changes, crash-safe saves |
 
-**~7.5 hours on Game Boy** — up from ~6 before tuning.
+**~7.5 hours on Game Boy** (measured on the Brick) — up from ~6 before tuning.
 
 ## The governor (and why there's no CPU Speed setting)
 
