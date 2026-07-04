@@ -99,6 +99,28 @@ fi
 # set default usb mode (reads usbmode from the stock config)
 usb_device.sh
 
+# First-boot polish (baked in from the old Bootlogo + Remove Loading tools — see git history).
+# Runs once, guarded by a flag; every step is non-fatal so a failure never blocks boot.
+FIRSTRUN="$SHARED_USERDATA_PATH/.minui/zero-firstrun-done"
+if [ ! -f "$FIRSTRUN" ]; then
+	# Remove Loading: drop the stock splash line so boot goes straight to MinUI (no flash).
+	[ -f /etc/init.d/runtrimui ] && sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null
+	# Bootlogo: replace the vendor boot logo on the eMMC boot partition (once).
+	LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
+	if [ -f "$LOGO" ]; then
+		BOOTMNT=/tmp/zero-boot
+		mkdir -p "$BOOTMNT"
+		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
+			cp "$LOGO" "$BOOTMNT/bootlogo.bmp" 2>/dev/null
+			sync
+			umount "$BOOTMNT" 2>/dev/null
+		fi
+		rmdir "$BOOTMNT" 2>/dev/null
+	fi
+	touch "$FIRSTRUN"
+	sync
+fi
+
 # match stock audio
 tinymix set 9 1
 tinymix set 1 0
