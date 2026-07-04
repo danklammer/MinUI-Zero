@@ -65,8 +65,9 @@ fi
 if [ -f "$UV_DIR/ARMED" ]; then
 	say.elf "Measuring...
 
-Keep it charging. The device restarts
-itself several times. Done in about 90 minutes."
+Keep it charging.
+The device restarts itself several times.
+Done in about 90 minutes."
 	exit 0
 fi
 
@@ -75,15 +76,15 @@ confirm.elf "Tune Device Voltage
 
 Every chip is a little different. This finds
 YOUR chip's lowest safe voltage and runs
-there -- cooler and longer battery, same speed." "NEXT" "BACK" || exit 0
+there. Cooler and longer battery, same speed." "NEXT" "BACK" || exit 0
 
 confirm.elf "Before You Start
 
 * Takes ~90 min. Keep it charging.
-* It restarts itself several times --
-  this is how it measures.
-* Reboots are always factory-safe:
-  this cannot damage your device." "START" "BACK" || exit 0
+* It restarts itself several times.
+  This is how it measures.
+* Reboots are always factory-safe.
+  This cannot damage your device." "START" "BACK" || exit 0
 
 if [ "$STATUS" = "Discharging" ]; then
 	say.elf "Connect the charger first,
@@ -107,8 +108,9 @@ sync
 
 say.elf "Measurement started.
 
-Leave it charging -- it restarts itself
-several times and finishes in ~90 min.
+Leave it charging.
+It restarts itself several times and
+finishes in about 90 minutes.
 Check back here any time."
 
 ( sh "$UV_DIR/uvmap.sh" > /dev/null 2>&1 & )
