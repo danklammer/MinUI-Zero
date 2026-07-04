@@ -107,3 +107,24 @@ ever contemplated. Rule regardless: **we never modify internal storage** — SD-
   + auto-revert.
 - First actionable step whenever we feel like it: **the zero-risk recon dump** (§6.1) — an
   afternoon, no writes, and it converts most of the [PROBE]s above into [KNOWN]s.
+
+---
+
+## P1 recon results — Brick, measured 2026-07-04 (all former LIKELYs now KNOWN)
+
+- **CPU rail: `tcs4838-dcdc0` (external buck, i2c `6-0041`)** — sole consumer is `cpu0`
+  (confirmed via `/sys/kernel/debug/regulator/regulator_summary`). Hardware window
+  712.5-1500 mV.
+- **Measured OPP-to-voltage ladder** (pinned each OPP, read the rail live):
+  408/600/816/1008 MHz = **900.0 mV flat**; 1200 = 937.5; 1416 = 1025.0; 1608 = 1100.0;
+  1800 = **1187.5 mV**.
+- **Persist target:** `opp-microvolt-c0` property in `/proc/device-tree/opp_l_table/opp@*`
+  (speed-bin suffixed, sunxi style). debugfs `opp_summary` is empty on this kernel.
+- **Watchdog:** `/dev/watchdog` present -> the P2 margin harness can be crash-safe and
+  unattended.
+- **P2 design (agreed):** self-resuming harness — state file on SD + `auto.sh` resume after
+  each watchdog reboot; pin OPP -> step the TCS4838 down via i2c -> stress -> log survivor;
+  the crash boundary per OPP IS the data. Ship form = the same harness as an opt-in
+  self-characterization tool (margins are per-chip; never ship one chip's numbers).
+- Per-device: the Smart Pro needs its own P1 pass (same probes) + its own margin table.
+
