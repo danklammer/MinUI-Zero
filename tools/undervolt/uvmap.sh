@@ -1,0 +1,112 @@
+#!/bin/sh
+# uvmap.sh — self-resuming per-chip voltage margin mapper (undervolt P2).
+#
+# HOW IT WORKS: for each OPP, pin the clock, step the CPU rail down 12.5mV at a time
+# (RAM-only, via uvtool), run the stressor under a petted hardware watchdog. A crash or
+# hang reboots the device; on boot, auto.sh re-runs this script, which sees the state
+# file still says "testing OPP X at Y uV" and concludes THAT POINT CRASHED — records the
+# cliff, moves to the next OPP at stock voltage. When every OPP is mapped it disarms
+# itself. The crash boundary IS the data; the watchdog IS the safety.
+#
+# ARM:    mkdir -p $UV_DIR && touch $UV_DIR/ARMED && sh uvmap.sh &   (device plugged in!)
+# DISARM: rm $UV_DIR/ARMED  (takes effect next boot; harness also disarms when done)
+#
+# Nothing here persists a voltage: every reboot returns to the kernel's stock table.
+
+UV_DIR=/mnt/SDCARD/.userdata/tg5040/undervolt
+STATE=$UV_DIR/state          # "<opp_khz> <testing_uv>"
+LOG=$UV_DIR/margins.log
+BIN=$UV_DIR
+P=/sys/devices/system/cpu/cpu0/cpufreq
+
+OPPS="1800000 1608000 1416000 1200000 1008000 816000 600000 408000"
+STEP=12500
+FLOOR=762500
+STRESS_SECS=75
+
+[ -f "$UV_DIR/ARMED" ] || exit 0
+mkdir -p "$UV_DIR"
+
+# refuse to run on battery — a mid-campaign battery death looks like a crash datapoint
+STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
+if [ "$STATUS" = "Discharging" ]; then
+	echo "$(date +%T) not charging — campaign paused this boot" >> "$LOG"
+	exit 0
+fi
+
+# keep the device awake and out of MinUI's way for the whole campaign
+touch /tmp/stay_awake
+killall -9 minarch.elf minui.elf 2>/dev/null
+
+stock_uv_for() { # read the rail after pinning (kernel applies stock OPP voltage)
+	for r in /sys/class/regulator/regulator.*; do
+		[ "$(cat $r/name 2>/dev/null)" = "tcs4838-dcdc0" ] && cat $r/microvolts && return
+	done
+}
+
+pin() {
+	echo "$1" > $P/scaling_max_freq 2>/dev/null
+	echo "$1" > $P/scaling_min_freq 2>/dev/null
+	sleep 1
+}
+
+# watchdog petter: keep-alive every 5s; if the machine locks, the dog fires (~16s)
+( exec 3<> /dev/watchdog || exit 0
+  while [ -f /tmp/uvmap.running ]; do echo k >&3; sleep 5; done
+  printf 'V' >&3 # magic close: disarm cleanly when the campaign exits on its own
+) &
+touch /tmp/uvmap.running
+WDPID=$!
+
+finish() {
+	rm -f /tmp/uvmap.running
+	echo "$(date +%T) campaign COMPLETE — disarming" >> "$LOG"
+	rm -f "$UV_DIR/ARMED" "$STATE"
+	sync
+	reboot
+}
+
+# --- crash bookkeeping: a leftover state line means that point rebooted us ---
+if [ -f "$STATE" ]; then
+	read CRASH_OPP CRASH_UV < "$STATE"
+	echo "$CRASH_OPP CLIFF $CRASH_UV (crashed)" >> "$LOG"
+	echo "$(date +%T) opp $CRASH_OPP: cliff at $CRASH_UV uV" >> "$LOG"
+	rm -f "$STATE"; sync
+	# resume from the OPP AFTER the crashed one
+	SKIP=1
+else
+	SKIP=0
+	echo "=== uvmap campaign start $(date +%T) ===" >> "$LOG"
+fi
+
+PAST_CRASH=0
+for OPP in $OPPS; do
+	if [ "$SKIP" = "1" ] && [ "$PAST_CRASH" = "0" ]; then
+		[ "$OPP" = "$CRASH_OPP" ] && PAST_CRASH=1
+		grep -q "^$OPP CLIFF\|^$OPP DONE" "$LOG" 2>/dev/null && continue
+		[ "$PAST_CRASH" = "0" ] && continue
+		continue # the crashed OPP itself is finished (cliff recorded)
+	fi
+	grep -q "^$OPP CLIFF\|^$OPP DONE" "$LOG" 2>/dev/null && continue
+
+	pin "$OPP"
+	UV=$(stock_uv_for)
+	echo "$(date +%T) opp $OPP: stock $UV uV, stepping down" >> "$LOG"; sync
+
+	while [ "$UV" -gt "$FLOOR" ]; do
+		UV=$((UV - STEP))
+		echo "$OPP $UV" > "$STATE"; sync   # if we reboot past here, this point crashed
+		"$BIN/uvtool" set "$UV" >> "$LOG" 2>&1 || { echo "$OPP uvtool-refused at $UV" >> "$LOG"; break; }
+		if ! "$BIN/stress" $STRESS_SECS >> "$LOG" 2>&1; then
+			echo "$OPP CLIFF $UV (stress-fail)" >> "$LOG"; sync
+			break
+		fi
+		echo "$(date +%T) opp $OPP: $UV uV survived" >> "$LOG"; sync
+	done
+	[ "$UV" -le "$FLOOR" ] && echo "$OPP DONE floor $FLOOR reached, no cliff" >> "$LOG"
+	rm -f "$STATE"; sync
+	# restore stock voltage for this OPP by bouncing the clock (kernel re-asserts)
+	pin 408000; pin "$OPP"; pin 408000
+done
+
+finish

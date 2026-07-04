@@ -128,3 +128,31 @@ ever contemplated. Rule regardless: **we never modify internal storage** — SD-
   self-characterization tool (margins are per-chip; never ship one chip's numbers).
 - Per-device: the Smart Pro needs its own P1 pass (same probes) + its own margin table.
 
+## P2 COMPLETE — the Brick's measured margin map (2026-07-04, 06:28-07:59, fully unattended)
+
+The self-resuming harness (tools/undervolt/: uvtool + stress + uvmap.sh) mapped all 8 OPPs
+in 91 minutes with 4 deliberate crash-reboots, zero human intervention, nothing persisted:
+
+| OPP (MHz) | Stock (mV) | Cliff (mV) | Margin | Guardbanded ship (+50) | CPU power cut (V^2) |
+|---|---|---|---|---|---|
+| 1800 | 1187.5 | 1012.5 | 175 | 1062.5 | -19.9% |
+| 1608 | 1100.0 | 950.0 | 150 | 1000.0 | -17.4% |
+| 1416 | 1025.0 | 875.0 | 150 | 925.0 | -18.6% |
+| 1200 | 937.5 | 800.0 | 137.5 | 850.0 | -17.8% |
+| 1008 | 900.0 | none at 762.5 floor | >=137.5 | 812.5 | -18.5% |
+| 816 | 900.0 | none at floor | >=137.5 | 812.5 | -18.5% |
+| 600 | 900.0 | none at floor | >=137.5 | 812.5 | -18.5% |
+| 408 | 900.0 | none at floor | >=137.5 | 812.5 | -18.5% |
+
+Headline: **the ENTIRE gaming range (408-1008) survived the harness floor** — this chip's true
+floor there is below 762.5mV. The guardbanded table cuts ~18-20% CPU-rail power at every
+operating point. Notes: margins are THIS chip's (silicon lottery — the tool must run per
+device); the ~14-min dark windows during floor-runs are stress starving sshd (expected);
+campaign self-disarmed and the device returned to full stock.
+
+Next (P3, the careful phase): persist via `opp-microvolt-c0` in the DTB. Precursor recon:
+find where the DTB lives in the boot chain (boot partition layout) + how to flash it +
+FEL rescue drill BEFORE any write. A runtime voltage daemon was considered and REJECTED:
+racing schedutil transitions can apply a low-OPP voltage to a high OPP (below-cliff = crash);
+only the kernel can sequence voltage/frequency atomically, hence DTB.
+
