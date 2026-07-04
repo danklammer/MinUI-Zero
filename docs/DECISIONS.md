@@ -401,3 +401,17 @@ Diagnosis wandered through two WRONG fixes before the ear tests settled it:
   trimui_inputd (nothing of ours in the path; gpio243 is NOT the FN switch on the SP).
 Lesson enshrined: dB tables suggest; ears verify. Trust the fork lineage (stock == NextUI == ours
 now) over a clever reading of sysfs.
+
+## D34 — Smart Pro-specific rails: all probed, all closed (2026-07-04)
+Recon of hardware the Brick lacks, looking for idle waste. Verdicts, all on-device:
+- **Analog stick power rails (gpio110/114): EXACT drain tie** (200 charge units/25min with rails
+  on AND off, menu idle). No win exists; rails stay stock-on. Nobody in the scene ever measured
+  this — now it's measured. Don't re-chase.
+- **HDMI: the RK628 bridge is devicetree-only** — never instantiated on I2C, no driver bound,
+  nothing to power down (same class as the Brick's DRAM rail probe). Even NextUI's GetHDMI() is
+  a hardcoded `return 0`.
+- **trimui_inputd: event-driven at idle** (0 jiffies over both 25-min windows) — the "stick
+  sampling cost" concern was unfounded.
+Conclusion: the Smart Pro has no device-specific waste; its only real deltas vs the Brick are
+the panel scanout (no GPU-dark, D-logged) and the DAC range (D33). Remaining SP data gap:
+its own battery baseline (the 7.5h figure is Brick-measured).
