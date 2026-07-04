@@ -354,6 +354,7 @@ int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mec
 void PLAT_setUndervolt(int millivolts); // legacy spike API, superseded by the table-driven authority below
 void PLAT_setCPUVoltForCeil(int khz);   // apply the calibrated voltage covering any OPP <= (rounded-up) ceiling
 void PLAT_restoreCPUVolt(void);         // always-safe stock restore (quit + crash paths)
+void PLAT_uvReassert(void);             // per-frame: rewrite the lean voltage if the kernel re-stocked it
 void PLAT_setRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 
