@@ -668,6 +668,7 @@ void PLAT_setCPUMaxFreq(int khz) {
 //   - ZERO_NO_UV=1 env kills it
 // The GOVERNOR is the only caller and owns the ordering (volt-up before clock-up,
 // clock-down before volt-down) — see gov_tick.
+#include <pthread.h>
 #include <linux/i2c-dev.h>
 #include <sys/ioctl.h>
 
@@ -684,6 +685,9 @@ static int uv_n = 0;
 static int uv_fd = -1;      // -1 = uninitialized, -2 = permanently disabled
 static int uv_applied = 0;  // last commanded uV (0 = stock/untouched)
 static int uv_target = 0;   // the voltage the authority wants HELD right now (0 = none)
+static pthread_t uv_thread;
+static pthread_mutex_t uv_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile int uv_thread_run = 0;
 
 static int uv_reg_read(int reg) {
 	unsigned char r = (unsigned char)reg, v;
@@ -755,29 +759,48 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	if (!uv) uv = UV_STOCK_MAX; // ceiling above table: run stock volts
 	// The kernel RE-ASSERTS its stock voltage on every DVFS transition, so the register is
 	// the only truth — read it and rewrite when it drifted (one i2c read per tick, ~2Hz).
+	pthread_mutex_lock(&uv_lock);
 	uv_target = uv;
 	int v0 = uv_reg_read(0x00);
 	if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv) uv_write(uv);
 	else if (v0 < 0 && uv != uv_applied) uv_write(uv);
+	pthread_mutex_unlock(&uv_lock);
+}
+// The kernel re-stocks the rail on EVERY schedutil DVFS transition (many/sec), so a
+// per-frame (60Hz) reassert only wins ~50% of the time. A dedicated thread polls the
+// register at ~200Hz and rewrites the instant the kernel drifts us off target. Safe by
+// the governor's ordering: uv_target always covers the ceiling (raised before the clock,
+// lowered after it), so holding it continuously never under-volts a live clock. i2c is
+// serialized with the governor's own writes by uv_lock.
+static void* uv_hold(void* arg) {
+	(void)arg;
+	while (uv_thread_run) {
+		if (uv_fd >= 0 && uv_target) {
+			pthread_mutex_lock(&uv_lock);
+			int v0 = uv_reg_read(0x00);
+			if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target) uv_write(uv_target);
+			pthread_mutex_unlock(&uv_lock);
+		}
+		usleep(5000); // ~200Hz
+	}
+	return NULL;
 }
 void PLAT_uvReassert(void) {
-	// Per-frame: the kernel re-stocks the rail on every DVFS transition; out-persist it.
-	// One i2c register read per frame; a write only when the kernel actually drifted us
-	// (~1-2x/s under schedutil). Wired into PLAT_flip; no-op unless the authority armed.
-	if (uv_fd < 0 || !uv_target) return;
-	int v0 = uv_reg_read(0x00);
-	if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target) {
-		uv_write(uv_target);
-		static int logged = 0;
-		if (!logged) { LOG_info("uv: reassert active (holding %duV against the kernel)\n", uv_target); logged = 1; }
-	}
+	// Lazily start the hold thread on first armed frame (no-op unless the authority armed).
+	if (uv_fd < 0 || !uv_target || uv_thread_run) return;
+	uv_thread_run = 1;
+	if (pthread_create(&uv_thread, NULL, uv_hold, NULL) != 0) uv_thread_run = 0;
+	else LOG_info("uv: hold thread started (~200Hz, holding %duV)\n", uv_target);
 }
 void PLAT_restoreCPUVolt(void) {
 	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the
 	// next OPP transition. Called on quit and from the crash handler.
-	uv_target = 0; // stop the per-frame reassert before the safe write
+	uv_thread_run = 0; // stop the hold thread first
+	pthread_mutex_lock(&uv_lock);
+	uv_target = 0;
 	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);
 	uv_applied = 0;
+	pthread_mutex_unlock(&uv_lock);
 }
 void PLAT_setUndervolt(int millivolts) { (void)millivolts; } // superseded by the table API
 
