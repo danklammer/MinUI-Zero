@@ -24,6 +24,12 @@ all:
 	cd ./all/minput/ && make
 	cd ./all/syncsettings/ && make
 	cd ./all/say/ && make
+	cd ./all/confirm/ && make
+	# Tune Voltage harness binaries (undervolt calibration) — build inside the mount;
+	# the top makefile copies them into the pak host-side (build/ is outside the container).
+	mkdir -p ./tg5040/undervolt/build
+	/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -o ./tg5040/undervolt/build/uvtool ./tg5040/undervolt/uvtool.c
+	/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -o ./tg5040/undervolt/build/stress ./tg5040/undervolt/stress.c -lpthread
 	cd ./$(PLATFORM)/cores && make
 	cd ./$(PLATFORM) && make
 
@@ -36,4 +42,5 @@ clean:
 	cd ./all/minput/ && make clean
 	cd ./all/syncsettings/ && make clean
 	cd ./all/say/ && make clean
+	cd ./all/confirm/ && make clean
 	cd ./$(PLATFORM) && make clean
