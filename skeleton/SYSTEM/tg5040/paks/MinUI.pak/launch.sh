@@ -152,10 +152,16 @@ EXEC_PATH="/tmp/minui_exec"
 NEXT_PATH="/tmp/next"
 touch "$EXEC_PATH" # tmpfs; a sync here would flush every filesystem for a file that never touches disk
 while [ -f $EXEC_PATH ]; do
-	# GPU-dark menu on BOTH devices: PLAT_flipFB reads the fb geometry at runtime, and the
-	# Smart Pro fb (1280x720, stride 5120) verified pixel-perfect + GPU suspended on-device
-	# 2026-07-03. (The earlier "black menu" was the model-cache misdetection, not this path.)
-	ZERO_FB_PRESENT=1 minui.elf &> $LOGS_PATH/minui.txt
+	if [ "$DEVICE" = "brick" ]; then
+		# GPU-dark menu is BRICK-ONLY, for real (re-verified 2026-07-03 after a bad ungate):
+		# writing fb0 produces correct CONTENTS on both devices, but only the Brick panel
+		# SCANS OUT fb0 — the Smart Pro display pipeline shows the GLES layer, so fb-present
+		# there = black screen while fb0 quietly holds a perfect menu. Do not ungate again
+		# unless the SP scanout is actually rebound to fb0.
+		ZERO_FB_PRESENT=1 minui.elf &> $LOGS_PATH/minui.txt
+	else
+		minui.elf &> $LOGS_PATH/minui.txt
+	fi
 	[ -f $EXEC_PATH ] && echo $CPU_SPEED_PERF > $CPU_PATH
 	echo `date +'%F %T'` > "$DATETIME_PATH"
 	sync
