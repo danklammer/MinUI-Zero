@@ -61,8 +61,16 @@ system:
 	cp ./workspace/all/minarch/build/$(PLATFORM)/minarch.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/syncsettings/build/$(PLATFORM)/syncsettings.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/say/build/$(PLATFORM)/say.elf ./build/SYSTEM/$(PLATFORM)/bin/
+	cp ./workspace/all/confirm/build/$(PLATFORM)/confirm.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/clock/build/$(PLATFORM)/clock.elf ./build/EXTRAS/Tools/$(PLATFORM)/Clock.pak/
 	cp ./workspace/all/minput/build/$(PLATFORM)/minput.elf ./build/EXTRAS/Tools/$(PLATFORM)/Input.pak/
+	# Tune Voltage harness binaries -> the pak (tg5040 only)
+	if [ "$(PLATFORM)" = "tg5040" ]; then \
+		mkdir -p "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin"; \
+		cp ./workspace/tg5040/undervolt/build/uvtool "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/build/stress "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/uvmap.sh "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
+	fi
 
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
 	# stock cores

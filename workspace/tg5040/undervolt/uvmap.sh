@@ -58,9 +58,48 @@ pin() {
 touch /tmp/uvmap.running
 WDPID=$!
 
+GUARD=50000 # -50mV guardband below each measured cliff
+
+gen_table() {
+	# Build table.conf from the log: for each OPP, guardband below its CLIFF; for OPPs that
+	# reached the floor without cracking, use the floor (already the safe minimum we tested).
+	OUT="$UV_DIR/table.conf"
+	: > "$OUT.tmp"
+	for OPP in 408000 600000 816000 1008000 1200000 1416000 1608000 1800000; do
+		CLIFF=$(grep "^$OPP CLIFF" "$LOG" 2>/dev/null | tail -1 | awk "{print \$3}")
+		if [ -n "$CLIFF" ]; then
+			UV=$((CLIFF + GUARD))
+		else
+			# DONE at floor, no cliff -> ship the floor
+			UV=$FLOOR
+		fi
+		# quantize down to a 12.5mV step and clamp to [FLOOR..stock-safe]
+		UV=$(( (UV - 712500) / 12500 * 12500 + 712500 ))
+		[ "$UV" -lt "$FLOOR" ] && UV=$FLOOR
+		echo "$OPP $UV" >> "$OUT.tmp"
+	done
+	mv "$OUT.tmp" "$OUT"
+	# state file for the Tune Voltage tool: worst-case margin summary
+	MINMARGIN=999000
+	for OPP in 1200000 1416000 1608000 1800000; do
+		C=$(grep "^$OPP CLIFF" "$LOG" | tail -1 | awk "{print \$3}")
+		[ -z "$C" ] && continue
+		STOCK=$(grep "opp $OPP: stock" "$LOG" | tail -1 | awk "{print \$4}")
+		[ -z "$STOCK" ] && continue
+		M=$((STOCK - C))
+		[ "$M" -lt "$MINMARGIN" ] && MINMARGIN=$M
+	done
+	{
+		echo "calibrated=$(date +%Y-%m-%d)"
+		echo "min_margin_mv=$((MINMARGIN/1000))"
+	} > "$UV_DIR/calibration"
+	sync
+}
+
 finish() {
 	rm -f /tmp/uvmap.running
-	echo "$(date +%T) campaign COMPLETE — disarming" >> "$LOG"
+	gen_table
+	echo "$(date +%T) campaign COMPLETE — table.conf written, disarming" >> "$LOG"
 	rm -f "$UV_DIR/ARMED" "$STATE"
 	sync
 	reboot
