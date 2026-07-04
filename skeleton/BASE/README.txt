@@ -8,14 +8,14 @@ https://github.com/danklammer/MinUI-Zero
 What's different
 
   Closed-loop governor  the lowest clock that holds frame rate, per game — never overclocks
-  GPU-dark menu         the launcher renders in software so the GPU powers down
+  GPU-dark menu         the launcher renders in software so the GPU powers down (Brick only)
   Zero idle waste       no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
   Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool in Extras)
   Stock bugs fixed      NES ran hot with crackling audio, quit menus hung, LEDs re-lit themselves
   Tuned everything      cores built for the chip and pinned, drift-free pacing
   Hard to break         bad-ROM bail, mid-game resolution changes, crash-safe saves
 
-About 7.5 hours on Game Boy — up from about 6 before tuning.
+About 7.5 hours on Game Boy (measured on the Brick) — up from about 6 before tuning.
 
 There is no CPU Speed setting: the governor measures each game's real frame rate every half second and finds the lowest clock that verifiably holds it. The machine answers that question better than a menu can.
 
