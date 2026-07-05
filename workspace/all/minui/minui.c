@@ -1536,6 +1536,8 @@ int main (int argc, char *argv[]) {
 					char* extra_key = "Model";
 					char* extra_val = PLAT_getModel(); 
 					
+					SDL_Surface* fw_key_txt = TTF_RenderUTF8_Blended(font.large, "Firmware", COLOR_DARK_TEXT);
+					SDL_Surface* fw_val_txt = TTF_RenderUTF8_Blended(font.large, "MinUI Zero", COLOR_WHITE);
 					SDL_Surface* release_txt = TTF_RenderUTF8_Blended(font.large, "Release", COLOR_DARK_TEXT);
 					SDL_Surface* version_txt = TTF_RenderUTF8_Blended(font.large, release, COLOR_WHITE);
 					SDL_Surface* commit_txt = TTF_RenderUTF8_Blended(font.large, "Commit", COLOR_DARK_TEXT);
@@ -1547,10 +1549,12 @@ int main (int argc, char *argv[]) {
 					int l_width = 0;
 					int r_width = 0;
 					
+					if (fw_key_txt->w>l_width) l_width = fw_key_txt->w;
 					if (release_txt->w>l_width) l_width = release_txt->w;
 					if (commit_txt->w>l_width) l_width = commit_txt->w;
 					if (key_txt->w>l_width) l_width = commit_txt->w;
 
+					if (fw_val_txt->w>r_width) r_width = fw_val_txt->w;
 					if (version_txt->w>r_width) r_width = version_txt->w;
 					if (hash_txt->w>r_width) r_width = hash_txt->w;
 					if (val_txt->w>r_width) r_width = val_txt->w;
@@ -1558,17 +1562,21 @@ int main (int argc, char *argv[]) {
 					#define VERSION_LINE_HEIGHT 24
 					int x = l_width + SCALE1(8);
 					int w = x + r_width;
-					int h = SCALE1(VERSION_LINE_HEIGHT*4);
+					int h = SCALE1(VERSION_LINE_HEIGHT*5);
 					version = SDL_CreateRGBSurface(0,w,h,16,0,0,0,0);
 					
-					SDL_BlitSurface(release_txt, NULL, version, &(SDL_Rect){0, 0});
-					SDL_BlitSurface(version_txt, NULL, version, &(SDL_Rect){x,0});
-					SDL_BlitSurface(commit_txt, NULL, version, &(SDL_Rect){0,SCALE1(VERSION_LINE_HEIGHT)});
-					SDL_BlitSurface(hash_txt, NULL, version, &(SDL_Rect){x,SCALE1(VERSION_LINE_HEIGHT)});
+					SDL_BlitSurface(fw_key_txt, NULL, version, &(SDL_Rect){0, 0});
+					SDL_BlitSurface(fw_val_txt, NULL, version, &(SDL_Rect){x, 0});
+					SDL_BlitSurface(release_txt, NULL, version, &(SDL_Rect){0,SCALE1(VERSION_LINE_HEIGHT)});
+					SDL_BlitSurface(version_txt, NULL, version, &(SDL_Rect){x,SCALE1(VERSION_LINE_HEIGHT)});
+					SDL_BlitSurface(commit_txt, NULL, version, &(SDL_Rect){0,SCALE1(VERSION_LINE_HEIGHT*2)});
+					SDL_BlitSurface(hash_txt, NULL, version, &(SDL_Rect){x,SCALE1(VERSION_LINE_HEIGHT*2)});
 					
-					SDL_BlitSurface(key_txt, NULL, version, &(SDL_Rect){0,SCALE1(VERSION_LINE_HEIGHT*3)});
-					SDL_BlitSurface(val_txt, NULL, version, &(SDL_Rect){x,SCALE1(VERSION_LINE_HEIGHT*3)});
+					SDL_BlitSurface(key_txt, NULL, version, &(SDL_Rect){0,SCALE1(VERSION_LINE_HEIGHT*4)});
+					SDL_BlitSurface(val_txt, NULL, version, &(SDL_Rect){x,SCALE1(VERSION_LINE_HEIGHT*4)});
 					
+					SDL_FreeSurface(fw_key_txt);
+					SDL_FreeSurface(fw_val_txt);
 					SDL_FreeSurface(release_txt);
 					SDL_FreeSurface(version_txt);
 					SDL_FreeSurface(commit_txt);
