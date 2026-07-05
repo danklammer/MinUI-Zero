@@ -471,3 +471,20 @@ death: UNKNOWN — autopsy owed before ANY rebuilt minui ships. Policy from toni
 (3) the menu never needed the uv code — consider a compile guard excluding it permanently.
 Haptic power cue reverted pending the autopsy (likely an innocent passenger on the doomed
 binary; re-add cleanly after root cause).
+
+## D39 — Boot-loop root cause FOUND + fixed: regulator sysfs read at early cold boot panics the BSP kernel (2026-07-05)
+Panic-proof breadcrumbs (O_SYNC per-line file writes surviving kernel panics) + a self-healing
+two-boot diag harness (auto.sh restores the proven binary on the boot after a diag run) cornered
+it in four automated rounds: minui init all succeeds; the panic fires inside uv_init's DECODE
+GATE — specifically the /sys/class/regulator scan cross-checking the PMIC voltage — when run
+seconds into a cold boot, while the kernel power subsystem is still settling. Explains every
+symptom: menu dies (runs at boot), minarch never dies (launches minutes later), warm respawns
+fine (kernel settled), both devices identical (same BSP). TWO fixes: (1) the uv engine compiles
+ONLY into minarch (-DZERO_UV_ENGINE; the menu carried ~9KB of engine it never used); (2) minarch
+defers uv arming until 30s uptime (auto-resume can launch a game straight from boot into the
+same window; uv_fd stays -1 so the governor tick retries until armed). Verified: fixed minui
+cold-boots to menu (77728 bytes = proven size + the haptic cue); uv still arms in games
+(hold thread @ 850mV observed post-fix). ALSO fixed forever: the stale-build trap that shipped
+a days-old minui in every zip (D38) — the workspace makefile now cleans minui/minarch before
+every build. The two incidents compound one lesson: the menu binary is boot-path code and gets
+boot-path rigor.

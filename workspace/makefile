@@ -18,8 +18,8 @@ all:
 	cd ./$(PLATFORM)/libmsettings && make
 	cd ./$(PLATFORM) && make early # eg. other libs
 	cd ./$(PLATFORM)/keymon && make
-	cd ./all/minui/ && make
-	cd ./all/minarch/ && make
+	cd ./all/minui/ && make clean && make
+	cd ./all/minarch/ && make clean && make
 	cd ./all/clock/ && make
 	cd ./all/minput/ && make
 	cd ./all/syncsettings/ && make
