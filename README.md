@@ -1,6 +1,6 @@
 # MinUI Zero
 
-## The coolest, simplest way to play your games
+## Same simple MinUI. Far less heat.
 
 **MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI)
 for the **TrimUI Brick** and **TrimUI Smart Pro**, designed to keep your handheld cooler
