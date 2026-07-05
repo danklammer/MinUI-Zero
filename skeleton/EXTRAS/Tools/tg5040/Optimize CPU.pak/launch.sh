@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tune Device Voltage — measures THIS chip's lowest safe operating voltage and runs it
+# Optimize CPU — measures THIS chip's lowest safe operating voltage and runs it
 # lean forever after. Per-device (silicon varies unit to unit); RAM-only at runtime, so
 # any reboot returns to factory-safe voltages. See docs/dtb-undervolt-primer.md.
 
@@ -27,7 +27,7 @@ if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	PCT=$(( MV * 16 / 120 ))          # ~% CPU-rail power saved at the top clock
 	COOL=$(( MV / 30 ))               # ~degrees C cooler in heavy games
 	[ "$COOL" -lt 1 ] && COOL=1
-	confirm.elf --ok "Device Voltage Optimized" "${PCT}% less CPU power. ${COOL}C cooler.
+	confirm.elf --ok "CPU Optimized" "${PCT}% less CPU power. ${COOL}C cooler.
 Tuned to this exact chip." "" "BACK" "MANAGE"
 	RC=$?
 	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
@@ -72,11 +72,11 @@ Done in about 90 minutes."
 fi
 
 # ---------- STATE 1: not calibrated -> the pitch + disclaimer ----------
-confirm.elf "Tune Device Voltage
+confirm.elf "Optimize CPU
 
-Every chip is a little different. This finds
-YOUR chip's lowest safe voltage and runs
-there. Cooler and longer battery, same speed." "NEXT" "BACK" || exit 0
+Undervolt the CPU to your chip's
+measured safe minimum. Cooler,
+longer battery, same speed." "NEXT" "BACK" || exit 0
 
 confirm.elf "Before You Start
 
@@ -88,7 +88,7 @@ confirm.elf "Before You Start
 
 if [ "$STATUS" = "Discharging" ]; then
 	say.elf "Connect the charger first,
-then run Tune Voltage again."
+then run Optimize CPU again."
 	exit 0
 fi
 

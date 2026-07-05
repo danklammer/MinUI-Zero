@@ -66,10 +66,10 @@ system:
 	cp ./workspace/all/minput/build/$(PLATFORM)/minput.elf ./build/EXTRAS/Tools/$(PLATFORM)/Input.pak/
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
 	if [ "$(PLATFORM)" = "tg5040" ]; then \
-		mkdir -p "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin"; \
-		cp ./workspace/tg5040/undervolt/build/uvtool "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
-		cp ./workspace/tg5040/undervolt/build/stress "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
-		cp ./workspace/tg5040/undervolt/uvmap.sh "./build/EXTRAS/Tools/tg5040/Tune Voltage.pak/bin/"; \
+		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
+		cp ./workspace/tg5040/undervolt/build/uvtool "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/build/stress "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/uvmap.sh "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 	fi
 
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
