@@ -106,8 +106,17 @@ if [ ! -f "$FIRSTRUN" ]; then
 	# Remove Loading: drop the stock splash line so boot goes straight to MinUI (no flash).
 	[ -f /etc/init.d/runtrimui ] && sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null
 	# Bootlogo: replace the vendor boot logo on the eMMC boot partition (once).
-	LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
-	if [ -f "$LOGO" ]; then
+	# MODEL-SPECIFIC assets: the two bootloaders expect different BMP formats (Brick:
+	# 216x237x24; Smart Pro: 396x66x32). Writing the wrong one renders garbled (learned
+	# the hard way on the SP, 2026-07-05) — never write a logo the model did not ask for.
+	if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
+		LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
+	elif [ "$TRIMUI_MODEL" = "Trimui Smart Pro" ]; then
+		LOGO="$SYSTEM_PATH/dat/bootlogo-smartpro.bmp"
+	else
+		LOGO="" # unknown model: leave the vendor logo alone
+	fi
+	if [ -n "$LOGO" ] && [ -f "$LOGO" ]; then
 		BOOTMNT=/tmp/zero-boot
 		mkdir -p "$BOOTMNT"
 		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
