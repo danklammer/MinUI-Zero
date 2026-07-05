@@ -353,7 +353,8 @@ void PLAT_setCPUMaxFreq(int khz); // closed-loop governor: set the cpufreq ceili
 int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mechanism exists (tg5040: 0 for now)
 void PLAT_setUndervolt(int millivolts); // legacy spike API, superseded by the table-driven authority below
 void PLAT_setCPUVoltForCeil(int khz);   // apply the calibrated voltage covering any OPP <= (rounded-up) ceiling
-void PLAT_restoreCPUVolt(void);         // always-safe stock restore (quit + crash paths)
+void PLAT_restoreCPUVolt(void);         // always-safe stock restore (clean quit path)
+void PLAT_emergencyRestoreCPUVolt(void); // lock-free variant for signal handlers ONLY
 void PLAT_uvReassert(void);             // per-frame: rewrite the lean voltage if the kernel re-stocked it
 void PLAT_setRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);

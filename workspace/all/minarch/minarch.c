@@ -513,10 +513,10 @@ static void Crash_handler(int sig) {
 		if (wrote == (ssize_t)crash_save[i].size) rename(crash_save[i].tmp, crash_save[i].path);
 		else unlink(crash_save[i].tmp);
 	}
-	// voltage authority: restore stock volts before dying — the launcher raises max_freq
-	// right after minarch exits, and a lean gaming-range voltage must not meet 1.8GHz.
-	// (i2c ioctl is not on the async-signal-safe list; acceptable as the last act here.)
-	PLAT_restoreCPUVolt();
+	// voltage authority: restore stock volts before dying. MUST be the lock-free emergency
+	// variant — the normal restore takes uv_lock, which the hold thread owns ~20% of the
+	// time; a mutex here could deadlock the dying process into a frozen zombie (audit fix).
+	PLAT_emergencyRestoreCPUVolt();
 	raise(sig);
 }
 

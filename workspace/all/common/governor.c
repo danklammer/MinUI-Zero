@@ -136,15 +136,8 @@ void gov_tick(GovState* st, const GovProfile* p, int frame_overrun) {
 	int ceil_khz = gov_step(st, p, temp_c, frame_overrun);
 	// Re-assert the ceiling every tick: keeps the controller authoritative over the static
 	// CPU-speed cap and over whatever the menu restores. ~once/0.5s, negligible cost.
-	// Voltage authority ordering (Optimize Device): voltage must cover the ceiling at every
-	// instant — raise volts BEFORE raising the ceiling, lower the ceiling BEFORE lowering
-	// volts. No-op unless a calibrated table armed the platform layer.
-	if (ceil_khz > last_ceil) {
-		PLAT_setCPUVoltForCeil(ceil_khz);
-		PLAT_setCPUMaxFreq(ceil_khz);
-	} else {
-		PLAT_setCPUMaxFreq(ceil_khz);
-		PLAT_setCPUVoltForCeil(ceil_khz);
-	}
-	last_ceil = ceil_khz;
+	// Voltage ordering lives in the platform ceiling choke point (uv_ceilingWrite) so that
+	// EVERY ceiling writer gets it, not just the governor (audit fix: the menu-exit path).
+	PLAT_setCPUMaxFreq(ceil_khz);
+	(void)last_ceil; last_ceil = ceil_khz;
 }
