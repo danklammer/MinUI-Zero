@@ -54,8 +54,10 @@ makes NES run hot on every MinUI device: a system that measures game speed notic
 
 Every chip is a little different. The factory voltage table is set for the worst chip ever
 made — which means your specific chip almost certainly runs stable well below it. That gap
-is free power, and no handheld firmware has ever claimed it. Flagship phone silicon does
-this with dedicated on-die hardware; Zero does it in firmware, for a $60 handheld.
+is free power. Enthusiast firmwares offer manual undervolting — you guess numbers and eat
+the crashes. As far as we know, none has ever shipped a device that measures its own chip
+and tunes itself. Flagship phone silicon does this with dedicated on-die hardware; Zero
+does it in firmware, for a $60 handheld.
 
 Run **Tools → Optimize CPU**, leave the device on its charger, and for about 90 minutes it
 measures its own silicon: stepping the CPU voltage down under worst-case load, watchdog
