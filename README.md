@@ -18,6 +18,13 @@ used, and can tune itself to your device's safe voltage limits.
 
 **Same speed. Less heat. Zero tinkering.**
 
+MinUI Zero is for people who want to turn on a handheld and play games — not spend their
+time configuring one.
+
+**[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest)**
+
+## Measured results
+
 Every claim measured on real hardware, against stock MinUI on the same device — other
 firmwares ship stock clocks and voltages, so similar deltas apply.
 
@@ -29,9 +36,15 @@ firmwares ship stock clocks and voltages, so similar deltas apply.
 | Menu idle (GPU-dark, Brick) | runs at **~26°C** | ~79°F |
 | Standby (deep sleep) | near-zero power, wakes instantly | — |
 
+The governor and Optimize CPU numbers were measured in separate tests (gameplay vs a
+pinned-clock stress A/B), so the combined figure is an "up to" estimate. Absolute
+temperatures vary with game, brightness, ambient, and individual silicon. Receipts:
+[`docs/nextui-comparison.md`](docs/nextui-comparison.md) and
+[`docs/DECISIONS.md`](docs/DECISIONS.md).
+
 ## What's different
 
-| Feature | Details |
+| Feature | What it means for you |
 |---|---|
 | **Closed-loop governor** | The lowest clock that holds frame rate, per game — never overclocks |
 | **Optimize CPU** | Measures your chip's safe minimum voltage and runs it there. Up to 20% less CPU power, verified |
@@ -56,6 +69,14 @@ Everyone else handles CPU speed one of two ways:
   struggling."
 - **Closed loop** (MinUI Zero) — measure the game's *actual frame rate* and find the lowest
   clock that verifiably holds it, per game, continuously.
+
+How it works, in five steps:
+
+1. The frontend measures whether the game is holding its target frame rate.
+2. When there is unused headroom, it lowers the CPU ceiling.
+3. The kernel picks the most efficient clock beneath that ceiling.
+4. If a demanding scene needs more, the ceiling rises again within about a second.
+5. A clock that failed to hold full speed is remembered and not immediately retried.
 
 Zero closes the loop. The frontend measures the **actual outcome** — the core's real frame
 rate against its target — every half second, and walks the clock ceiling down to the lowest
@@ -92,6 +113,13 @@ same frame rates, nothing to configure afterward.
 Built safe in every direction: voltages are applied at runtime only, so any reboot, crash,
 or update instantly returns to factory-safe values. There is no way to brick a device with
 it. Revert anytime from the same tool. Calibration survives updates — measure once.
+
+## Deep sleep
+
+MinUI Zero suspends to RAM instead of leaving the OS awake behind a dark screen. Press
+POWER and the device saves its state, closes audio, powers down what it can, and sleeps at
+near-zero draw — then wakes almost instantly, right where you left off. An opt-out tool is
+included for anyone who prefers the stock behavior.
 
 ## What's left out
 
