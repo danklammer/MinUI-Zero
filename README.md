@@ -97,5 +97,6 @@ and the system appears, tuned core already installed.
 Built on [MinUI](https://github.com/shauninman/MinUI) by Shaun Inman. Deep sleep from
 [zhaofengli](https://github.com/zhaofengli/MinUI); techniques borrowed from
 [MyMinUI](https://github.com/Turro75/MyMinUI) and [NextUI](https://github.com/LoveRetro/NextUI);
-the dynamic rate control idea comes from [RetroArch](https://github.com/libretro/RetroArch).
+the dynamic rate control idea comes from [RetroArch](https://github.com/libretro/RetroArch);
+the power-off haptic cue idea from [SpruceOS](https://github.com/spruceUI/spruceOS).
 An independent fork — not affiliated with any of them.
