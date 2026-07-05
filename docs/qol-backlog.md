@@ -59,3 +59,15 @@ MyMinUI *raised* its menu clock ~2× on weak SoCs (miyoomini/my282) because ultr
 sluggish. That floor does **not** apply to the Brick's far stronger A133P — our GPU-dark menu is
 already "super fast" at 600 MHz (owner-confirmed). Menu responsiveness is a solved problem on our
 hardware; don't spend watts chasing it.
+
+## Charging screen polish (v1.2 candidate, from NextUI triage 2026-07-05)
+Stock's charge-while-off screen is a bare icon. NextUI's battery experience looks nicer but
+is built on batmon (background daemon) + sqlite history — off-thesis, declined. The lean
+slice: a charging screen with the battery PERCENTAGE, read once per draw (no daemon, no
+database, no idle cost). Investigate what draws the off-state charging screen on tg5040
+(vendor init vs our launch path) before scoping.
+
+## SP rumble verify (pending device wake)
+Motor-voltage fix (1.5V before enable, per NextUI) shipped in -13; verify the power-off
+haptic cue buzzes on the SP after the update. If still silent: check FN mute state, then
+probe the motor sysfs directly.
