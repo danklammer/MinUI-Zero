@@ -440,3 +440,19 @@ spin-waiting against race-to-idle and stays unbuilt). Verified on-device: govern
 temps unchanged; user-approved feel on Sonic 2. This closes the NextUI-claims triage: resampling
 (linear, D-resampler), sync stutter (D35 feedback DRC), latency (this) — all three shipped as
 measured, lean adaptations instead of an engine rebuild.
+
+## D37 — v1.1 complete: SP calibrated by the shipping tool; first production run caught two gen_table bugs (2026-07-05)
+The Smart Pro ran the full Tune Voltage flow as its first real user: pitch -> disclaimer -> 90-min
+campaign -> green check. Its map: 1800@1037.5, 1608@950, 1416@887.5, 1200@812.5 (all stress-fail
+detections, no crash-reboots needed); gaming range never cracked at the 762.5 floor. Margin 125mV
+(vs the Brick 137.5 — near-twin silicon, Brick slightly luckier). Dogfooding immediately paid:
+(1) gen_table shipped the RAW tested floor for no-cliff OPPs (zero guardband on the gaming range,
+the OPPs games actually use); now floor+GUARD, matching the cliff philosophy. (2) the margin
+parser read awk field 4 ("stock", the word) instead of 5 (the number) — the tool would have
+displayed "-138% less CPU power". Fixed + arithmetic hardened against non-numeric parses.
+Validation methodology settled: pinned-clock A/B with PROOF-OF-HELD rail sampling (two earlier
+attempts invalidated themselves — kernel re-stock + thermal throttle at 1800); clean result
+@1416: stock +11C vs undervolt +8C for identical 60s stress = ~27% less heat, consistent with
+the V^2 prediction (~19%; "up to 20%" at the top OPP is honest: 1062.5^2/1187.5^2 = 0.8006).
+WoWLAN probed: impossible (wlan0 has no wakeup attribute); dev answer = the disable-deep-sleep
+flag; "summonable sleep" (RTC-heartbeat wake windows) designed but unbuilt.
