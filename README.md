@@ -16,7 +16,7 @@ measured on real hardware.
 | **Optimize CPU** | Measures your chip's safe minimum voltage and runs it there. Up to 20% less CPU power, verified |
 | **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) — Brick only |
 | **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
-| **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras) |
+| **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool included) |
 | **Stock bugs fixed** | NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves |
 | **Plays better** | Stutter-free panel-locked pacing, a frame less input lag, smoother audio resampling |
 | **Tuned everything** | Cores built for the chip and pinned, `noatime` |

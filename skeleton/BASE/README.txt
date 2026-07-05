@@ -10,7 +10,7 @@ What's different
   Closed-loop governor  the lowest clock that holds frame rate, per game — never overclocks
   GPU-dark menu         the launcher renders in software so the GPU powers down (Brick only)
   Zero idle waste       no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
-  Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool in Extras)
+  Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool included)
   Stock bugs fixed      NES ran hot with crackling audio, quit menus hung, LEDs re-lit themselves
   Plays better          stutter-free panel-locked pacing, a frame less input lag, smoother audio
   Tuned everything      cores built for the chip and pinned
@@ -43,7 +43,7 @@ Shortcuts
 ----------------------------------------
 Sleep, quicksave & auto-resume
 
-A short press of POWER sleeps the device. After two minutes asleep it suspends to RAM: the device goes fully cold and wakes instantly right where you left off. To disable suspend, run the "Deep Sleep" tool (in the extras zip) — sleep then behaves like stock MinUI and the device powers off on a timer instead.
+A short press of POWER sleeps the device. After two minutes asleep it suspends to RAM: the device goes fully cold and wakes instantly right where you left off. To disable suspend, run the "Deep Sleep" tool in the Tools menu — sleep then behaves like stock MinUI and the device powers off on a timer instead.
 
 MinUI creates a quicksave when powering off in-game and resumes from it automatically on the next boot.
 
