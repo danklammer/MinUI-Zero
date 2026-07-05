@@ -275,6 +275,7 @@ FALLBACK_IMPLEMENTATION int PLAT_supportsUndervolt(void) { return 0; } // underv
 FALLBACK_IMPLEMENTATION void PLAT_setUndervolt(int millivolts) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_setCPUVoltForCeil(int khz) { } // voltage authority: no-op without a calibrated platform
 FALLBACK_IMPLEMENTATION void PLAT_restoreCPUVolt(void) { } // no-op
+FALLBACK_IMPLEMENTATION void PLAT_emergencyRestoreCPUVolt(void) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_uvReassert(void) { } // no-op
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding) {

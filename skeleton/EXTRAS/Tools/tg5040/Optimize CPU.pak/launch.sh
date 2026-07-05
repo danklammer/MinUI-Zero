@@ -96,9 +96,9 @@ fi
 AUTO="$SHARED_USERDATA_PATH/../tg5040/auto.sh"
 [ -d "$(dirname "$AUTO")" ] || AUTO="/mnt/SDCARD/.userdata/tg5040/auto.sh"
 if ! grep -q uvmap "$AUTO" 2>/dev/null; then
+	[ -f "$AUTO" ] || echo "#!/bin/sh" > "$AUTO"   # only shebang a NEW file (audit nit)
 	{
-		echo "#!/bin/sh"
-		echo "# Tune Voltage resume hook (self-removes when calibration completes)"
+		echo "# Optimize CPU resume hook (inert once calibration completes)"
 		echo "[ -f \"$UV_DIR/ARMED\" ] && ( sh \"$UV_DIR/uvmap.sh\" > /dev/null 2>&1 & )"
 	} >> "$AUTO"
 	chmod +x "$AUTO"

@@ -638,6 +638,26 @@ int PLAT_supportsDeepSleep(void) { return 1; } // tg5040/Brick can suspend-to-RA
 // it. The kernel snaps to the nearest supported OPP, so an out-of-ladder kHz is coerced,
 // never an error. NOTE: 2.0GHz is an overclock — PERFORMANCE caps at the 1.8GHz stock max.
 #define MAX_FREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
+// CEILING CHOKE POINT: every ceiling write orders voltage around it — raise volts BEFORE
+// raising the ceiling, lower the ceiling BEFORE lowering volts. This must cover ALL
+// callers, not just the governor: the in-game menu exit path (PWR_setCPUSpeed) jumps the
+// ceiling from menu-low straight to 1608/1800, and without this ordering the hold thread
+// kept asserting the low-ceiling voltage at the new high clock — below the chip's cliff
+// — for up to one governor tick. Found in the pre-merge audit; do not bypass this helper.
+static int uv_last_ceiling = 0;
+static void uv_ceilingWrite(int khz) {
+	if (khz <= 0) return;
+	if (khz > uv_last_ceiling) {
+		PLAT_setCPUVoltForCeil(khz);
+		putInt(MAX_FREQ_PATH, khz);
+	}
+	else {
+		putInt(MAX_FREQ_PATH, khz);
+		PLAT_setCPUVoltForCeil(khz);
+	}
+	uv_last_ceiling = khz;
+}
+
 void PLAT_setCPUSpeed(int speed) {
 	int freq = 0;
 	switch (speed) {
@@ -646,13 +666,13 @@ void PLAT_setCPUSpeed(int speed) {
 		case CPU_SPEED_NORMAL: 		freq = 1608000; break;
 		case CPU_SPEED_PERFORMANCE: freq = 1800000; break; // stock max, NOT 2000000 (OC)
 	}
-	putInt(MAX_FREQ_PATH, freq);
+	uv_ceilingWrite(freq);
 }
 
 // Closed-loop governor: set the cpufreq ceiling (kHz) via scaling_max_freq; schedutil
-// picks the instantaneous frequency beneath it.
+// picks the instantaneous frequency beneath it. Voltage ordering handled by the choke point.
 void PLAT_setCPUMaxFreq(int khz) {
-	putInt(MAX_FREQ_PATH, khz);
+	uv_ceilingWrite(khz);
 }
 
 // ============================ Optimize Device: voltage authority ============================
@@ -694,25 +714,44 @@ static int uv_reg_read(int reg) {
 	if (write(uv_fd, &r, 1) != 1 || read(uv_fd, &v, 1) != 1) return -1;
 	return v;
 }
+static pthread_mutex_t uv_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static int uv_init(void) {
 	if (uv_fd == -2) return 0;
 	if (uv_fd >= 0) return 1;
+	pthread_mutex_lock(&uv_init_lock); // thread_video can race the first call from two threads
+	if (uv_fd != -1) { int ok = (uv_fd >= 0); pthread_mutex_unlock(&uv_init_lock); return ok; }
 	uv_fd = -2; // assume failure; prove otherwise
 	char* e = getenv("ZERO_NO_UV");
-	if (e && e[0] && e[0] != '0') return 0;
+	if (e && e[0] && e[0] != '0') { pthread_mutex_unlock(&uv_init_lock); return 0; }
+	// CARD-SWAP GUARD: the table describes ONE chip. A card moved to a different model
+	// (Brick<->Smart Pro) must not apply the other chip's voltages — margins differ.
+	{
+		char want[64] = {0}, have[64] = {0};
+		char* m = getenv("TRIMUI_MODEL");
+		if (m) snprintf(want, sizeof want, "%s", m);
+		FILE* mf = fopen(SHARED_UV_DIR "/table.model", "r");
+		if (mf) { if (fgets(have, sizeof have, mf)) { char* nl = strchr(have, '\n'); if (nl) *nl = 0; } fclose(mf); }
+		if (!want[0] || !have[0] || strcmp(want, have) != 0) {
+			if (have[0]) LOG_info("uv: table is for '%s' but device is '%s' — staying stock\n", have, want);
+			pthread_mutex_unlock(&uv_init_lock);
+			return 0;
+		}
+	}
 	FILE* f = fopen(UV_TABLE_PATH, "r");
-	if (!f) return 0; // no calibration -> stock, silently
+	if (!f) { pthread_mutex_unlock(&uv_init_lock); return 0; } // no calibration -> stock, silently
 	uv_n = 0;
-	int khz, uv;
+	int khz, uv, prev_khz = 0;
 	while (uv_n < 16 && fscanf(f, "%d %d", &khz, &uv) == 2) {
 		if (uv < UV_BASE_UV || uv > UV_STOCK_MAX || (uv - UV_BASE_UV) % UV_STEP_UV) { uv_n = 0; break; }
+		if (khz <= prev_khz) { uv_n = 0; break; } // must be strictly ascending: the lookup depends on it
+		prev_khz = khz;
 		uv_table[uv_n].khz = khz; uv_table[uv_n].uv = uv; uv_n++;
 	}
 	fclose(f);
-	if (!uv_n) { LOG_info("uv: table invalid, staying stock\n"); return 0; }
+	if (!uv_n) { LOG_info("uv: table invalid, staying stock\n"); pthread_mutex_unlock(&uv_init_lock); return 0; }
 	int fd = open(UV_I2C_DEV, O_RDWR);
-	if (fd < 0) return 0;
-	if (ioctl(fd, I2C_SLAVE_FORCE, UV_I2C_ADDR) < 0) { close(fd); return 0; }
+	if (fd < 0) { pthread_mutex_unlock(&uv_init_lock); return 0; }
+	if (ioctl(fd, I2C_SLAVE_FORCE, UV_I2C_ADDR) < 0) { close(fd); pthread_mutex_unlock(&uv_init_lock); return 0; }
 	uv_fd = fd;
 	// decode-match gate: VSEL must agree with the kernel regulator before we ever write
 	int v0 = uv_reg_read(0x00);
@@ -733,9 +772,10 @@ static int uv_init(void) {
 	}
 	if (v0 < 0 || kuv < 0 || UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != kuv) {
 		LOG_info("uv: decode mismatch (reg=%d kernel=%d) — staying stock\n", v0, kuv);
-		close(uv_fd); uv_fd = -2; return 0;
+		close(uv_fd); uv_fd = -2; pthread_mutex_unlock(&uv_init_lock); return 0;
 	}
 	LOG_info("uv: voltage authority armed (%d table entries)\n", uv_n);
+	pthread_mutex_unlock(&uv_init_lock);
 	return 1;
 }
 static void uv_write(int uv) {
@@ -791,6 +831,17 @@ void PLAT_uvReassert(void) {
 	uv_thread_run = 1;
 	if (pthread_create(&uv_thread, NULL, uv_hold, NULL) != 0) uv_thread_run = 0;
 	else LOG_info("uv: hold thread started (~200Hz, holding %duV)\n", uv_target);
+}
+void PLAT_emergencyRestoreCPUVolt(void) {
+	// SIGNAL-HANDLER-SAFE restore: NO mutex (the hold thread holds uv_lock ~20% of the
+	// time; locking here could deadlock a dying process into a frozen zombie). Ordering:
+	// clear the target first so the hold thread stops re-asserting, then one best-effort
+	// raw write of stock-max. Post-crash, the kernel re-stocks on the next DVFS transition
+	// anyway (and sequences volts-before-freq), so this is belt on top of kernel braces.
+	uv_thread_run = 0;
+	uv_target = 0;
+	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);
+	uv_applied = 0;
 }
 void PLAT_restoreCPUVolt(void) {
 	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the

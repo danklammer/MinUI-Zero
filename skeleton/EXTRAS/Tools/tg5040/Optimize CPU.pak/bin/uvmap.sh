@@ -80,6 +80,11 @@ gen_table() {
 		echo "$OPP $UV" >> "$OUT.tmp"
 	done
 	mv "$OUT.tmp" "$OUT"
+	# bind the table to THIS device model (card-swap guard: a Brick table must never
+	# apply on a Smart Pro — the chips have different margins)
+	MODEL="$TRIMUI_MODEL"
+	[ -z "$MODEL" ] && MODEL=$(strings /usr/trimui/bin/MainUI 2>/dev/null | grep ^Trimui | head -1)
+	echo "$MODEL" > "$UV_DIR/table.model"
 	# state file for the Tune Voltage tool: worst-case margin summary
 	MINMARGIN=999000
 	for OPP in 1200000 1416000 1608000 1800000; do
