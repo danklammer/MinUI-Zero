@@ -19,8 +19,20 @@ done
 
 STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 
-# ---------- STATE 3: already calibrated ----------
-if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
+# ---------- STATE 3b: calibrated, but for a DIFFERENT chip (card swapped) ----------
+DEV_CHIP=$(grep sunxi_serial /sys/class/sunxi_info/sys_info 2>/dev/null | awk -F: '{print $2}' | tr -d " \t")
+TAB_CHIP=$(cat "$UV_DIR/table.chip" 2>/dev/null)
+if [ -f "$UV_DIR/calibration" ] && [ -n "$DEV_CHIP" ] && [ -n "$TAB_CHIP" ] && [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
+	confirm.elf "Different Device Detected
+
+This card was optimized on another
+device. Every chip is different, so
+the tuning is not applied here.
+
+Optimize this device now?" "OPTIMIZE" "BACK" || exit 0
+	rm -f "$UV_DIR/calibration" "$UV_DIR/table.chip"
+	# fall through to the charger check + arming below
+elif [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	. "$UV_DIR/calibration" 2>/dev/null
 	# derive rough headline benefits from the measured margin (V^2 -> ~1.6x the mV% in power)
 	MV=${min_margin_mv:-0}

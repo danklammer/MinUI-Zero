@@ -723,18 +723,47 @@ static int uv_init(void) {
 	uv_fd = -2; // assume failure; prove otherwise
 	char* e = getenv("ZERO_NO_UV");
 	if (e && e[0] && e[0] != '0') { pthread_mutex_unlock(&uv_init_lock); return 0; }
-	// CARD-SWAP GUARD: the table describes ONE chip. A card moved to a different model
-	// (Brick<->Smart Pro) must not apply the other chip's voltages — margins differ.
+	// CARD-SWAP GUARD: the table describes ONE chip. Primary check = the eFUSE chip serial
+	// (sunxi_serial — globally unique per die), so even two same-model devices never apply
+	// each other's tables. Fallback = model string (older calibrations without table.chip).
 	{
-		char want[64] = {0}, have[64] = {0};
-		char* m = getenv("TRIMUI_MODEL");
-		if (m) snprintf(want, sizeof want, "%s", m);
-		FILE* mf = fopen(SHARED_UV_DIR "/table.model", "r");
-		if (mf) { if (fgets(have, sizeof have, mf)) { char* nl = strchr(have, '\n'); if (nl) *nl = 0; } fclose(mf); }
-		if (!want[0] || !have[0] || strcmp(want, have) != 0) {
-			if (have[0]) LOG_info("uv: table is for '%s' but device is '%s' — staying stock\n", have, want);
-			pthread_mutex_unlock(&uv_init_lock);
-			return 0;
+		char dev_chip[64] = {0};
+		FILE* sf = fopen("/sys/class/sunxi_info/sys_info", "r");
+		if (sf) {
+			char line[128];
+			while (fgets(line, sizeof line, sf)) {
+				if (strstr(line, "sunxi_serial")) {
+					char* c = strchr(line, ':');
+					if (c) { c++; while (*c == ' ' || *c == '\t') c++;
+						snprintf(dev_chip, sizeof dev_chip, "%s", c);
+						char* nl = strchr(dev_chip, '\n'); if (nl) *nl = 0; }
+					break;
+				}
+			}
+			fclose(sf);
+		}
+		char tab_chip[64] = {0};
+		FILE* cf = fopen(SHARED_UV_DIR "/table.chip", "r");
+		if (cf) { if (fgets(tab_chip, sizeof tab_chip, cf)) { char* nl = strchr(tab_chip, '\n'); if (nl) *nl = 0; } fclose(cf); }
+
+		if (dev_chip[0] && tab_chip[0]) {
+			if (strcmp(dev_chip, tab_chip) != 0) {
+				LOG_info("uv: table was calibrated for a different chip — staying stock\n");
+				pthread_mutex_unlock(&uv_init_lock);
+				return 0;
+			}
+		}
+		else { // no chip identity available: fall back to model matching
+			char want[64] = {0}, have[64] = {0};
+			char* m = getenv("TRIMUI_MODEL");
+			if (m) snprintf(want, sizeof want, "%s", m);
+			FILE* mf = fopen(SHARED_UV_DIR "/table.model", "r");
+			if (mf) { if (fgets(have, sizeof have, mf)) { char* nl = strchr(have, '\n'); if (nl) *nl = 0; } fclose(mf); }
+			if (!want[0] || !have[0] || strcmp(want, have) != 0) {
+				if (have[0]) LOG_info("uv: table is for '%s' but device is '%s' — staying stock\n", have, want);
+				pthread_mutex_unlock(&uv_init_lock);
+				return 0;
+			}
 		}
 	}
 	FILE* f = fopen(UV_TABLE_PATH, "r");

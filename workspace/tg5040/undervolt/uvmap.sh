@@ -85,6 +85,9 @@ gen_table() {
 	MODEL="$TRIMUI_MODEL"
 	[ -z "$MODEL" ] && MODEL=$(strings /usr/trimui/bin/MainUI 2>/dev/null | grep ^Trimui | head -1)
 	echo "$MODEL" > "$UV_DIR/table.model"
+	# chip binding: the eFUSE serial is unique per die — the table belongs to THIS chip only
+	CHIP=$(grep sunxi_serial /sys/class/sunxi_info/sys_info 2>/dev/null | awk -F: "{print \$2}" | tr -d " \t")
+	[ -n "$CHIP" ] && echo "$CHIP" > "$UV_DIR/table.chip"
 	# state file for the Tune Voltage tool: worst-case margin summary
 	MINMARGIN=999000
 	for OPP in 1200000 1416000 1608000 1800000; do
