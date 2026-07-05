@@ -782,9 +782,14 @@ static int uv_init(void) {
 	if (fd < 0) { pthread_mutex_unlock(&uv_init_lock); return 0; }
 	if (ioctl(fd, I2C_SLAVE_FORCE, UV_I2C_ADDR) < 0) { close(fd); pthread_mutex_unlock(&uv_init_lock); return 0; }
 	uv_fd = fd;
-	// decode-match gate: VSEL must agree with the kernel regulator before we ever write
-	int v0 = uv_reg_read(0x00);
-	int kuv = -1;
+	// decode-match gate: VSEL must agree with the kernel regulator before we ever write.
+	// Retried: a single read can race a DVFS transition (register vs the kernel's cached
+	// value) and false-negative — a real wrong-chip mismatch fails every attempt. (The
+	// first deploy hit exactly this race; the gate fail-safed to stock, as designed.)
+	int v0 = -1, kuv = -1, tries;
+	for (tries = 0; tries < 5; tries++) {
+	v0 = uv_reg_read(0x00);
+	kuv = -1;
 	for (int i = 0; i < 32; i++) {
 		char path[96], name[32];
 		snprintf(path, sizeof path, "/sys/class/regulator/regulator.%d/name", i);
@@ -799,8 +804,11 @@ static int uv_init(void) {
 		}
 		fclose(rf);
 	}
-	if (v0 < 0 || kuv < 0 || UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != kuv) {
-		LOG_info("uv: decode mismatch (reg=%d kernel=%d) — staying stock\n", v0, kuv);
+	if (v0 >= 0 && kuv >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV == kuv) break;
+	usleep(20000); // let any in-flight DVFS transition settle
+	}
+	if (tries >= 5) {
+		LOG_info("uv: decode mismatch after retries (reg=%d kernel=%d) — staying stock\n", v0, kuv);
 		close(uv_fd); uv_fd = -2; pthread_mutex_unlock(&uv_init_lock); return 0;
 	}
 	LOG_info("uv: voltage authority armed (%d table entries)\n", uv_n);
