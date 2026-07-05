@@ -1683,13 +1683,6 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	}
 	
 	if (PAD_justReleased(BTN_POWEROFF) || (power_pressed_at && now-power_pressed_at>=1000)) {
-		// Haptic power cue (idea from SpruceOS): a short buzz the moment the quicksave+
-		// shutdown commits — feel it and let go. Keep holding regardless and the PMIC
-		// hardware long-hold cut remains the force-off escape hatch. (Rumble respects the
-		// mute switch by platform convention, matching stock behavior.)
-		PLAT_setRumble(1);
-		SDL_Delay(150);
-		PLAT_setRumble(0);
 		if (before_sleep) before_sleep();
 		PWR_powerOff();
 	}
