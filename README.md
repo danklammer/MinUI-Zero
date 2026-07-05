@@ -13,6 +13,7 @@ measured on real hardware.
 | Feature | Details |
 |---|---|
 | **Closed-loop governor** | The lowest clock that holds frame rate, per game — never overclocks |
+| **Optimize CPU** | Measures your chip's safe minimum voltage and runs it there. Up to 20% less CPU power, verified |
 | **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) — Brick only |
 | **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
 | **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool in Extras) |
@@ -48,6 +49,27 @@ That's why the CPU Speed setting is gone: the machine answers the question bette
 can — per game, continuously, with receipts. It's also how a stock config bug was caught that
 makes NES run hot on every MinUI device: a system that measures game speed notices when a
 1985 console demands a 1 GHz clock.
+
+## Optimize CPU (the self-calibrating undervolt)
+
+Every chip is a little different. The factory voltage table is set for the worst chip ever
+made — which means your specific chip almost certainly runs stable well below it. That gap
+is free power, and no handheld firmware has ever claimed it. Flagship phone silicon does
+this with dedicated on-die hardware; Zero does it in firmware, for a $60 handheld.
+
+Run **Tools → Optimize CPU**, leave the device on its charger, and for about 90 minutes it
+measures its own silicon: stepping the CPU voltage down under worst-case load, watchdog
+armed, until it finds each clock's real limit. It restarts itself several times — that is
+the measurement working. The result is a voltage table for YOUR exact chip, with a safety
+margin below every measured limit.
+
+From then on the governor runs your chip at its measured minimum. Verified on hardware:
+**up to 20% less CPU power at identical clocks** and about **4°C cooler in heavy games** —
+same frame rates, nothing to configure afterward.
+
+Built safe in every direction: voltages are applied at runtime only, so any reboot, crash,
+or update instantly returns to factory-safe values. There is no way to brick a device with
+it. Revert anytime from the same tool. Calibration survives updates — measure once.
 
 ## What's left out
 
