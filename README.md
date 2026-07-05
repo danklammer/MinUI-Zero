@@ -1,12 +1,32 @@
 # MinUI Zero
 
-**MinUI Zero** is a performance-focused fork of [MinUI](https://github.com/shauninman/MinUI)
-for the **TrimUI Brick** and **TrimUI Smart Pro**.
+## The coolest, simplest way to play your games
 
-Run cool, run efficient, stay simple. Every system runs at the lowest clock that still holds
-full frame rate, the GPU sleeps at the menu, and an idle device suspends to RAM instead of
-cooking in your bag. Same appliance-simple MinUI — tuned underneath, with every change
-measured on real hardware.
+**MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI)
+for the **TrimUI Brick** and **TrimUI Smart Pro**, designed to keep your handheld cooler
+without sacrificing gameplay performance.
+
+It automatically uses only the power each game needs, shuts down hardware that is not being
+used, and can tune itself to your device's safe voltage limits.
+
+**The result:**
+
+* **Up to 8°C (14°F) cooler in games** — governor + Optimize CPU combined, measured vs stock
+* Longer battery life (**~7.5 hours on Game Boy**, up from ~6)
+* Smooth, full-speed emulation
+* No CPU settings to manage
+
+**Same speed. Less heat. Zero tinkering.**
+
+Every claim measured on real hardware, against stock MinUI on the same device — other
+firmwares ship stock clocks and voltages, so similar deltas apply.
+
+| Measured | vs stock, same device | in °F |
+|---|---|---|
+| Gameplay (closed-loop governor) | **~4-5°C cooler** | ~7-9°F |
+| Heavy games (+ Optimize CPU) | **~3°C more** | ~5°F more |
+| Menu idle (GPU-dark, Brick) | runs at **~26°C** | ~79°F |
+| Standby (deep sleep) | near-zero power, wakes instantly | — |
 
 ## What's different
 
@@ -22,7 +42,6 @@ measured on real hardware.
 | **Tuned everything** | Cores built for the chip and pinned, `noatime` |
 | **Hard to break** | Bad-ROM bail, mid-game resolution changes, crash-safe saves |
 
-**~7.5 hours on Game Boy** (measured on the Brick) — up from ~6 before tuning.
 
 ## The governor (and why there's no CPU Speed setting)
 
