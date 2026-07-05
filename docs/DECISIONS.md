@@ -456,3 +456,18 @@ attempts invalidated themselves — kernel re-stock + thermal throttle at 1800);
 the V^2 prediction (~19%; "up to 20%" at the top OPP is honest: 1062.5^2/1187.5^2 = 0.8006).
 WoWLAN probed: impossible (wlan0 has no wakeup attribute); dev answer = the disable-deep-sleep
 flag; "summonable sleep" (RTC-heartbeat wake windows) designed but unbuilt.
+
+## D38 — The boot-loop incident: a never-booted minui shipped to both devices at once (2026-07-05)
+The undervolt engine (platform.c) compiles into BOTH minarch and minui. For days the build
+pipeline shipped a STALE pre-uv minui (77624 bytes) in every zip while minarch carried the
+new code — so all testing exercised the new engine only in games. The first build containing
+the new minui (86696 bytes) reached both devices in the same hour (live push + staged zips)
+and dies in GFX_init before drawing a pixel — both devices boot-looped. Recovery: proven
+minui restored via card; rescue asset -6 = full v1.1 system + proven menu binary, then
+hardware-certified on BOTH devices through the real updater path. Root cause of the GFX_init
+death: UNKNOWN — autopsy owed before ANY rebuilt minui ships. Policy from tonight:
+(1) a binary's first boot happens on ONE device, with eyes on the screen;
+(2) every device file push gets a receiving-end md5;
+(3) the menu never needed the uv code — consider a compile guard excluding it permanently.
+Haptic power cue reverted pending the autopsy (likely an innocent passenger on the doomed
+binary; re-add cleanly after root cause).
