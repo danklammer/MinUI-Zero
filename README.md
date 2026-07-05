@@ -2,60 +2,56 @@
 
 ## Same simple MinUI. Far less heat.
 
-**MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI)
-for the **TrimUI Brick** and **TrimUI Smart Pro**, designed to keep your handheld cooler
-without sacrificing gameplay performance.
+**MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI) for the **TrimUI Brick** and **TrimUI Smart Pro**.
 
-It automatically uses only the power each game needs, shuts down hardware that is not being
-used, and can tune itself to your device's safe voltage limits.
-
-**The result:**
-
-* **Up to 8°C (14°F) cooler in games** — governor + Optimize CPU combined, measured vs stock
-* Longer battery life (**~7.5 hours on Game Boy**, up from ~6)
-* Smooth, full-speed emulation
-* No CPU settings to manage
+It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
 **Same speed. Less heat. Zero tinkering.**
 
-MinUI Zero is for people who want to turn on a handheld and play games — not spend their
-time configuring one.
+[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest)
 
-**[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest)**
+---
+
+## Why MinUI Zero?
+
+- **Cooler gameplay** without lowering frame rates
+- **Longer battery life** by eliminating unnecessary power use
+- **No CPU settings to manage** — every game is tuned automatically
+- **Instant deep sleep and resume** without leaving the device running hot
+- **Smoother gameplay** with improved frame pacing, audio resampling, and lower input latency
+- **The simplicity of MinUI** without box art, stores, accounts, themes, or background services
+
+MinUI Zero is for people who want to turn on a handheld and play games — not spend their time configuring it.
 
 ## Measured results
 
-Every claim measured on real hardware, against stock MinUI on the same device — other
-firmwares ship stock clocks and voltages, so similar deltas apply.
+Tests were performed on real TrimUI hardware, against stock MinUI on the same device.
 
-| Measured | vs stock, same device | in °F |
-|---|---|---|
-| Gameplay (closed-loop governor) | **~4-5°C cooler** | ~7-9°F |
-| Heavy games (Optimize CPU) | **~3°C cooler** | ~5°F |
-| **Games total (both combined)** | **up to ~8°C cooler** | **~14°F** |
-| Menu idle (GPU-dark, Brick) | runs at **~26°C** | ~79°F |
-| Standby (deep sleep) | near-zero power, wakes instantly | — |
+| Test | Result |
+|---|---|
+| Gameplay vs stock MinUI (closed-loop governor) | **4-5°C (7-9°F) cooler** |
+| Optimize CPU, identical pinned-clock stress test | **3°C (5°F) lower temperature rise** |
+| Both combined in games | **up to ~8°C (14°F) cooler** |
+| Optimize CPU power reduction | **Up to 20% less CPU power at the same clock** |
+| Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
+| Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
+| Deep sleep | Near-zero active power, with instant resume |
 
-The governor and Optimize CPU numbers were measured in separate tests (gameplay vs a
-pinned-clock stress A/B), so the combined figure is an "up to" estimate. Absolute
-temperatures vary with game, brightness, ambient, and individual silicon. Receipts:
-[`docs/nextui-comparison.md`](docs/nextui-comparison.md) and
-[`docs/DECISIONS.md`](docs/DECISIONS.md).
+The governor and Optimize CPU figures come from separate tests (gameplay vs a pinned-clock stress A/B), so the combined number is an "up to" estimate. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
 
-## What's different
+## What is different?
 
 | Feature | What it means for you |
 |---|---|
-| **Closed-loop governor** | The lowest clock that holds frame rate, per game — never overclocks |
-| **Optimize CPU** | Measures your chip's safe minimum voltage and runs it there. Up to 20% less CPU power, verified |
-| **GPU-dark menu** | The launcher renders in software so the GPU powers down (~26°C) — Brick only |
-| **Zero idle waste** | No polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only |
-| **Deep sleep** | Default-on, soak-tested — suspends to RAM, wakes instantly (opt-out tool included) |
-| **Stock bugs fixed** | NES ran hot with crackling audio everywhere, quit menus hung, LEDs re-lit themselves |
-| **Plays better** | Stutter-free panel-locked pacing, a frame less input lag, smoother audio resampling |
-| **Tuned everything** | Cores built for the chip and pinned, `noatime` |
-| **Hard to break** | Bad-ROM bail, mid-game resolution changes, crash-safe saves |
-
+| **Automatic CPU control** | Each game gets the performance it needs without running the CPU harder than necessary |
+| **Optimize CPU** | Your device can measure its own safe voltage range for lower heat and power use |
+| **GPU-dark menu** | The launcher renders without the GPU (TrimUI Brick), so the menu runs cool |
+| **No idle waste** | Radios and LEDs are disabled, audio closes during sleep, and no polling daemons run in the background |
+| **Deep sleep by default** | Suspend-to-RAM keeps your place and wakes almost instantly |
+| **Stock bugs fixed** | Hot-running NES settings, crackling audio, hanging quit menus, and LEDs turning themselves back on |
+| **Smoother gameplay** | Panel-matched pacing, improved audio resampling, and roughly one frame less input latency |
+| **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware |
+| **Safer failure handling** | Bad ROMs exit cleanly, mid-game resolution changes are handled, and saves are written safely |
 
 ## The governor (and why there's no CPU Speed setting)
 
