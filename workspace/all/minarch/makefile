@@ -24,7 +24,7 @@ INCDIR = -I. -I./libretro-common/include/ -I../common/ -I../../$(PLATFORM)/platf
 SOURCE = $(TARGET).c ../common/scaler.c ../common/utils.c ../common/api.c ../common/governor.c ../common/telemetry.c ../../$(PLATFORM)/platform/platform.c
 
 CC = $(CROSS_COMPILE)gcc
-CFLAGS   = $(ARCH) -fomit-frame-pointer
+CFLAGS   = $(ARCH) -fomit-frame-pointer -DZERO_UV_ENGINE
 CFLAGS  += $(INCDIR) -DPLATFORM=\"$(PLATFORM)\" -DUSE_$(SDL) -O3 -std=gnu99
 CFLAGS	+= -flto
 LDFLAGS	 = -ldl $(LIBS) -lmsettings -l$(SDL) -l$(SDL)_image -l$(SDL)_ttf -lpthread -lm -lz

@@ -716,8 +716,23 @@ static int uv_reg_read(int reg) {
 }
 static pthread_mutex_t uv_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static int uv_init(void) {
+#ifndef ZERO_UV_ENGINE
+	// The voltage engine compiles ONLY into minarch (-DZERO_UV_ENGINE). The menu carried it
+	// by accident of shared compilation, and its regulator-sysfs cross-check PANICS the BSP
+	// kernel when run during early cold boot (D39, the boot-loop incident root cause).
+	uv_fd = -2;
+	return 0;
+#endif
 	if (uv_fd == -2) return 0;
 	if (uv_fd >= 0) return 1;
+	// Early-boot guard: auto-resume can launch minarch straight from boot into the same
+	// panic window. Stay unarmed (uv_fd = -1 keeps retrying) until the kernel has settled.
+	{
+		FILE* uf = fopen("/proc/uptime", "r");
+		double up = 0;
+		if (uf) { if (fscanf(uf, "%lf", &up) != 1) up = 0; fclose(uf); }
+		if (up < 30.0) return 0; // not yet — the governor tick will retry
+	}
 	pthread_mutex_lock(&uv_init_lock); // thread_video can race the first call from two threads
 	if (uv_fd != -1) { int ok = (uv_fd >= 0); pthread_mutex_unlock(&uv_init_lock); return ok; }
 	uv_fd = -2; // assume failure; prove otherwise
