@@ -4,9 +4,9 @@ A pak is just a folder with a ".pak" extension that contains a shell script name
 
 There are two kinds of paks, emulators and tools. Emulator paks live in the Emus folder. Tool paks live in the Tools folder. These two folders live at the root of your SD card. Extra paks should never be added to the hidden ".system" folder at the root of the SD card. This folder is deleted and replaced every time a user updates MinUI.
 
-Paks are platform specific. Inside the Emus and Tools folders you will find (or need to create) platform folders. Some platform folders are named after the target device (eg. "rgb30" for the Powkiddy RGB30), others use the device's internal name (eg. "tg5040" for the Trimui Smart Pro), other use an arbitrary shortname (eg. "trimui" for the Trimui Model S), all are completely lowercase. See the extras bundle for up-to-date supported platform folder names.
+Paks are platform specific. Inside the Emus and Tools folders you will find (or need to create) platform folders. MinUI Zero supports one platform: "tg5040" (the Trimui Brick and Trimui Smart Pro), all lowercase.
 
-Some platforms have multiple devices with unique qualities. MinUI differentiates these devices from the base platform with the `DEVICE` envar. eg. the "rg35xxplus" platform has two unique devices "cube" for the RG CubeXX, and "wide" for the RG34xx. It also supports "hdmi" for when outputting to HDMI. A pak can choose to use or ignore this envar.
+The tg5040 platform covers two devices with unique qualities. MinUI differentiates them with the `DEVICE` envar: "brick" for the Trimui Brick (unset on the Smart Pro). A pak can choose to use or ignore this envar.
 
 # The types of emulator pak
 

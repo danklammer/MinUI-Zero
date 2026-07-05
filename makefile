@@ -83,13 +83,6 @@ cores: # TODO: can't assume every platform will have the same stock cores (platf
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/$(PLATFORM)/cores # SNES default (SUPA in base)
 	
 	# extras
-ifeq ($(PLATFORM), trimuismart)
-	cp ./workspace/miyoomini/cores/output/fake08_libretro.so ./build/EXTRAS/Emus/$(PLATFORM)/P8.pak
-else ifeq ($(PLATFORM), m17)
-	cp ./workspace/miyoomini/cores/output/fake08_libretro.so ./build/EXTRAS/Emus/$(PLATFORM)/P8.pak
-else ifneq ($(PLATFORM),gkdpixel)
-	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/EXTRAS/Emus/$(PLATFORM)/P8.pak || true # fake-08 may be skipped
-endif
 	# Extra systems ship DORMANT in the base: cores live in their paks under .system, but no
 	# Roms folder is created for them, so MinUI doesn't show them out of the box. A user who
 	# wants one just makes a Roms folder with the matching tag (eg. "Virtual Boy (VB)") and it
@@ -138,10 +131,6 @@ special:
 tidy:
 	# ----------------------------------------------------
 	# copy update from merged platform to old pre-merge platform bin so old cards update properly
-ifneq (,$(findstring rg35xxplus, $(PLATFORMS)))
-	mkdir -p ./build/SYSTEM/rg40xxcube/bin/
-	cp ./build/SYSTEM/rg35xxplus/bin/install.sh ./build/SYSTEM/rg40xxcube/bin/
-endif
 ifneq (,$(findstring tg5040, $(PLATFORMS)))
 	mkdir -p ./build/SYSTEM/tg3040/paks/MinUI.pak/
 	cp ./build/SYSTEM/tg5040/bin/install.sh ./build/SYSTEM/tg3040/paks/MinUI.pak/launch.sh
