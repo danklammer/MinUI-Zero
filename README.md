@@ -81,9 +81,11 @@ as break-even, and cut. `docs/DECISIONS.md` records every verdict.
 
 ## Consoles
 
-**Base:** Game Boy Color · Game Boy Advance · NES · SNES · Sega Genesis · PlayStation
-**Extras:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System, TurboGrafx-16,
-Virtual Boy, and more.
+**Ready to play:** Game Boy Color · Game Boy Advance · NES · SNES · Sega Genesis · PlayStation
+
+**Also aboard, dormant:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System,
+TurboGrafx-16, Virtual Boy — create the matching Roms folder (eg. "Virtual Boy (VB)")
+and the system appears, tuned core already installed.
 
 ## Install
 
