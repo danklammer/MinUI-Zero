@@ -19,6 +19,7 @@ endif
 ###########################################################
 
 BUILD_HASH:=$(shell git rev-parse --short HEAD)
+ZERO_VERSION=v1.1.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
@@ -145,7 +146,7 @@ package: tidy
 	cp ./workspace/readmes/EXTRAS-out.txt ./build/EXTRAS/README.txt
 	rm -rf ./workspace/readmes
 	
-	cd ./build/SYSTEM && echo "$(RELEASE_NAME)\n$(BUILD_HASH)" > version.txt
+	cd ./build/SYSTEM && echo "$(ZERO_VERSION) ($(RELEASE_TIME)-$(RELEASE_DOT))\n$(BUILD_HASH)" > version.txt
 	./commits.sh > ./build/SYSTEM/commits.txt
 	cd ./build && find . -type f -name '.DS_Store' -delete
 	mkdir -p ./build/PAYLOAD
