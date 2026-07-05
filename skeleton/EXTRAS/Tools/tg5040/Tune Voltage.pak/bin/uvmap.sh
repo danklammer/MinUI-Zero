@@ -70,8 +70,9 @@ gen_table() {
 		if [ -n "$CLIFF" ]; then
 			UV=$((CLIFF + GUARD))
 		else
-			# DONE at floor, no cliff -> ship the floor
-			UV=$FLOOR
+			# DONE at floor without cracking: guardband ABOVE the tested floor, same
+			# philosophy as cliff+GUARD (first production run shipped the raw floor — fixed)
+			UV=$((FLOOR + GUARD))
 		fi
 		# quantize down to a 12.5mV step and clamp to [FLOOR..stock-safe]
 		UV=$(( (UV - 712500) / 12500 * 12500 + 712500 ))
@@ -84,10 +85,11 @@ gen_table() {
 	for OPP in 1200000 1416000 1608000 1800000; do
 		C=$(grep "^$OPP CLIFF" "$LOG" | tail -1 | awk "{print \$3}")
 		[ -z "$C" ] && continue
-		STOCK=$(grep "opp $OPP: stock" "$LOG" | tail -1 | awk "{print \$4}")
+		STOCK=$(grep "opp $OPP: stock" "$LOG" | tail -1 | awk "{print \$5}")
 		[ -z "$STOCK" ] && continue
+		case "$STOCK" in *[!0-9]*|"") continue;; esac
 		M=$((STOCK - C))
-		[ "$M" -lt "$MINMARGIN" ] && MINMARGIN=$M
+		[ "$M" -gt 0 ] && [ "$M" -lt "$MINMARGIN" ] && MINMARGIN=$M
 	done
 	{
 		echo "calibrated=$(date +%Y-%m-%d)"
