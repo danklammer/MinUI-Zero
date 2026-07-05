@@ -24,7 +24,8 @@ firmwares ship stock clocks and voltages, so similar deltas apply.
 | Measured | vs stock, same device | in °F |
 |---|---|---|
 | Gameplay (closed-loop governor) | **~4-5°C cooler** | ~7-9°F |
-| Heavy games (+ Optimize CPU) | **~3°C more** | ~5°F more |
+| Heavy games (Optimize CPU) | **~3°C cooler** | ~5°F |
+| **Games total (both combined)** | **up to ~8°C cooler** | **~14°F** |
 | Menu idle (GPU-dark, Brick) | runs at **~26°C** | ~79°F |
 | Standby (deep sleep) | near-zero power, wakes instantly | — |
 
