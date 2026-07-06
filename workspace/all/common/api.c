@@ -807,16 +807,10 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 		if (show_wifi) ow += ww;
 
 		// opt-in menu clock (Clock tool toggle): HH:MM inside the pill, left of the icons.
-		// flag re-stat'd at most once/min; one tiny text render per redraw when enabled.
-		static uint32_t clock_checked_at = 0;
-		static int show_clock = 0;
-		uint32_t clock_now = SDL_GetTicks();
-		static int clock_24h = 0;
-		if (!clock_checked_at || clock_now-clock_checked_at>=60000) {
-			show_clock = exists(SHOW_CLOCK_PATH);
-			clock_24h = exists(USERDATA_PATH "/show_24hour"); // the Clock tool's existing preference
-			clock_checked_at = clock_now?clock_now:1;
-		}
+		// flags stat'd per redraw — redraws are dirty-driven and rare, and this makes the
+		// Clock tool's toggle preview instantly.
+		int show_clock = exists(SHOW_CLOCK_PATH);
+		int clock_24h = exists(USERDATA_PATH "/show_24hour"); // the Clock tool's existing preference
 		SDL_Surface* clock_txt = NULL;
 		int cw = 0;
 		if (show_clock) {
