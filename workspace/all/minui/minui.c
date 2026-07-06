@@ -1318,10 +1318,15 @@ static void ChargingScreen(SDL_Surface* screen) {
 	int old_brightness = GetBrightness();
 	SetBrightness(0); // lowest visible step; restored on exit
 	uint32_t rendered_at = 0;
+	uint32_t entered_at = SDL_GetTicks();
 	while (PWR_isCharging()) {
 		PAD_poll();
 		if (PAD_anyJustPressed()) break;
 		uint32_t now = SDL_GetTicks();
+		// after 5 minutes of showing the charge state, hand the device to sleep: charging
+		// continues (cooler, and the charger can actually terminate -> green LED); any
+		// button wakes back to the menu, and idling there returns here.
+		if (now-entered_at >= 300000) { PWR_requestSleep(); break; }
 		if (!rendered_at || now-rendered_at>=60000) {
 			int pct = -1;
 			FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");

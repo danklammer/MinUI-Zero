@@ -302,6 +302,7 @@ void PWR_enableAutosleep(void);
 int PWR_preventAutosleep(void);
 
 int PWR_isCharging(void);
+void PWR_requestSleep(void); // programmatic sleep request (charging screen timeout)
 int PWR_getBattery(void);
 
 enum {

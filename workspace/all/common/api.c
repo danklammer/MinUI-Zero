@@ -1950,6 +1950,9 @@ int PWR_preventAutosleep(void) {
 }
 
 // updated by PWR_updateBatteryStatus()
+void PWR_requestSleep(void) {
+	pwr.requested_sleep = 1; // consumed by the next PWR_update tick (same path as jack events)
+}
 int PWR_isCharging(void) {
 	return pwr.is_charging;
 }
