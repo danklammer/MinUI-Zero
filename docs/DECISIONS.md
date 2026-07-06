@@ -488,3 +488,17 @@ cold-boots to menu (77728 bytes = proven size + the haptic cue); uv still arms i
 a days-old minui in every zip (D38) — the workspace makefile now cleans minui/minarch before
 every build. The two incidents compound one lesson: the menu binary is boot-path code and gets
 boot-path rigor.
+
+## D40 — GPU clock cap: probed, all safe knobs absent, SHELVED (2026-07-05)
+Mid-PS1 probe showed the GPU pinned at its top OPP (702MHz @ 1100mV; ladder 233@950 /
+350@950 / 702@1100, driver dvfs:0 = dynamic scaling off) to do one blit per frame. Every
+runtime control probed and dead: /sys/class/devfreq EMPTY (framework not exposed);
+scenectrl/command = a vendor BOOST hint (useless at max); pvrsrvkm module params = stock IMG
+plumbing, no freq knob; debugfs clk writes REJECTED (kernel lacks CLOCK_ALLOW_WRITE_DEBUGFS).
+Remaining paths = raw CCU MMIO pokes (live PLL glitching = GPU hangs) or DT surgery (boot
+flash — same risk class as the declined DTB undervolt). Win is also bounded smaller than the
+702MHz headline: the GPU-dark-games A/B (GLES vs software scale = exact break-even) plus
+EnableRDPowerIsland=2 indicate per-frame power-islanding already recovers much of the waste.
+Risk >> bounded reward -> shelved beside the DE scaler. Same probe validated THPS2 governor
+behavior as CORRECT: it sank 1800->1368, the game dropped to 48/60, it recovered and held —
+with schedutil duty-cycling 1416<->1800 beneath the ceiling at 33C.
