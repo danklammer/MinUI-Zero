@@ -15,7 +15,7 @@ It keeps MinUI's fast, distraction-free experience while tuning everything under
 ## Why MinUI Zero?
 
 - **Cooler gameplay** without lowering frame rates
-- **Longer battery life** by eliminating unnecessary power use
+- **Longer battery life** — ~7.5 hours on Game Boy, ~7 on PlayStation
 - **No CPU settings to manage** — every game is tuned automatically
 - **Instant deep sleep and resume** without leaving the device running hot
 - **Smoother gameplay** with improved frame pacing, audio resampling, and lower input latency
@@ -34,6 +34,7 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Both combined in games | **up to ~8°C (14°F) cooler** |
 | Optimize CPU power reduction | **Up to 20% less CPU power at the same clock** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
+| PlayStation battery life | **~6.5-7 hours** — after the governor and undervolt, PS1 costs barely more than Game Boy |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
 | Deep sleep | Near-zero active power, with instant resume |
 
