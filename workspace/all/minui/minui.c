@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <time.h>
 #include "defines.h"
 #include "api.h"
 #include "utils.h"
@@ -1345,6 +1346,18 @@ int main (int argc, char *argv[]) {
 		int total = top->entries->count;
 		
 		PWR_update(&dirty, &show_setting, NULL, NULL);
+
+		// menu clock: refresh the header once a minute while enabled (near-zero cost;
+		// the menu autosleeps in 30s anyway, so this rarely fires)
+		{
+			static int clock_last_min = -1;
+			time_t clock_time = time(NULL);
+			struct tm* clock_tm = localtime(&clock_time);
+			if (clock_tm->tm_min != clock_last_min) {
+				if (clock_last_min >= 0 && exists(SHOW_CLOCK_PATH)) dirty = 1;
+				clock_last_min = clock_tm->tm_min;
+			}
+		}
 		
 		int is_online = PLAT_isOnline();
 		if (was_online!=is_online) dirty = 1;
