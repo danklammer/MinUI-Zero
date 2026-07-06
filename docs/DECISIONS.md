@@ -502,3 +502,15 @@ EnableRDPowerIsland=2 indicate per-frame power-islanding already recovers much o
 Risk >> bounded reward -> shelved beside the DE scaler. Same probe validated THPS2 governor
 behavior as CORRECT: it sank 1800->1368, the game dropped to 48/60, it recovered and held —
 with schedutil duty-cycling 1416<->1800 beneath the ceiling at 33C.
+
+## D41 — PS1 battery measured + the fuel gauge caught distorting by charge region (2026-07-06)
+Three-window drain campaign (THPS2 @95-80%: 300 units/h; Zelda DX @59-36%: 460/h; THPS2 again
+@35-21%: 560/h — all dim brightness, discharging, game verified alive per sample). Two findings:
+(1) the axp2202 gauge's units inflate ~85% from full to near-empty for the SAME true load
+(voltage sag explains only ~14%) — single-window extrapolations are unreliable on this hardware;
+all future drain claims come from full drains or adjacent windows. (2) The honest PS1 number:
+interpolating THPS2 to Zelda's region gives PS1 = GB + ~3-15% — after the governor + undervolt,
+the PANEL dominates the power budget and PlayStation costs about a Game Boy. Publishable: GB
+~7.5h -> PS1 ~6.5-7h (dim). The earlier single-window "~10h PS1" figure is retracted as
+top-region gauge flattery. Method note: attract/demo modes make honest unattended loads;
+drain scripts must quit the game at the end (an unattended THPS2 kept running 2.7h post-test).
