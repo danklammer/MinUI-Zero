@@ -1326,6 +1326,15 @@ static void ChargingScreen(SDL_Surface* screen) {
 			int pct = -1;
 			FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");
 			if (bf) { if (fscanf(bf, "%d", &pct)!=1) pct = -1; fclose(bf); }
+			// honest 100%: the gauge rounds up before the charger actually terminates
+			// (the LED stays red through the final taper). Hold at 99% until the kernel
+			// reports Full — the same moment the LED turns green.
+			if (pct >= 100) {
+				char st[16] = "";
+				FILE* sf = fopen("/sys/class/power_supply/axp2202-battery/status", "r");
+				if (sf) { if (!fgets(st, sizeof(st), sf)) st[0] = 0; fclose(sf); }
+				if (strncmp(st, "Full", 4) != 0) pct = 99;
+			}
 			GFX_clear(screen);
 			char msg[16];
 			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);
