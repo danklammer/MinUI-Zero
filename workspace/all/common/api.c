@@ -826,7 +826,14 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 			strftime(hhmm, sizeof(hhmm), clock_24h ? "%H:%M" : "%I:%M %p", clock_tm);
 			if (!clock_24h && hhmm[0]=='0') memmove(hhmm, hhmm+1, strlen(hhmm)); // 03:42 PM -> 3:42 PM
 			clock_txt = TTF_RenderUTF8_Blended(font.tiny, hhmm, COLOR_WHITE);
-			if (clock_txt) cw = clock_txt->w + SCALE1(6);
+			// FIXED slot width (widest string for the mode) so the pill never changes
+			// size as minutes tick — zero jumpiness, battery never moves.
+			static int clock_slot_w[2] = {0,0};
+			if (!clock_slot_w[clock_24h]) {
+				SDL_Surface* tmpl = TTF_RenderUTF8_Blended(font.tiny, clock_24h?"88:88":"88:88 PM", COLOR_WHITE);
+				if (tmpl) { clock_slot_w[clock_24h] = tmpl->w; SDL_FreeSurface(tmpl); }
+			}
+			if (clock_txt) cw = clock_slot_w[clock_24h] + SCALE1(6);
 			ow += cw;
 		}
 
@@ -839,8 +846,9 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 			SCALE1(PILL_SIZE)
 		});
 		if (clock_txt) {
+			// right-align within the fixed slot: the ":MM" tail stays visually anchored
 			SDL_BlitSurface(clock_txt, NULL, dst, &(SDL_Rect){
-				ox + SCALE1(6),
+				ox + cw - SCALE1(3) - clock_txt->w,
 				oy + (SCALE1(PILL_SIZE) - clock_txt->h) / 2
 			});
 			SDL_FreeSurface(clock_txt);
