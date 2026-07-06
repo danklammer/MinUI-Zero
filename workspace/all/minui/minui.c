@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <math.h>
 #include <time.h>
 #include "defines.h"
 #include "api.h"
@@ -1298,6 +1299,18 @@ static void Menu_quit(void) {
 
 ///////////////////////////////////////
 
+// filled rounded rectangle via per-row spans (same technique as confirm's check-circle)
+static void fill_rrect(SDL_Surface* dst, int x, int y, int w, int h, int r, uint32_t c) {
+	if (r > h/2) r = h/2;
+	if (r > w/2) r = w/2;
+	for (int row=0; row<h; row++) {
+		int inset = 0;
+		if (row < r) { float dy = r-row-0.5f; inset = r - (int)sqrtf((float)r*r - dy*dy); }
+		else if (row >= h-r) { float dy = row-(h-r)+0.5f; inset = r - (int)sqrtf((float)r*r - dy*dy); }
+		SDL_FillRect(dst, &(SDL_Rect){x+inset, y+row, w-2*inset, 1}, c);
+	}
+}
+
 // Charging screen: while idle on the charger the menu would otherwise stay lit for the
 // whole charge (autosleep is disabled while charging). Instead: near-dark screen, big
 // battery percentage, refreshed once a minute. Any button (or unplugging) returns.
@@ -1318,20 +1331,25 @@ static void ChargingScreen(SDL_Surface* screen) {
 			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);
 			else snprintf(msg, sizeof(msg), "...");
 
-			// big procedural battery: outline + nub + proportional fill, % below
+			// rounded battery (reference: iOS-style): outline ring + rounded nub +
+			// proportional rounded fill with a clear gap
 			uint32_t white = SDL_MapRGB(screen->format, 0xff,0xff,0xff);
-			int bw = SCALE1(150), bh = SCALE1(64), t = SCALE1(3);
+			uint32_t black = SDL_MapRGB(screen->format, 0x00,0x00,0x00);
+			int bw = SCALE1(110), bh = SCALE1(52);
+			int t  = SCALE1(4);            // stroke
+			int r  = bh*7/24;              // corner radius, ~iOS proportion
 			int bx = (screen->w - bw) / 2;
 			int by = (screen->h - bh) / 2 - SCALE1(24);
-			SDL_FillRect(screen, &(SDL_Rect){bx, by, bw, t}, white);            // top
-			SDL_FillRect(screen, &(SDL_Rect){bx, by+bh-t, bw, t}, white);       // bottom
-			SDL_FillRect(screen, &(SDL_Rect){bx, by, t, bh}, white);            // left
-			SDL_FillRect(screen, &(SDL_Rect){bx+bw-t, by, t, bh}, white);       // right
-			SDL_FillRect(screen, &(SDL_Rect){bx+bw, by+bh/4, SCALE1(6), bh/2}, white); // nub
+			fill_rrect(screen, bx, by, bw, bh, r, white);                 // outer
+			fill_rrect(screen, bx+t, by+t, bw-2*t, bh-2*t, r-t, black);   // punch the ring
+			int nw = SCALE1(5), nh = bh*5/12;
+			fill_rrect(screen, bx+bw+SCALE1(2), by+(bh-nh)/2, nw, nh, nw/2, white); // nub
 			if (pct > 0) {
-				int inset = t + SCALE1(4);
-				int fw = (bw - 2*inset) * pct / 100;
-				SDL_FillRect(screen, &(SDL_Rect){bx+inset, by+inset, fw, bh-2*inset}, white);
+				int gap = t + SCALE1(3);
+				int fw = (bw - 2*gap) * pct / 100;
+				int fr = (r-t-SCALE1(1)); if (fr < SCALE1(3)) fr = SCALE1(3);
+				if (fw < 2*fr) fw = 2*fr; // keep the fill's corners round at low %
+				fill_rrect(screen, bx+gap, by+gap, fw, bh-2*gap, fr, white);
 			}
 			SDL_Surface* txt = TTF_RenderUTF8_Blended(font.large, msg, COLOR_WHITE);
 			if (txt) {
