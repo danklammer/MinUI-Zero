@@ -1298,6 +1298,41 @@ static void Menu_quit(void) {
 
 ///////////////////////////////////////
 
+// Charging screen: while idle on the charger the menu would otherwise stay lit for the
+// whole charge (autosleep is disabled while charging). Instead: near-dark screen, big
+// battery percentage, refreshed once a minute. Any button (or unplugging) returns.
+static void ChargingScreen(SDL_Surface* screen) {
+	int old_brightness = GetBrightness();
+	SetBrightness(0); // lowest visible step; restored on exit
+	uint32_t rendered_at = 0;
+	while (PWR_isCharging()) {
+		PAD_poll();
+		if (PAD_anyJustPressed()) break;
+		uint32_t now = SDL_GetTicks();
+		if (!rendered_at || now-rendered_at>=60000) {
+			int pct = -1;
+			FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");
+			if (bf) { if (fscanf(bf, "%d", &pct)!=1) pct = -1; fclose(bf); }
+			GFX_clear(screen);
+			char msg[16];
+			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);
+			else snprintf(msg, sizeof(msg), "...");
+			SDL_Surface* txt = TTF_RenderUTF8_Blended(font.large, msg, COLOR_WHITE);
+			if (txt) {
+				int tx = (screen->w - txt->w) / 2;
+				int ty = (screen->h - txt->h) / 2 + SCALE1(10);
+				SDL_BlitSurface(txt, NULL, screen, &(SDL_Rect){tx, ty});
+				GFX_blitBattery(screen, &(SDL_Rect){(screen->w - SCALE1(PILL_SIZE)) / 2, ty - SCALE1(24)});
+				SDL_FreeSurface(txt);
+			}
+			GFX_flip(screen);
+			rendered_at = now;
+		}
+		SDL_Delay(100);
+	}
+	SetBrightness(old_brightness);
+}
+
 int main (int argc, char *argv[]) {
 	// LOG_info("time from launch to:\n");
 	// unsigned long main_begin = SDL_GetTicks();
@@ -1346,6 +1381,18 @@ int main (int argc, char *argv[]) {
 		int total = top->entries->count;
 		
 		PWR_update(&dirty, &show_setting, NULL, NULL);
+
+		// charging screen: 30s of no input while on the charger
+		{
+			static uint32_t charge_idle_at = 0;
+			uint32_t charge_now = SDL_GetTicks();
+			if (PAD_anyPressed() || !charge_idle_at) charge_idle_at = charge_now;
+			if (PWR_isCharging() && charge_now-charge_idle_at>=30000) {
+				ChargingScreen(screen);
+				charge_idle_at = SDL_GetTicks();
+				dirty = 1;
+			}
+		}
 
 		// menu clock: refresh the header once a minute while enabled (near-zero cost;
 		// the menu autosleeps in 30s anyway, so this rarely fires)
