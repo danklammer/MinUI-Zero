@@ -811,17 +811,20 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 		static uint32_t clock_checked_at = 0;
 		static int show_clock = 0;
 		uint32_t clock_now = SDL_GetTicks();
+		static int clock_24h = 0;
 		if (!clock_checked_at || clock_now-clock_checked_at>=60000) {
 			show_clock = exists(SHOW_CLOCK_PATH);
+			clock_24h = exists(USERDATA_PATH "/show_24hour"); // the Clock tool's existing preference
 			clock_checked_at = clock_now?clock_now:1;
 		}
 		SDL_Surface* clock_txt = NULL;
 		int cw = 0;
 		if (show_clock) {
-			char hhmm[8];
+			char hhmm[12];
 			time_t clock_time = time(NULL);
 			struct tm* clock_tm = localtime(&clock_time);
-			strftime(hhmm, sizeof(hhmm), "%H:%M", clock_tm);
+			strftime(hhmm, sizeof(hhmm), clock_24h ? "%H:%M" : "%I:%M %p", clock_tm);
+			if (!clock_24h && hhmm[0]=='0') memmove(hhmm, hhmm+1, strlen(hhmm)); // 03:42 PM -> 3:42 PM
 			clock_txt = TTF_RenderUTF8_Blended(font.tiny, hhmm, COLOR_WHITE);
 			if (clock_txt) cw = clock_txt->w + SCALE1(6);
 			ow += cw;
