@@ -20,6 +20,7 @@
 #define PAKS_PATH SYSTEM_PATH "/paks"
 #define BIN_PATH SYSTEM_PATH "/bin"
 #define RECENT_PATH SHARED_USERDATA_PATH "/.minui/recent.txt"
+#define SHOW_CLOCK_PATH SHARED_USERDATA_PATH "/show-clock" // menu clock opt-in (Clock tool)
 #define SIMPLE_MODE_PATH SHARED_USERDATA_PATH "/enable-simple-mode"
 #define DEEP_SLEEP_OFF_PATH SHARED_USERDATA_PATH "/disable-deep-sleep" // deep sleep is ON by default; this file opts out (Deep Sleep tool)
 // Suspend-inhibit lock files (idea: NextUI #756). tmpfs, so they self-clear on reboot.

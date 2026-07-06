@@ -14,6 +14,7 @@
 
 #include <msettings.h>
 
+#include <time.h>
 #include "defines.h"
 #include "api.h"
 #include "utils.h"
@@ -805,6 +806,27 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 		ow = SCALE1(PILL_SIZE);
 		if (show_wifi) ow += ww;
 
+		// opt-in menu clock (Clock tool toggle): HH:MM inside the pill, left of the icons.
+		// flag re-stat'd at most once/min; one tiny text render per redraw when enabled.
+		static uint32_t clock_checked_at = 0;
+		static int show_clock = 0;
+		uint32_t clock_now = SDL_GetTicks();
+		if (!clock_checked_at || clock_now-clock_checked_at>=60000) {
+			show_clock = exists(SHOW_CLOCK_PATH);
+			clock_checked_at = clock_now?clock_now:1;
+		}
+		SDL_Surface* clock_txt = NULL;
+		int cw = 0;
+		if (show_clock) {
+			char hhmm[8];
+			time_t clock_time = time(NULL);
+			struct tm* clock_tm = localtime(&clock_time);
+			strftime(hhmm, sizeof(hhmm), "%H:%M", clock_tm);
+			clock_txt = TTF_RenderUTF8_Blended(font.tiny, hhmm, COLOR_WHITE);
+			if (clock_txt) cw = clock_txt->w + SCALE1(6);
+			ow += cw;
+		}
+
 		ox = dst->w - SCALE1(PADDING) - ow;
 		oy = SCALE1(PADDING);
 		GFX_blitPill(gfx.mode==MODE_MAIN ? ASSET_DARK_GRAY_PILL : ASSET_BLACK_PILL, dst, &(SDL_Rect){
@@ -813,6 +835,14 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 			ow,
 			SCALE1(PILL_SIZE)
 		});
+		if (clock_txt) {
+			SDL_BlitSurface(clock_txt, NULL, dst, &(SDL_Rect){
+				ox + SCALE1(6),
+				oy + (SCALE1(PILL_SIZE) - clock_txt->h) / 2
+			});
+			SDL_FreeSurface(clock_txt);
+			ox += cw;
+		}
 		if (show_wifi) {
 			SDL_Rect rect = asset_rects[ASSET_WIFI];
 			int x = ox;
