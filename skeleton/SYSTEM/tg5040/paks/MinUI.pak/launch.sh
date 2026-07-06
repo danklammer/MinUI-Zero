@@ -96,8 +96,10 @@ fi
 if [ ! -f "$SHARED_USERDATA_PATH/enable-ssh" ] && [ -f "$STOCK_JSON" ]; then
 	sed -i -e "s/\"usbmode\":[[:space:]]*\"[a-z]*\"/\"usbmode\":\t\"charge\"/" "$STOCK_JSON"
 fi
-# set default usb mode (reads usbmode from the stock config)
-usb_device.sh
+# set default usb mode (reads usbmode from the stock config). Backgrounded: the final
+# kernel-attribute read blocks ~2.3s while the USB stack initializes — measured as the
+# single biggest cost in our whole boot path, and nothing before the menu depends on it.
+usb_device.sh &
 
 # First-boot polish (baked in from the old Bootlogo + Remove Loading tools — see git history).
 # Runs once, guarded by a flag; every step is non-fatal so a failure never blocks boot.
