@@ -1335,15 +1335,15 @@ static void ChargingScreen(SDL_Surface* screen) {
 			// proportional rounded fill with a clear gap
 			uint32_t white = SDL_MapRGB(screen->format, 0xff,0xff,0xff);
 			uint32_t black = SDL_MapRGB(screen->format, 0x00,0x00,0x00);
-			int bw = SCALE1(110), bh = SCALE1(52);
+			int bw = SCALE1(92), bh = SCALE1(44);
 			int t  = SCALE1(4);            // stroke
-			int r  = bh*7/24;              // corner radius, ~iOS proportion
+			int r  = bh/5;                 // a touch less rounded
 			int bx = (screen->w - bw) / 2;
 			int by = (screen->h - bh) / 2 - SCALE1(24);
 			fill_rrect(screen, bx, by, bw, bh, r, white);                 // outer
 			fill_rrect(screen, bx+t, by+t, bw-2*t, bh-2*t, r-t, black);   // punch the ring
 			int nw = SCALE1(5), nh = bh*5/12;
-			fill_rrect(screen, bx+bw+SCALE1(2), by+(bh-nh)/2, nw, nh, nw/2, white); // nub
+			fill_rrect(screen, bx+bw-SCALE1(1), by+(bh-nh)/2, nw+SCALE1(1), nh, nw/2, white); // nub, attached
 			if (pct > 0) {
 				int gap = t + SCALE1(3);
 				int fw = (bw - 2*gap) * pct / 100;
