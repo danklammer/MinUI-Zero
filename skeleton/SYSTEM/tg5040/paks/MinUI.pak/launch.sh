@@ -15,6 +15,15 @@ export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"
 export DATETIME_PATH="$SHARED_USERDATA_PATH/datetime.txt"
 
+# RTC sanity (the Onion/stock-MinUI trick, restore half): a fully dead battery resets the
+# RTC to epoch. If the clock reads obvious nonsense, restore the last-known-good time that
+# the launch loop already saves after every game — the clock loses only the time spent
+# dead, not four decades.
+if [ "$(date +%Y)" -lt 2025 ] && [ -f "$DATETIME_PATH" ]; then
+	date -s "$(cat "$DATETIME_PATH")" >/dev/null 2>&1
+	hwclock -w 2>/dev/null
+fi
+
 mkdir -p "$BIOS_PATH"
 mkdir -p "$ROMS_PATH"
 mkdir -p "$SAVES_PATH"
