@@ -1317,12 +1317,25 @@ static void ChargingScreen(SDL_Surface* screen) {
 			char msg[16];
 			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);
 			else snprintf(msg, sizeof(msg), "...");
+
+			// big procedural battery: outline + nub + proportional fill, % below
+			uint32_t white = SDL_MapRGB(screen->format, 0xff,0xff,0xff);
+			int bw = SCALE1(150), bh = SCALE1(64), t = SCALE1(3);
+			int bx = (screen->w - bw) / 2;
+			int by = (screen->h - bh) / 2 - SCALE1(24);
+			SDL_FillRect(screen, &(SDL_Rect){bx, by, bw, t}, white);            // top
+			SDL_FillRect(screen, &(SDL_Rect){bx, by+bh-t, bw, t}, white);       // bottom
+			SDL_FillRect(screen, &(SDL_Rect){bx, by, t, bh}, white);            // left
+			SDL_FillRect(screen, &(SDL_Rect){bx+bw-t, by, t, bh}, white);       // right
+			SDL_FillRect(screen, &(SDL_Rect){bx+bw, by+bh/4, SCALE1(6), bh/2}, white); // nub
+			if (pct > 0) {
+				int inset = t + SCALE1(4);
+				int fw = (bw - 2*inset) * pct / 100;
+				SDL_FillRect(screen, &(SDL_Rect){bx+inset, by+inset, fw, bh-2*inset}, white);
+			}
 			SDL_Surface* txt = TTF_RenderUTF8_Blended(font.large, msg, COLOR_WHITE);
 			if (txt) {
-				int tx = (screen->w - txt->w) / 2;
-				int ty = (screen->h - txt->h) / 2 + SCALE1(10);
-				SDL_BlitSurface(txt, NULL, screen, &(SDL_Rect){tx, ty});
-				GFX_blitBattery(screen, &(SDL_Rect){(screen->w - SCALE1(PILL_SIZE)) / 2, ty - SCALE1(24)});
+				SDL_BlitSurface(txt, NULL, screen, &(SDL_Rect){(screen->w - txt->w)/2, by + bh + SCALE1(16)});
 				SDL_FreeSurface(txt);
 			}
 			GFX_flip(screen);
