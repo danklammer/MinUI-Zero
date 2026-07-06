@@ -255,7 +255,7 @@ int main(int argc , char* argv[]) {
 			GFX_blitHardwareGroup(screen, show_setting);
 			
 			if (show_setting) GFX_blitHardwareHints(screen, show_setting);
-			else GFX_blitButtonGroup((char*[]){ "SELECT",show_24hour?"12 HR":"24 HR", "X","MENU", NULL }, 1, screen, 0);
+			else GFX_blitButtonGroup((char*[]){ "X","MENU", "SELECT",show_24hour?"12 HR":"24 HR", NULL }, 1, screen, 0);
 
 			GFX_blitButtonGroup((char*[]){ "B","CANCEL", "A","SET", NULL }, 1, screen, 1);
 		
