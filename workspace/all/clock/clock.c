@@ -258,20 +258,6 @@ int main(int argc , char* argv[]) {
 			else GFX_blitButtonGroup((char*[]){ "SELECT",show_24hour?"12 HOUR":"24 HOUR", "X","MENU", NULL }, 1, screen, 0);
 
 			GFX_blitButtonGroup((char*[]){ "B","CANCEL", "A","SET", NULL }, 1, screen, 1);
-
-			// menu-clock state, top-left (the pill top-right is the live preview)
-			{
-				SDL_Surface* state_txt = TTF_RenderUTF8_Blended(font.tiny,
-					show_menu_clock ? "MENU CLOCK ON" : "MENU CLOCK OFF",
-					show_menu_clock ? COLOR_WHITE : COLOR_GRAY);
-				if (state_txt) {
-					SDL_BlitSurface(state_txt, NULL, screen, &(SDL_Rect){
-						SCALE1(PADDING),
-						SCALE1(PADDING) + (SCALE1(PILL_SIZE) - state_txt->h) / 2
-					});
-					SDL_FreeSurface(state_txt);
-				}
-			}
 		
 			// 376 or 446 (@2x)
 			// 188 or 223 (@1x)
