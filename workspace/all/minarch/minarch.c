@@ -2437,6 +2437,26 @@ static const char* bitmap_font[] = {
 		"1    "
 		"1    "
 		"11111",
+	['T'] =
+		"11111"
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  ",
+	['R'] =
+		"1111 "
+		"1   1"
+		"1   1"
+		"1111 "
+		"1 1  "
+		"1  1 "
+		"1  1 "
+		"1   1"
+		"1   1",
 	['C'] =
 		" 111 "
 		"1   1"
@@ -2663,7 +2683,8 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 		row = data + y * stride;
 		memset(row-1, 0, (w+2)*2);
 		for (int i=0; i<len; i++) {
-			const char* c = bitmap_font[text[i]];
+			const char* c = bitmap_font[(unsigned char)text[i]];
+			if (!c) { row += CHAR_WIDTH + LETTERSPACING; continue; } // undefined glyph: blank, not a NULL deref
 			for (int x=0; x<CHAR_WIDTH; x++) {
 				int j = y * CHAR_WIDTH + x;
 				if (c[j]=='1') *row = 0xffff;
