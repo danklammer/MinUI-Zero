@@ -3007,7 +3007,16 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		static uint32_t hud_temp_at = 0;
 		uint32_t hud_now = SDL_GetTicks();
 		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
-		sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
+		if (thread_video && core.fps > 0) {
+			// threaded mode: append the core thread's own utilization (its work vs the
+			// frame budget) — the number the sink gate judges by
+			uint64_t thr_sum = 0;
+			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
+			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
+			int thr_util = thr_n > 0 ? (int)(100.0 * (double)thr_sum / (thr_n * (1000000.0 / core.fps))) : 0;
+			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util);
+		}
+		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
 	
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
