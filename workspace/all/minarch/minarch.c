@@ -1845,9 +1845,8 @@ static void input_poll_callback(void) {
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 0;
 			pthread_mutex_unlock(&core_mx);
-			// wait (bounded) for the in-flight frame to park before the menu touches
-			// core state — savestates must never overlap a running core.run
-			for (int w=0; w<100 && !core_parked; w++) usleep(1000);
+			// NOTE: no park-wait here — this code runs on the CORE thread (input_poll
+			// is called from core.run). The main thread waits before Menu_loop instead.
 		}
 	}
 	
@@ -5039,6 +5038,11 @@ int main(int argc , char* argv[]) {
 		}
 		
 		if (show_menu) {
+			if (thread_video) {
+				// wait (bounded) for the core thread to park before the menu touches
+				// core state — savestates must never overlap a running core.run
+				for (int w=0; w<100 && !core_parked; w++) usleep(1000);
+			}
 			Menu_loop();
 			// reset the rate window: a second that spans the menu would read as a false
 			// generation-rate drop and spuriously climb the governor on menu exit
@@ -5057,17 +5061,19 @@ int main(int argc , char* argv[]) {
 				thread_video = !thread_video;
 			}
 			// LOG_info("toggling thread from %i to %i\n", thread_video, !thread_video);
-			thread_video = !thread_video;
-			if (thread_video) {
+			if (!thread_video) {
 				// enable
+				thread_video = 1;
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
 				pthread_create(&core_pt, NULL, &coreThread, NULL);
 				core_thread_alive = 1;
 			}
 			else {
-				// disable: ask the thread to exit and wake it wherever it waits
-				// (pthread_cancel inside a cond_wait killed it while holding core_mx)
+				// disable: thread_video stays 1 until the join returns — the thread's
+				// final in-flight frame must take the mailbox path, not GL from its
+				// thread. Liveness guard: FF entry may have already torn it down.
+				if (core_thread_alive) {
 				pthread_mutex_lock(&core_mx);
 				core_thread_exit = 1;
 				pthread_cond_signal(&core_pause_cv);
@@ -5076,6 +5082,8 @@ int main(int argc , char* argv[]) {
 				core_thread_alive = 0;
 				core_thread_exit = 0;
 				frame_ready = 0;
+				}
+				thread_video = 0;
 				
 				// force a vsync immediately before loop
 				// for better frame pacing?
