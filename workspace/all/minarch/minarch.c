@@ -37,6 +37,7 @@ static int should_run_core = 1; // used by threaded video
 #define CORE_WORK_RING 32
 static volatile uint32_t core_work_ring[CORE_WORK_RING];
 static volatile uint32_t core_work_n = 0;
+static volatile int core_pace_ppm = 0; // DRC rate adjustment, honored by the core pacer
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
@@ -48,6 +49,7 @@ static int frame_ready = 0;
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
+static int core_thread_alive = 0;    // guards join: FF auto-disable already joined the thread
 static void* coreThread(void *arg);
 
 enum {
@@ -4860,10 +4862,8 @@ static void limitFF(void) {
 }
 
 static void* coreThread(void *arg) {
-	// force a vsync immediately before loop
-	// for better frame pacing?
-	GFX_clearAll();
-	GFX_flip(screen);
+	// (stock cleared + flipped here "for better frame pacing" — that is GL from the
+	// wrong thread; EGL contexts are thread-affine and the mailbox paces us now)
 	
 	while (!quit && !core_thread_exit) {
 		int run = 0;
@@ -4893,7 +4893,7 @@ static void* coreThread(void *arg) {
 			// keeps the ring level and the core's wall-clock honest.
 			if (!fast_forward && core.fps > 0) {
 				static uint64_t next_us = 0;
-				uint64_t budget = (uint64_t)(1000000.0 / core.fps);
+				uint64_t budget = (uint64_t)(1000000.0 / (core.fps * (1.0 + core_pace_ppm / 1000000.0)));
 				uint64_t now2 = getMicroseconds();
 				if (!next_us) next_us = now2;
 				next_us += budget;
@@ -5063,6 +5063,7 @@ int main(int argc , char* argv[]) {
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
 				pthread_create(&core_pt, NULL, &coreThread, NULL);
+				core_thread_alive = 1;
 			}
 			else {
 				// disable: ask the thread to exit and wake it wherever it waits
@@ -5072,6 +5073,7 @@ int main(int argc , char* argv[]) {
 				pthread_cond_signal(&core_pause_cv);
 				pthread_mutex_unlock(&core_mx);
 				pthread_join(core_pt,NULL);
+				core_thread_alive = 0;
 				core_thread_exit = 0;
 				frame_ready = 0;
 				
@@ -5199,6 +5201,7 @@ int main(int argc , char* argv[]) {
 					drc_ppm = 0;
 					SND_setRateAdjustPPM(0);
 					GFX_setPacePeriodUs(0);
+					core_pace_ppm = 0;
 				}
 			}
 			else if (++drc_frames >= 30) { // ~2Hz
@@ -5213,6 +5216,7 @@ int main(int argc , char* argv[]) {
 				if (drc_ppm > 25000) drc_ppm = 25000;
 				if (drc_ppm != prev) {
 					SND_setRateAdjustPPM(drc_ppm);
+					core_pace_ppm = drc_ppm;
 					// pace the drift-free pacer slightly above any 60-class panel so it only
 					// backstops; vsync + audio are the fine clocks while DRC is active
 					GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
@@ -5231,12 +5235,13 @@ int main(int argc , char* argv[]) {
 	// threaded video: the core thread executes core code — it MUST be joined before
 	// Core_unload/dlclose rips that code out from under it. Audio is still running here,
 	// so a core blocked in SND_batchSamples drains and exits cleanly.
-	if (thread_video || was_threaded) {
+	if (core_thread_alive) {
 		pthread_mutex_lock(&core_mx);
 		core_thread_exit = 1;
 		pthread_cond_broadcast(&core_pause_cv);
 		pthread_mutex_unlock(&core_mx);
 		pthread_join(core_pt, NULL);
+		core_thread_alive = 0;
 		core_thread_exit = 0;
 	}
 
