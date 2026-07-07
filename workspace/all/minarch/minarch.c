@@ -5041,9 +5041,17 @@ int main(int argc , char* argv[]) {
 					// with >=15% idle headroom (gov_sink_fits: the quantitative form of D14's
 					// race-to-idle rule; replaces the blunt busy-hold that kept NES/PS1 one OPP
 					// step above their proven minimums).
-					int fps_short = (cpu_double > 0 && core.fps > 0 && cpu_double < core.fps * 0.975);
+					// Fast-forward is just a different target: fps x the FF multiplier. The
+					// governor then finds the lowest clock that holds THAT — FF gets the
+					// clocks it needs (measured: 2.2x of a 4x cap when stuck at the floor)
+					// without pinning max for an hour of Pokemon grinding.
+					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed + 1) : 1);
+					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
 					int frame_overrun;
 					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
+					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
+					// the per-frame work measurement is unreliable while presentation is skipping,
+					// and the user is explicitly asking for speed. Sinking resumes when FF ends.
 					else {
 						for (int a=1; a<GOV_TICK_FRAMES; a++) { // insertion sort (30 ints, once per 0.5s)
 							uint32_t v = gov_work[a]; int b = a-1;
@@ -5051,7 +5059,7 @@ int main(int argc , char* argv[]) {
 							gov_work[b+1] = v;
 						}
 						int p95 = (int)gov_work[GOV_TICK_FRAMES - 2]; // ~93rd percentile of 30
-						int budget_us = core.fps > 0 ? (int)(1000000.0 / core.fps) : 16667;
+						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
 						int next = gov_sink_target(&gov_state, &gov_profile);
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
@@ -5059,7 +5067,7 @@ int main(int argc , char* argv[]) {
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
-						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, core.fps);
+						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
 					gov_frames = 0;
 				}
 			}
