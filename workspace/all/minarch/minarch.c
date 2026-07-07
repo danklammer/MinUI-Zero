@@ -31,15 +31,22 @@ static int simple_mode = 0;
 static int thread_video = 0;
 static int was_threaded = 0;
 static int should_run_core = 1; // used by threaded video
-// thread-aware governor telemetry: peak core.run() duration (us) since last gov tick.
-// Written by the core thread, read+reset by the gov tick — a benign int race (a lost
-// update biases the peak DOWN one window, self-corrects next tick).
-static volatile uint32_t core_work_peak_us = 0;
+// thread-aware governor telemetry: ring of recent core.run() durations (us), written by
+// the core thread, read by the gov tick (p95, mirroring the single-thread sink gate).
+// Racy by design: a torn read misjudges one sample in one window, self-corrects next tick.
+#define CORE_WORK_RING 32
+static volatile uint32_t core_work_ring[CORE_WORK_RING];
+static volatile uint32_t core_work_n = 0;
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
 static pthread_cond_t	core_rq; // not sure this is required
 static SDL_Surface*	backbuffer = NULL;
+static SDL_Surface*	readybuffer = NULL;   // mailbox: latest complete frame from the core
+static SDL_Surface*	presentbuffer = NULL; // owned by the main thread while presenting
+static int frame_ready = 0;
+static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
+static volatile int core_thread_exit = 0;
 static void* coreThread(void *arg);
 
 enum {
@@ -3026,8 +3033,7 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 	if (!data) return;
 	
 	if (thread_video) {
-		pthread_mutex_lock(&core_mx);
-		
+		// the write buffer is core-thread-exclusive: alloc + copy happen OUTSIDE the lock
 		if (backbuffer && (backbuffer->w!=width || backbuffer->h!=height || backbuffer->pitch!=pitch)) {
 			free(backbuffer->pixels);
 			SDL_FreeSurface(backbuffer);
@@ -3035,12 +3041,17 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 		}
 		if (!backbuffer) {
 			uint16_t* pixels = malloc(height*pitch);
-			// backbuffer = SDL_CreateRGBSurface(0,width,height,FIXED_DEPTH,RGBA_MASK_565);
 			backbuffer = SDL_CreateRGBSurfaceFrom(pixels, width, height, FIXED_DEPTH, pitch, RGBA_MASK_565);
 		}
 		
 		memcpy(backbuffer->pixels, data, backbuffer->h*backbuffer->pitch);
 		
+		// mailbox handoff: swap the fresh frame in under a brief lock. Latest wins; the
+		// core never blocks behind the present. (The old handoff held the lock through
+		// GFX_flip's vsync wait and relied on lossy cond signals — ~15fps presented.)
+		pthread_mutex_lock(&core_mx);
+		SDL_Surface* t = readybuffer; readybuffer = backbuffer; backbuffer = t;
+		frame_ready = 1;
 		pthread_cond_signal(&core_rq);
 		pthread_mutex_unlock(&core_mx);
 	}
@@ -4744,7 +4755,7 @@ static void Menu_loop(void) {
 		if (thread_video) {
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
-			pthread_cond_signal(&core_rq);
+			pthread_cond_signal(&core_pause_cv);
 			pthread_mutex_unlock(&core_mx);
 		}
 	}
@@ -4841,18 +4852,37 @@ static void* coreThread(void *arg) {
 	GFX_clearAll();
 	GFX_flip(screen);
 	
-	while (!quit) {
+	while (!quit && !core_thread_exit) {
 		int run = 0;
 		pthread_mutex_lock(&core_mx);
-		while (!should_run_core && !quit) pthread_cond_wait(&core_rq, &core_mx); // no busy-spin while paused
+		while (!should_run_core && !quit && !core_thread_exit) pthread_cond_wait(&core_pause_cv, &core_mx); // no busy-spin while paused
+		if (core_thread_exit) { pthread_mutex_unlock(&core_mx); break; }
 		run = should_run_core;
 		pthread_mutex_unlock(&core_mx);
 		
 		if (run) {
+			SND_Stats snd0; SND_getStats(&snd0);
 			uint64_t t0 = getMicroseconds();
 			core.run();
 			uint32_t w = (uint32_t)(getMicroseconds() - t0);
-			if (w > core_work_peak_us) core_work_peak_us = w;
+			SND_Stats snd1; SND_getStats(&snd1);
+			long pace = (snd1.wait_ms - snd0.wait_ms) * 1000;
+			if (pace > 0 && (uint32_t)pace < w) w -= (uint32_t)pace; // pacing is not work
+			core_work_ring[core_work_n % CORE_WORK_RING] = w;
+			core_work_n++;
+			// drift-free cadence: unpaced bursts saturate the audio ring, and the long
+			// blocks inside core.run read as "behind schedule" to pcsx's auto-frameskip
+			// (measured: 15 real frames + 46 skips/sec). Feeding at consumption rate
+			// keeps the ring level and the core's wall-clock honest.
+			if (!fast_forward && core.fps > 0) {
+				static uint64_t next_us = 0;
+				uint64_t budget = (uint64_t)(1000000.0 / core.fps);
+				uint64_t now2 = getMicroseconds();
+				if (!next_us) next_us = now2;
+				next_us += budget;
+				if (now2 < next_us) usleep(next_us - now2);
+				else if (now2 - next_us > budget*4) next_us = now2; // hopelessly behind: reset, don't chase
+			}
 			limitFF();
 			trackFPS();
 		}
@@ -4967,15 +4997,28 @@ int main(int argc , char* argv[]) {
 		}
 
 		if (thread_video && !quit) {
+			// take the newest frame from the mailbox; present OUTSIDE the lock so the
+			// core never stalls behind the vsync wait. The timed wait keeps this loop
+			// servicing the menu and quit even while the core is paused.
 			pthread_mutex_lock(&core_mx);
-			pthread_cond_wait(&core_rq,&core_mx);
-			
-			if (backbuffer) {
-				video_refresh_callback_main(backbuffer->pixels,backbuffer->w,backbuffer->h,backbuffer->pitch);
+			if (!frame_ready) {
+				struct timespec ts;
+				clock_gettime(CLOCK_REALTIME, &ts);
+				ts.tv_nsec += 20*1000000L;
+				if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+				pthread_cond_timedwait(&core_rq, &core_mx, &ts);
+			}
+			SDL_Surface* frame = NULL;
+			if (frame_ready) {
+				SDL_Surface* t = presentbuffer; presentbuffer = readybuffer; readybuffer = t;
+				frame = presentbuffer;
+				frame_ready = 0;
+			}
+			pthread_mutex_unlock(&core_mx);
+			if (frame) {
+				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
 				GFX_flip(screen);
 			}
-			core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-			pthread_mutex_unlock(&core_mx);
 		}
 		
 		if (show_menu) {
@@ -5005,9 +5048,15 @@ int main(int argc , char* argv[]) {
 				pthread_create(&core_pt, NULL, &coreThread, NULL);
 			}
 			else {
-				// disable
-				pthread_cancel(core_pt);
+				// disable: ask the thread to exit and wake it wherever it waits
+				// (pthread_cancel inside a cond_wait killed it while holding core_mx)
+				pthread_mutex_lock(&core_mx);
+				core_thread_exit = 1;
+				pthread_cond_signal(&core_pause_cv);
+				pthread_mutex_unlock(&core_mx);
 				pthread_join(core_pt,NULL);
+				core_thread_exit = 0;
+				frame_ready = 0;
 				
 				// force a vsync immediately before loop
 				// for better frame pacing?
@@ -5056,24 +5105,27 @@ int main(int argc , char* argv[]) {
 					// without pinning max for an hour of Pokemon grinding.
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed + 1) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
-					// threaded mode: presentation can lag silently while the core holds rate
-					// (the backbuffer just gets overwritten) — guard the PRESENTED rate too
-					if (thread_video && !fast_forward && fps_double > 0 && core.fps > 0 && fps_double < core.fps * 0.95)
-						fps_short = 1;
 					int frame_overrun;
 					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
 					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
 					// the per-frame work measurement is unreliable while presentation is skipping,
 					// and the user is explicitly asking for speed. Sinking resumes when FF ends.
 					else if (thread_video) {
-						// the main thread's frame window includes WAITING on the core thread,
-						// so judge sink headroom by the core thread's own peak work instead
-						int core_peak = (int)core_work_peak_us;
-						core_work_peak_us = 0; // reset the window
-						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
+						// the main thread's frame window includes WAITING on the core thread, so
+						// judge headroom by the core thread's own samples. Per-frame budgets
+						// misjudge internally-low-fps games (THPS: one ~25ms render frame + three
+						// ~2ms dupes still holds 60), so gate on WINDOW UTILIZATION instead:
+						// predicted busy fraction at the next clock must leave >=15% idle.
+						uint64_t sum = 0;
+						int n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
+						for (int a=0; a<n; a++) sum += core_work_ring[a];
 						int next = gov_sink_target(&gov_state, &gov_profile);
-						frame_overrun = (core_peak > 0 && gov_sink_fits(gov_state.ceil_khz, next, core_peak, budget_us))
-							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						if (n > 2 && gov_target_fps > 0 && next < gov_state.ceil_khz) {
+							double window_us = n * (1000000.0 / gov_target_fps);
+							double util_next = ((double)sum / window_us) * ((double)gov_state.ceil_khz / (double)next);
+							frame_overrun = util_next <= 0.85 ? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						}
+						else frame_overrun = GOV_SIGNAL_BUSY;
 					}
 					else {
 						for (int a=1; a<GOV_TICK_FRAMES; a++) { // insertion sort (30 ints, once per 0.5s)
