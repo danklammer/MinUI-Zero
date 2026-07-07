@@ -47,6 +47,7 @@ static SDL_Surface*	presentbuffer = NULL; // owned by the main thread while pres
 static int frame_ready = 0;
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
+static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
 static void* coreThread(void *arg);
 
 enum {
@@ -1842,6 +1843,9 @@ static void input_poll_callback(void) {
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 0;
 			pthread_mutex_unlock(&core_mx);
+			// wait (bounded) for the in-flight frame to park before the menu touches
+			// core state — savestates must never overlap a running core.run
+			for (int w=0; w<100 && !core_parked; w++) usleep(1000);
 		}
 	}
 	
@@ -4864,7 +4868,11 @@ static void* coreThread(void *arg) {
 	while (!quit && !core_thread_exit) {
 		int run = 0;
 		pthread_mutex_lock(&core_mx);
-		while (!should_run_core && !quit && !core_thread_exit) pthread_cond_wait(&core_pause_cv, &core_mx); // no busy-spin while paused
+		while (!should_run_core && !quit && !core_thread_exit) {
+			core_parked = 1;
+			pthread_cond_wait(&core_pause_cv, &core_mx); // no busy-spin while paused
+		}
+		core_parked = 0;
 		if (core_thread_exit) { pthread_mutex_unlock(&core_mx); break; }
 		run = should_run_core;
 		pthread_mutex_unlock(&core_mx);
@@ -5114,6 +5122,7 @@ int main(int argc , char* argv[]) {
 					// without pinning max for an hour of Pokemon grinding.
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed + 1) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
+					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
 					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
 					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
@@ -5219,6 +5228,18 @@ int main(int argc , char* argv[]) {
 		hdmimon();
 	}
 	
+	// threaded video: the core thread executes core code — it MUST be joined before
+	// Core_unload/dlclose rips that code out from under it. Audio is still running here,
+	// so a core blocked in SND_batchSamples drains and exits cleanly.
+	if (thread_video || was_threaded) {
+		pthread_mutex_lock(&core_mx);
+		core_thread_exit = 1;
+		pthread_cond_broadcast(&core_pause_cv);
+		pthread_mutex_unlock(&core_mx);
+		pthread_join(core_pt, NULL);
+		core_thread_exit = 0;
+	}
+
 	PLAT_restoreCPUVolt(); // before the launcher touches max_freq (always-safe stock write)
 	Menu_quit();
 	QuitSettings();
