@@ -2,7 +2,7 @@
 
 ## Same simple MinUI — Runs cooler. Lasts longer. Plays smoother.
 
-**MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI) for the **TrimUI Brick** and **TrimUI Smart Pro**.
+**MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI Brick** and **TrimUI Smart Pro**.
 
 It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
