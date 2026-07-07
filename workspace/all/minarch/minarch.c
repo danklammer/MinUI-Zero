@@ -31,6 +31,10 @@ static int simple_mode = 0;
 static int thread_video = 0;
 static int was_threaded = 0;
 static int should_run_core = 1; // used by threaded video
+// thread-aware governor telemetry: peak core.run() duration (us) since last gov tick.
+// Written by the core thread, read+reset by the gov tick — a benign int race (a lost
+// update biases the peak DOWN one window, self-corrects next tick).
+static volatile uint32_t core_work_peak_us = 0;
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
@@ -4740,6 +4744,7 @@ static void Menu_loop(void) {
 		if (thread_video) {
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
+			pthread_cond_signal(&core_rq);
 			pthread_mutex_unlock(&core_mx);
 		}
 	}
@@ -4839,11 +4844,15 @@ static void* coreThread(void *arg) {
 	while (!quit) {
 		int run = 0;
 		pthread_mutex_lock(&core_mx);
+		while (!should_run_core && !quit) pthread_cond_wait(&core_rq, &core_mx); // no busy-spin while paused
 		run = should_run_core;
 		pthread_mutex_unlock(&core_mx);
 		
 		if (run) {
+			uint64_t t0 = getMicroseconds();
 			core.run();
+			uint32_t w = (uint32_t)(getMicroseconds() - t0);
+			if (w > core_work_peak_us) core_work_peak_us = w;
 			limitFF();
 			trackFPS();
 		}
@@ -5047,11 +5056,25 @@ int main(int argc , char* argv[]) {
 					// without pinning max for an hour of Pokemon grinding.
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed + 1) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
+					// threaded mode: presentation can lag silently while the core holds rate
+					// (the backbuffer just gets overwritten) — guard the PRESENTED rate too
+					if (thread_video && !fast_forward && fps_double > 0 && core.fps > 0 && fps_double < core.fps * 0.95)
+						fps_short = 1;
 					int frame_overrun;
 					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
 					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
 					// the per-frame work measurement is unreliable while presentation is skipping,
 					// and the user is explicitly asking for speed. Sinking resumes when FF ends.
+					else if (thread_video) {
+						// the main thread's frame window includes WAITING on the core thread,
+						// so judge sink headroom by the core thread's own peak work instead
+						int core_peak = (int)core_work_peak_us;
+						core_work_peak_us = 0; // reset the window
+						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
+						int next = gov_sink_target(&gov_state, &gov_profile);
+						frame_overrun = (core_peak > 0 && gov_sink_fits(gov_state.ceil_khz, next, core_peak, budget_us))
+							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+					}
 					else {
 						for (int a=1; a<GOV_TICK_FRAMES; a++) { // insertion sort (30 ints, once per 0.5s)
 							uint32_t v = gov_work[a]; int b = a-1;
