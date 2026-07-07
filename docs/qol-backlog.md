@@ -72,12 +72,15 @@ Motor-voltage fix (1.5V before enable, per NextUI) shipped in -13; verify the po
 haptic cue buzzes on the SP after the update. If still silent: check FN mute state, then
 probe the motor sysfs directly.
 
-## Multithreaded minarch (v1.3 research frontier, from the NextUI engineer exchange 2026-07-07)
-The voltage curve favors spreading core work across the four A53s at low clocks over one hot
-core at high clock. Nobody has it: NextUI's threads are config/menu/rewind only; the core/video
-pipeline is single-threaded everywhere. The real next thermal leap if CPU scaling has hit its
-ceiling (it has — measured tie with NextUI auto). Research: audio/video/core pipeline split,
-MyMinUI's NEON scaler work as partial prior art.
+## Multithreaded minarch (v1.3 research frontier) — EXPERIMENT DONE 2026-07-07
+Stock MinUI already ships core/render threading: the "Prioritize Audio" option
+(minarch_thread_video, default off) runs core.run() on its own thread. A/B on THPS2 attract
+(Brick, HUD): threading WORKS (61/60 stable, 22% total CPU) but our governor mis-instruments
+it — frame work is timed on the main thread, which in threaded mode includes waiting, so the
+sink gate never opens: ceiling pinned 1800/33C vs 1008/30-31C single-thread. THE PROJECT:
+thread-aware governor (measure emulation time on the core thread = the true critical path).
+Prize estimate: 1-2 OPP steps on heavy games (PS1 gameplay ~1008-1152 instead of ~1584) +
+audio-crackle insurance. Also fix: the core thread busy-spins when paused (should cond_wait).
 
 ## Rewind prior art
 NextUI ships rewind (workspace/all/minarch/ma_rewind.c) — port-or-adapt candidate for the
