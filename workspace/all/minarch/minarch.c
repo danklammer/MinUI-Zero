@@ -2649,7 +2649,13 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 	
 	if (ox<0) ox = width-w+ox;
 	if (oy<0) oy = height-h+oy;
-	
+
+	// clip hard: the border writes reach one px left, one row above, and one row
+	// below the text. The core-owned frame buffers are over-allocated and forgave
+	// out-of-bounds writes for years; the threaded mailbox buffer is exact-size
+	// (malloc(h*pitch)) and segfaults on the same math during boot dims churn.
+	if (ox < 1 || oy < 1 || ox + w + 1 > width || oy + h + 1 > height) return;
+
 	data += oy * stride + ox;
 	uint16_t* row = data - stride; // TODO: this will crash and burn if ox,oy==0,0 but is fine as used currently :sweat_smile:
 	memset(row-1, 0, (w+2)*2);
