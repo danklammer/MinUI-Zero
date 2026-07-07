@@ -1,6 +1,6 @@
 # MinUI Zero
 
-## Same simple MinUI. Far less heat.
+## Same simple MinUI — Runs cooler. Lasts longer. Plays smoother.
 
 **MinUI Zero** is an efficiency-focused fork of [MinUI](https://github.com/shauninman/MinUI) for the **TrimUI Brick** and **TrimUI Smart Pro**.
 
