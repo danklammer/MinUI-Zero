@@ -71,3 +71,14 @@ database, no idle cost). Investigate what draws the off-state charging screen on
 Motor-voltage fix (1.5V before enable, per NextUI) shipped in -13; verify the power-off
 haptic cue buzzes on the SP after the update. If still silent: check FN mute state, then
 probe the motor sysfs directly.
+
+## Multithreaded minarch (v1.3 research frontier, from the NextUI engineer exchange 2026-07-07)
+The voltage curve favors spreading core work across the four A53s at low clocks over one hot
+core at high clock. Nobody has it: NextUI's threads are config/menu/rewind only; the core/video
+pipeline is single-threaded everywhere. The real next thermal leap if CPU scaling has hit its
+ceiling (it has — measured tie with NextUI auto). Research: audio/video/core pipeline split,
+MyMinUI's NEON scaler work as partial prior art.
+
+## Rewind prior art
+NextUI ships rewind (workspace/all/minarch/ma_rewind.c) — port-or-adapt candidate for the
+core-features list; evaluate its RAM/CPU cost against the efficiency charter on small cores.
