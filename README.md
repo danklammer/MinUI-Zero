@@ -6,7 +6,7 @@
 
 It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
-**Same speed. Less heat. Zero tinkering.**
+**Same speed. Zero tinkering.**
 
 [Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest)
 
@@ -16,9 +16,9 @@ It keeps MinUI's fast, distraction-free experience while tuning everything under
 
 - **Cooler gameplay** without lowering frame rates
 - **Longer battery life** — ~7.5 hours on Game Boy, ~7 on PlayStation
+- **Smoother gameplay** with improved frame pacing, audio resampling, and lower input latency
 - **No CPU settings to manage** — every game is tuned automatically
 - **Instant deep sleep and resume** without leaving the device running hot
-- **Smoother gameplay** with improved frame pacing, audio resampling, and lower input latency
 - **The simplicity of MinUI** without box art, stores, accounts, themes, or background services
 
 MinUI Zero is for people who want to turn on a handheld and play games — not spend their time configuring it.
@@ -36,6 +36,7 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
 | PlayStation battery life | **~6.5-7 hours** — after the governor and undervolt, PS1 costs barely more than Game Boy |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
+| Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
 
 The governor and Optimize CPU figures come from separate tests (gameplay vs a pinned-clock stress A/B), so the combined number is an "up to" estimate. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
@@ -53,6 +54,9 @@ The governor and Optimize CPU figures come from separate tests (gameplay vs a pi
 | **Smoother gameplay** | Panel-matched pacing, improved audio resampling, and roughly one frame less input latency |
 | **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware |
 | **Safer failure handling** | Bad ROMs exit cleanly, mid-game resolution changes are handled, and saves are written safely |
+| **Menu clock (opt-in)** | Time next to the battery, in the menu and pause screen — Tools -> Clock to enable |
+| **Charging screen** | Idle on the charger shows a dim battery display, then sleeps — cooler charging, honest percentages |
+| **Fast boot** | Power to menu in ~10 seconds; wake from sleep is instant |
 
 ## The governor (and why there's no CPU Speed setting)
 
