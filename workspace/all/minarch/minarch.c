@@ -4767,6 +4767,12 @@ static void Menu_loop(void) {
 		if (!HAS_POWER_BUTTON) PWR_disableSleep();
 
 		if (thread_video) {
+			// reset the rate window while the core is still parked — it owns these
+			// counters in threaded mode (a reset after resume garbles one window)
+			sec_start = SDL_GetTicks();
+			cpu_ticks = 0;
+			fps_ticks = 0;
+			cpu_double = 0;
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
 			pthread_cond_signal(&core_pause_cv);
@@ -4986,6 +4992,7 @@ int main(int argc , char* argv[]) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
 		pthread_create(&core_pt, NULL, &coreThread, NULL);
+		core_thread_alive = 1; // without this the quit-join is skipped -> dlclose SIGSEGV
 	}
 	
 	PWR_warn(1);
@@ -5045,11 +5052,15 @@ int main(int argc , char* argv[]) {
 			}
 			Menu_loop();
 			// reset the rate window: a second that spans the menu would read as a false
-			// generation-rate drop and spuriously climb the governor on menu exit
-			sec_start = SDL_GetTicks();
-			cpu_ticks = 0;
-			fps_ticks = 0;
-			cpu_double = 0;
+			// generation-rate drop and spuriously climb the governor on menu exit.
+			// (threaded mode resets before the resume signal instead — the core owns
+			// these counters there and is already running again by this point)
+			if (!thread_video) {
+				sec_start = SDL_GetTicks();
+				cpu_ticks = 0;
+				fps_ticks = 0;
+				cpu_double = 0;
+			}
 		}
 
 		if (toggle_thread) {
@@ -5251,6 +5262,14 @@ int main(int argc , char* argv[]) {
 		pthread_join(core_pt, NULL);
 		core_thread_alive = 0;
 		core_thread_exit = 0;
+		SDL_Surface** mbx[3] = { &backbuffer, &readybuffer, &presentbuffer };
+		for (int b=0; b<3; b++) {
+			if (*mbx[b]) {
+				free((*mbx[b])->pixels);
+				SDL_FreeSurface(*mbx[b]);
+				*mbx[b] = NULL;
+			}
+		}
 	}
 
 	PLAT_restoreCPUVolt(); // before the launcher touches max_freq (always-safe stock write)
