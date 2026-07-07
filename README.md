@@ -39,7 +39,7 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
 
-The governor and Optimize CPU figures come from separate tests, so they are listed separately rather than added together; a tuned device may see a larger combined benefit. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. For fairness: on CPU scaling alone, NextUI's auto mode measures a thermal tie with ours (same kernel mechanism underneath) — Zero's gains beyond that come from the per-chip undervolt, the GPU-dark menu, and the idle/boot work. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
+The governor and Optimize CPU figures come from separate tests, so they are listed separately rather than added together; a tuned device may see a larger combined benefit. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. On CPU scaling alone, NextUI's auto mode and Zero measure about the same — it's the same kernel mechanism underneath. Zero's edge comes from everything else: the per-chip undervolt, the GPU-dark menu, the idle and boot work, and carrying no extras — no shaders, overlays, or background services spending power on anything but the game. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
 
 ## What is different?
 
