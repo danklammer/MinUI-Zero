@@ -6,7 +6,7 @@
 
 It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
-**Same speed. Zero tinkering.**
+**Full speed. Zero tinkering.**
 
 [Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest)
 
