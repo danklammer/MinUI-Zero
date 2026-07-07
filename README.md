@@ -29,17 +29,17 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 
 | Test | Result |
 |---|---|
-| Gameplay vs stock MinUI (closed-loop governor) | **4-5°C (7-9°F) cooler** |
+| Gameplay vs stock MinUI's default 1608 MHz clock | **2-3°C (4-5°F) cooler** |
+| Gameplay vs MinUI's 2.0GHz Performance mode | **4-5°C (7-9°F) cooler** |
 | Optimize CPU, identical pinned-clock stress test | **3°C (5°F) lower temperature rise** |
-| Both combined in games | **up to ~8°C (14°F) cooler** |
 | Optimize CPU power reduction | **Up to 20% less CPU power at the same clock** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
-| PlayStation battery life | **~6.5-7 hours** — after the governor and undervolt, PS1 costs barely more than Game Boy |
+| PlayStation battery life | **~6.5-7 hours** measured on tuned hardware |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
 | Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
 
-The governor and Optimize CPU figures come from separate tests (gameplay vs a pinned-clock stress A/B), so the combined number is an "up to" estimate. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
+The governor and Optimize CPU figures come from separate tests, so they are listed separately rather than added together; a tuned device may see a larger combined benefit. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
 
 ## What is different?
 
