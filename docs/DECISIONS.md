@@ -514,3 +514,35 @@ the PANEL dominates the power budget and PlayStation costs about a Game Boy. Pub
 ~7.5h -> PS1 ~6.5-7h (dim). The earlier single-window "~10h PS1" figure is retracted as
 top-region gauge flattery. Method note: attract/demo modes make honest unattended loads;
 drain scripts must quit the game at the end (an unattended THPS2 kept running 2.7h post-test).
+
+## D42 — Fast-forward retargets the governor (2026-07-07)
+A Reddit question ("how does auto clock work in FF?") exposed a real gap: the governor only
+raises on gen<target, and FF generates ABOVE target by definition — so FF ran clock-starved at
+the settled floor (measured: Zelda DX 2.2x of the 4x cap at 408). Fix is one idea: FF is not an
+exception, it is a different target — gov_target_fps = core.fps x (max_ff_speed+1); the loop
+then finds the lowest clock that holds THAT. No sinking while FF is held (work measurement is
+unreliable during skipped presentation). Measured: full 4x at 1008MHz/32C, clean return to the
+408 floor on release. Cool Pokemon grinding, no pinned max.
+
+## D43 — Thread-aware governor + mailbox threaded video (2026-07-07)
+Stock MinUI ships core/render threading hidden as "Prioritize Audio" (double-locked away on
+tg5040: system.cfg AND PS.pak). Its handoff was measured broken: main held core_mx through the
+vsync wait, signals were lossy, the condvar was re-initialized per frame. Rebuilt as a
+triple-buffer mailbox (core swaps under a brief lock, latest wins, main presents outside the
+lock) + drift-free core cadence (bursty core.run reads as "behind" to pcsx's auto-frameskip:
+15 real + 46 skipped frames/sec, in BOTH modes — that ratio is the game's internal render rate,
+not a bug) + the governor judges the CORE thread's window utilization (per-frame budgets
+misread internally-low-fps PSX games; util_next <= 0.85 gates the sink). DRC ppm is honored by
+the core pacer so the sync-stutter fix survives threading. Validated: ceiling breathes
+1008<->1440 with demo scenes at 32C, full gauntlet green (persisted-ON clean quit, FF round
+trip, menu park/resume, sleep/wake with zero gov moves during sleep).
+Audit trail: three passes + two independent reviewers = 15 findings, all fixed — headline
+catches: startup thread creation skipped the liveness flag (clean exit = dlclose SIGSEGV,
+caught only because the gauntlet tested the PERSISTED path, not just runtime toggling), and
+the debug HUD's new "THR" label indexed NULL font entries (T and R glyphs never existed —
+found by core-dump autopsy, fixed with pixel art). blitBitmapText also gained hard clipping:
+its unclipped border writes were absorbed for years by over-allocated core buffers and
+segfaulted on the exact-size mailbox buffer.
+Option renamed conceptually (still "Prioritize Audio" in UI pending rename decision), unhidden
+for PS1, still hidden for SUPA (supafaust pins its own threads). Default Off until hands-on +
+gameplay floor A/B decide promotion.
