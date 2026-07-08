@@ -20,3 +20,5 @@ true engine demos (representative); Yoshi/Mario RPG/AC2 measure intro sequences 
 active, lighter than player load). Threading DELTAS are robust to this (heavier scenes give
 threading more present-path cost to remove); ABSOLUTE floors are attract-mode figures — real
 gameplay sits somewhat higher. Player-load verification: hands-on HUD sessions (pending).
+- DIM CAVEAT (2026-07-08): unattended arms ran with the 30s idle dim active after their
+  first 30s (both arms equally). A/B comparisons unaffected; absolute cc values = dim-screen.
