@@ -46,6 +46,11 @@ static SDL_Surface*	backbuffer = NULL;
 static SDL_Surface*	readybuffer = NULL;   // mailbox: latest complete frame from the core
 static SDL_Surface*	presentbuffer = NULL; // owned by the main thread while presenting
 static int frame_ready = 0;
+// threaded-DRC sensor: mailbox pressure. waits = main found no frame (core below panel
+// rate -> nudge ppm up); overwrites = core replaced an unconsumed frame (core above panel
+// rate -> nudge down). Plain ints, single-writer each, read at tick cadence.
+static volatile int mb_waits = 0;
+static volatile int mb_overwrites = 0;
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
@@ -1837,6 +1842,7 @@ static void input_poll_callback(void) {
 	static int toggled_ff_on = 0; // this logic only works because TOGGLE_FF is before HOLD_FF in the menu...
 	for (int i=0; i<SHORTCUT_COUNT; i++) {
 		ButtonMapping* mapping = &config.shortcuts[i];
+		if (mapping->local < 0) continue; // not bound (1 << -1 is UB)
 		int btn = 1 << mapping->local;
 		if (btn==BTN_NONE) continue; // not bound
 		if (!mapping->mod || PAD_isPressed(BTN_MENU)) {
@@ -3140,6 +3146,7 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 		// core never blocks behind the present. (The old handoff held the lock through
 		// GFX_flip's vsync wait and relied on lossy cond signals — ~15fps presented.)
 		pthread_mutex_lock(&core_mx);
+		if (frame_ready) mb_overwrites++; // main had not consumed the last frame
 		SDL_Surface* t = readybuffer; readybuffer = backbuffer; backbuffer = t;
 		frame_ready = 1;
 		pthread_cond_signal(&core_rq);
@@ -5115,6 +5122,7 @@ int main(int argc , char* argv[]) {
 			// servicing the menu and quit even while the core is paused.
 			pthread_mutex_lock(&core_mx);
 			if (!frame_ready) {
+				mb_waits++;
 				struct timespec ts;
 				clock_gettime(CLOCK_REALTIME, &ts);
 				ts.tv_nsec += 20*1000000L;
@@ -5162,6 +5170,7 @@ int main(int argc , char* argv[]) {
 				thread_video = !thread_video;
 			}
 			// LOG_info("toggling thread from %i to %i\n", thread_video, !thread_video);
+			LOG_info("thread toggle: %d -> %d (ff=%d was=%d auto_phase=%d)\n", thread_video, !thread_video, fast_forward, was_threaded, ta_phase);
 			if (!thread_video) {
 				// enable
 				thread_video = 1;
@@ -5345,12 +5354,23 @@ int main(int argc , char* argv[]) {
 			}
 			else if (++drc_frames >= 30) { // ~2Hz
 				drc_frames = 0;
-				SND_Stats das; SND_getStats(&das);
-				long dwait = das.wait_ms - drc_prev_wait;
-				drc_prev_wait = das.wait_ms;
 				int prev = drc_ppm;
-				if (dwait > 1) drc_ppm += 150; // audio-bound: still below the panel rate
-				else           drc_ppm -= 150; // vsync-bound (or struggling): back off
+				if (thread_video) {
+					// threaded mode: the audio-blocking signal is dead (the core pacer
+					// prevents blocking), so read the mailbox instead — waits mean the
+					// present starved (core below panel rate), overwrites mean it overran
+					int w = mb_waits, o = mb_overwrites;
+					mb_waits = 0; mb_overwrites = 0;
+					if (o == 0 && w > 1) drc_ppm += 150; // starving: below the panel rate
+					else                 drc_ppm -= 150; // overrunning (or matched): back off
+				}
+				else {
+					SND_Stats das; SND_getStats(&das);
+					long dwait = das.wait_ms - drc_prev_wait;
+					drc_prev_wait = das.wait_ms;
+					if (dwait > 1) drc_ppm += 150; // audio-bound: still below the panel rate
+					else           drc_ppm -= 150; // vsync-bound (or struggling): back off
+				}
 				if (drc_ppm < 0) drc_ppm = 0;
 				if (drc_ppm > 25000) drc_ppm = 25000;
 				if (drc_ppm != prev) {
