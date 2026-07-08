@@ -5423,6 +5423,15 @@ int main(int argc , char* argv[]) {
 				}
 				if (drc_ppm < 0) drc_ppm = 0;
 				if (drc_ppm > 25000) drc_ppm = 25000;
+				{
+					static uint32_t drc_log_at = 0;
+					uint32_t dl_now = SDL_GetTicks();
+					if (!drc_log_at) drc_log_at = dl_now;
+					else if (dl_now - drc_log_at >= 60000) {
+						LOG_info("drc-stats: ppm=%d mode=%s\n", drc_ppm, thread_video ? "threaded" : "single");
+						drc_log_at = dl_now;
+					}
+				}
 				if (drc_ppm != prev) {
 					SND_setRateAdjustPPM(drc_ppm);
 					core_pace_ppm = drc_ppm;
