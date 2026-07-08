@@ -51,6 +51,8 @@ static int frame_ready = 0;
 // rate -> nudge down). Plain ints, single-writer each, read at tick cadence.
 static volatile int mb_waits = 0;
 static volatile int mb_overwrites = 0;
+static volatile int mb_waits_total = 0;      // never reset: HUD/stats read deltas
+static volatile int mb_overwrites_total = 0;
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
@@ -3095,13 +3097,24 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		uint32_t hud_now = SDL_GetTicks();
 		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
 		if (thread_video && core.fps > 0) {
-			// threaded mode: append the core thread's own utilization (its work vs the
-			// frame budget) — the number the sink gate judges by
+			// threaded mode: core-thread utilization + LIVE smoothness counters —
+			// D = duplicated frames/s (present starved), S = skipped frames/s (core
+			// overran), U = audio underruns/s. All three should read 0 when smooth.
 			uint64_t thr_sum = 0;
 			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
 			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
 			int thr_util = thr_n > 0 ? (int)(100.0 * (double)thr_sum / (thr_n * (1000000.0 / core.fps))) : 0;
-			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util);
+			static uint32_t sm_at = 0; static int sm_w0 = 0, sm_o0 = 0; static long sm_u0 = 0;
+			static int sm_d = 0, sm_s = 0, sm_u = 0;
+			uint32_t sm_now = SDL_GetTicks();
+			if (sm_now - sm_at >= 1000) {
+				SND_Stats ss; SND_getStats(&ss);
+				sm_d = mb_waits_total - sm_w0;      sm_w0 = mb_waits_total;
+				sm_s = mb_overwrites_total - sm_o0; sm_o0 = mb_overwrites_total;
+				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
+				sm_at = sm_now;
+			}
+			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
 		}
 		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
@@ -3146,7 +3159,7 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 		// core never blocks behind the present. (The old handoff held the lock through
 		// GFX_flip's vsync wait and relied on lossy cond signals — ~15fps presented.)
 		pthread_mutex_lock(&core_mx);
-		if (frame_ready) mb_overwrites++; // main had not consumed the last frame
+		if (frame_ready) { mb_overwrites++; mb_overwrites_total++; } // main had not consumed the last frame
 		SDL_Surface* t = readybuffer; readybuffer = backbuffer; backbuffer = t;
 		frame_ready = 1;
 		pthread_cond_signal(&core_rq);
@@ -5122,7 +5135,7 @@ int main(int argc , char* argv[]) {
 			// servicing the menu and quit even while the core is paused.
 			pthread_mutex_lock(&core_mx);
 			if (!frame_ready) {
-				mb_waits++;
+				mb_waits++; mb_waits_total++;
 				struct timespec ts;
 				clock_gettime(CLOCK_REALTIME, &ts);
 				ts.tv_nsec += 20*1000000L;
@@ -5305,6 +5318,17 @@ int main(int argc , char* argv[]) {
 								ta_phase = 2;
 								LOG_info("auto-thread: revert (ceil %d -> %d)\n", ta_base_ceil, gov_state.ceil_khz);
 							}
+						}
+					}
+					if (thread_video) {
+						static uint32_t thr_log_at = 0;
+						static int tl_w = 0, tl_o = 0; static long tl_u = 0;
+						uint32_t tl_now = SDL_GetTicks();
+						if (!thr_log_at) { thr_log_at = tl_now; tl_w = mb_waits_total; tl_o = mb_overwrites_total; SND_Stats s0; SND_getStats(&s0); tl_u = s0.underruns; }
+						else if (tl_now - thr_log_at >= 60000) {
+							SND_Stats s1; SND_getStats(&s1);
+							LOG_info("thr-stats: dups/min=%d skips/min=%d underruns/min=%ld\n", mb_waits_total - tl_w, mb_overwrites_total - tl_o, s1.underruns - tl_u);
+							thr_log_at = tl_now; tl_w = mb_waits_total; tl_o = mb_overwrites_total; tl_u = s1.underruns;
 						}
 					}
 					int prev_ceil = gov_state.ceil_khz;
