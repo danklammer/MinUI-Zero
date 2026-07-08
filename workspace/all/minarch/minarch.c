@@ -57,6 +57,7 @@ static volatile int mb_overwrites_total = 0;
 // normally waits for each next frame — so it is NOT a dup signal; learned the hard way):
 static volatile int mb_dups = 0;        // flip interval spanned 2+ vsync periods
 static volatile int mb_dups_total = 0;
+static volatile int mb_flips_total = 0; // every threaded present (panel-lock rate sensor)
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
@@ -5159,6 +5160,7 @@ int main(int argc , char* argv[]) {
 			if (frame) {
 				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
 				GFX_flip(screen);
+				mb_flips_total++;
 				static uint64_t last_flip_us = 0;
 				uint64_t now_us = getMicroseconds();
 				// only 60fps-class content can meaningfully "dup" — internally-low-fps
@@ -5397,22 +5399,31 @@ int main(int argc , char* argv[]) {
 				drc_frames = 0;
 				int prev = drc_ppm;
 				if (thread_video) {
-					// threaded mode: the audio-blocking signal is dead (the core pacer
-					// prevents blocking), and delivery-cadence heuristics cannot see the
-					// panel beat. The TRUE panel-lock signal is the flip itself: a flip
-					// that never blocks on vsync means we present below the panel rate
-					// (nudge the core up); consistent blocking means panel-locked (edge
-					// found — back off one notch and hold). Mirrors the single-thread
-					// arrangement where vsync paced the core and audio measured it.
-					static int flip_free_streak = 0;
-					if (fps_double > 55.0) { // only 60fps-class content can panel-lock
-						if (GFX_getFlipWaitUs() < 1500) flip_free_streak++;
-						else flip_free_streak = 0;
-						if (flip_free_streak >= 2)      drc_ppm += 150; // free-running: below panel
-						else if (mb_overwrites > 0)     drc_ppm -= 150; // overran: too fast
-						// blocking without overwrites = locked: hold
+					// threaded mode panel-lock: audio never blocks (core pacer) and queued
+					// swapchains always block flips, so neither classic signal works. The
+					// robust signal is the LONG-WINDOW FLIP RATE: measure flips over ~10s
+					// (60.0 vs 60.8 differ by 6 flips per 10s — cleanly resolvable) and
+					// hill-climb ppm until the rate stops rising: the plateau IS the panel
+					// ceiling (vsync backpressure caps delivery there). Overwrites mean we
+					// pushed past it — back off.
+					static uint32_t pl_win_at = 0; static int pl_flips0 = 0;
+					static double pl_prev_rate = 0; static int pl_locked = 0;
+					uint32_t pl_now = SDL_GetTicks();
+					if (!pl_win_at) { pl_win_at = pl_now; pl_flips0 = mb_flips_total; }
+					else if (pl_now - pl_win_at >= 10000 && fps_double > 55.0) {
+						double rate = (mb_flips_total - pl_flips0) * 1000.0 / (pl_now - pl_win_at);
+						if (mb_overwrites > 0) { drc_ppm -= 150; pl_locked = 1; } // past the ceiling
+						else if (!pl_locked)   drc_ppm += 300;                     // climbing toward it
+						else if (rate > pl_prev_rate + 0.15) pl_locked = 0;        // ceiling moved (mode change)
+						if (pl_locked == 0 && pl_prev_rate > 1 && rate < pl_prev_rate + 0.15 && drc_ppm > 600) {
+							pl_locked = 1; // rate stopped rising: plateau = panel-locked
+							LOG_info("drc: threaded panel-lock at %.2f flips/s (+%dppm)\n", rate, drc_ppm);
+						}
+						pl_prev_rate = rate;
+						pl_win_at = pl_now; pl_flips0 = mb_flips_total;
+						mb_overwrites = 0;
 					}
-					mb_dups = 0; mb_overwrites = 0; mb_waits = 0;
+					mb_dups = 0; mb_waits = 0;
 				}
 				else {
 					SND_Stats das; SND_getStats(&das);
