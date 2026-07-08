@@ -13,3 +13,10 @@ Raw on-device data backing release claims. Naming: date-system-game-device-arm-m
 - Columns (bench-*.csv): t(uptime s), clock(kHz), temp(milli-C), cap(%). RESULT line:
   charge_counter delta over the window + end voltage.
 - Columns (telemetry): see workspace/all/common/telemetry.c header line.
+
+## Methodology note (2026-07-08)
+All A/B pairs measure ATTRACT/INTRO content, not player gameplay: THPS2/DKC/Aladdin/BR2 run
+true engine demos (representative); Yoshi/Mario RPG/AC2 measure intro sequences (coprocessors
+active, lighter than player load). Threading DELTAS are robust to this (heavier scenes give
+threading more present-path cost to remove); ABSOLUTE floors are attract-mode figures — real
+gameplay sits somewhat higher. Player-load verification: hands-on HUD sessions (pending).
