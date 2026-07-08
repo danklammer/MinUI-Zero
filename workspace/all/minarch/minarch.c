@@ -5417,6 +5417,9 @@ int main(int argc , char* argv[]) {
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_eligible = (!drc_disabled && !fast_forward
 				&& core.fps >= 58.0 && core.fps <= 61.0
+				// a ceiling-saturated game has no headroom to run +ppm faster — asking
+				// starves the audio ring on schedule (BR2 chop, ear-found 2026-07-08)
+				&& gov_state.ceil_khz < gov_profile.f_max
 				// Lenient vsyncs every frame while the game holds rate — exactly DRC's
 				// operating regime. Requiring STRICT left DRC dormant platform-wide
 				// (tg5040 system.cfg locks Lenient); found 2026-07-08 via a feel report.
@@ -5477,6 +5480,9 @@ int main(int argc , char* argv[]) {
 						drc_log_at = dl_now;
 					}
 				}
+				if (thread_video) { drc_ppm = prev; } // threaded: telemetry-only for now —
+				// applying ppm chopped audio (ear-verified A/B 2026-07-08); the panel-beat
+				// question returns with an eyes-on session
 				if (drc_ppm != prev) {
 					SND_setRateAdjustPPM(drc_ppm);
 					core_pace_ppm = drc_ppm;
