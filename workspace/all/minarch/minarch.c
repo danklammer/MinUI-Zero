@@ -68,6 +68,7 @@ static int core_thread_alive = 0;    // guards join: FF auto-disable already joi
 // trial threading and keep it only if the ceiling verifiably sinks. Verdict persists in
 // a sidecar (game cfgs get rewritten by the options menu; a sidecar survives).
 static int thread_auto = 1;      // 0 when the user set minarch_thread_video explicitly (unlocked cfg line)
+static int game_running = 0;     // set after bootstrap: gates runtime thread toggles (config load must not arm them)
 static int ta_phase = 0;         // 0 observing single-thread, 1 trialing threaded, 2 decided
 static int ta_decided_by_user = 0;
 static uint32_t ta_phase_at = 0;
@@ -237,6 +238,17 @@ static struct Game {
 	int is_open;
 } game;
 
+// park the core thread before anything touches core state (savestates, SRAM, disc,
+// autosave). Bounded but generous; parking normally completes within one frame.
+static int park_core(const char* why) {
+	if (!thread_video) return 1;
+	pthread_mutex_lock(&core_mx);
+	should_run_core = 0;
+	pthread_mutex_unlock(&core_mx);
+	for (int w=0; w<500 && !core_parked; w++) usleep(1000);
+	if (!core_parked) LOG_info("park_core TIMEOUT (%s) — proceeding is unsafe\n", why);
+	return core_parked;
+}
 static void ta_sidecar_path(char* out) {
 	sprintf(out, "%s/%s.thread", core.config_dir, game.name);
 }
@@ -1158,17 +1170,25 @@ static void Config_syncFrontend(char* key, int value) {
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
-		// 0=Auto (trial machinery owns it), 1=On, 2=Off (explicit user override)
+		// 0=Auto (trial machinery owns it), 1=On, 2=Off (explicit user override).
+		// During config LOAD this only records the value — arming toggle_thread while
+		// thread_video is still false made a persisted On start threaded and then
+		// immediately tear itself down on the first main-loop pass (Codex finding #1).
 		thread_auto = (value == 0);
 		if (value != 0) {
-			int want = (value == 1);
-			int have = thread_video || was_threaded;
-			toggle_thread = have != want;
 			ta_phase = 2; // decided by the user
 			ta_decided_by_user = 1;
+			if (game_running) {
+				int want = (value == 1);
+				int have = thread_video || was_threaded;
+				toggle_thread = have != want;
+			}
 		}
-		else if (ta_phase == 2 && ta_decided_by_user) {
-			ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe (persisted verdicts still apply at next launch)
+		else {
+			toggle_thread = 0; // cancel any pending explicit toggle (On->Off->Auto cycling)
+			if (ta_phase == 2 && ta_decided_by_user) {
+				ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe
+			}
 		}
 		i = FE_OPT_THREAD;
 	}
@@ -2377,6 +2397,7 @@ static void hdmimon(void) {
 		had_hdmi = has_hdmi;
 
 		LOG_info("restarting after HDMI change...\n");
+		park_core("hdmi restart"); // autosave must not overlap a running core (Codex #2)
 		Menu_beforeSleep();
 		sleep(4);
 		show_menu = 0;
@@ -5098,6 +5119,11 @@ int main(int argc , char* argv[]) {
 		// explicit, machinery stands down. (Replaces cfg-layer sniffing, which broke
 		// on device-tagged config filenames.)
 		int tv = config.frontend.options[FE_OPT_THREAD].value;
+		if (tv == 0) { // legacy alias: minarch_thread_video (pre-rename) maps to explicit On/Off
+			char lv[16]; int llock = 0;
+			if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", lv, &llock) && !llock)
+				tv = (lv[0]=='O' && lv[1]=='n') ? 1 : 2;
+		}
 		if (tv == 1) { thread_video = 1; thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
 		else if (tv == 2) { thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
 		else {
@@ -5112,6 +5138,8 @@ int main(int argc , char* argv[]) {
 		pthread_create(&core_pt, NULL, &coreThread, NULL);
 		core_thread_alive = 1; // without this the quit-join is skipped -> dlclose SIGSEGV
 	}
+	toggle_thread = 0;  // config load must not leave a stale toggle armed (Codex #1)
+	game_running = 1;   // runtime toggles legal from here
 	
 	PWR_warn(1);
 	PWR_disableAutosleep();
@@ -5171,11 +5199,7 @@ int main(int argc , char* argv[]) {
 		}
 		
 		if (show_menu) {
-			if (thread_video) {
-				// wait (bounded) for the core thread to park before the menu touches
-				// core state — savestates must never overlap a running core.run
-				for (int w=0; w<100 && !core_parked; w++) usleep(1000);
-			}
+			park_core("menu"); // savestates must never overlap a running core.run
 			Menu_loop();
 			// reset the rate window: a second that spans the menu would read as a false
 			// generation-rate drop and spuriously climb the governor on menu exit.
@@ -5268,7 +5292,10 @@ int main(int argc , char* argv[]) {
 					// governor then finds the lowest clock that holds THAT — FF gets the
 					// clocks it needs (measured: 2.2x of a 4x cap when stuck at the floor)
 					// without pinning max for an hour of Pokemon grinding.
-					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed + 1) : 1);
+					// Max FF Speed index 0 = "None" (uncapped): there is no finite target, so
+					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
+					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
+					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? (max_ff_speed + 1) : 1000) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
 					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
@@ -5305,7 +5332,14 @@ int main(int argc , char* argv[]) {
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
 					}
-					// auto-threading state machine (evaluated at tick cadence; cheap)
+					// auto-threading state machine (evaluated at tick cadence; cheap).
+					// A menu, sleep, or FF pause mid-window invalidates the comparison
+					// (wall-clock elapsed but no gameplay measured) -> restart observation.
+					if (thread_auto && ta_phase == 1 && (show_menu || fast_forward || was_threaded)) {
+						ta_phase = 0; ta_phase_at = 0;
+						toggle_thread = 1; // abort the trial: back to single, re-observe later
+						LOG_info("auto-thread: trial aborted (menu/FF interrupted the window)\n");
+					}
 					if (thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
 						uint32_t ta_now = SDL_GetTicks();
 						if (!ta_phase_at) ta_phase_at = ta_now;
@@ -5413,7 +5447,7 @@ int main(int argc , char* argv[]) {
 					else if (pl_now - pl_win_at >= 10000 && fps_double > 55.0) {
 						double rate = (mb_flips_total - pl_flips0) * 1000.0 / (pl_now - pl_win_at);
 						if (mb_overwrites > 0) { drc_ppm -= 150; pl_locked = 1; } // past the ceiling
-						else if (!pl_locked)   drc_ppm += 300;                     // climbing toward it
+						else if (!pl_locked)   drc_ppm += 1000;                    // climbing toward it (~80s to lock)
 						else if (rate > pl_prev_rate + 0.15) pl_locked = 0;        // ceiling moved (mode change)
 						if (pl_locked == 0 && pl_prev_rate > 1 && rate < pl_prev_rate + 0.15 && drc_ppm > 600) {
 							pl_locked = 1; // rate stopped rising: plateau = panel-locked
