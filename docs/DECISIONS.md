@@ -546,3 +546,17 @@ segfaulted on the exact-size mailbox buffer.
 Option renamed conceptually (still "Prioritize Audio" in UI pending rename decision), unhidden
 for PS1, still hidden for SUPA (supafaust pins its own threads). Default Off until hands-on +
 gameplay floor A/B decide promotion.
+
+## D44 — Auto-threading ships in v1.3 (2026-07-08)
+Dan's call: no per-system threading list, no visible option ("I'd hate to give an option then
+take it away") — the machine decides, same charter as the clock. Implemented as measure/decide/
+remember: launch single-threaded (safe for any core incl. sideloaded), trial threading when the
+settled ceiling shows headroom pressure (>=1008 at a 60s check; floor-dwellers re-arm and never
+trial), commit only if the ceiling verifiably sinks a step (slips raise the ceiling, so
+instability self-fails the trial), persist the verdict in a per-game sidecar (game cfgs get
+rewritten by the options menu). Explicit user cfg wins and disables auto. Validated on-device,
+all five cells: BR2 honest-revert (its bottleneck needs 1800 regardless — also disproves the
+"v1.2 runs BR2 worse" report on stock volts: 60/60 at 1800/35C mid-fight), DKC commit
+(1200 -> 768 in trial, boots threaded at 600 thereafter), Zelda floor-dweller never trials,
+both verdict polarities honored on relaunch. Threshold 1008 provisional pending the full
+benchmark matrix.
