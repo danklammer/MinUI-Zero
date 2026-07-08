@@ -57,6 +57,7 @@ static int core_thread_alive = 0;    // guards join: FF auto-disable already joi
 // a sidecar (game cfgs get rewritten by the options menu; a sidecar survives).
 static int thread_auto = 1;      // 0 when the user set minarch_thread_video explicitly (unlocked cfg line)
 static int ta_phase = 0;         // 0 observing single-thread, 1 trialing threaded, 2 decided
+static int ta_decided_by_user = 0;
 static uint32_t ta_phase_at = 0;
 static int ta_base_ceil = 0;
 #define TA_OBSERVE_MS 60000
@@ -715,6 +716,12 @@ typedef struct OptionList {
 	// OptionList_callback_t on_set;
 } OptionList;
 
+static char* threading_labels[] = {
+	"Auto",
+	"On",
+	"Off",
+	NULL,
+};
 static char* onoff_labels[] = {
 	"Off",
 	"On",
@@ -997,14 +1004,14 @@ static struct Config {
 				.labels = overclock_labels,
 			},
 			[FE_OPT_THREAD] = {
-				.key	= "minarch_thread_video",
-				.name	= "Prioritize Audio",
-				.desc	= "Can eliminate crackle but\nmay cause dropped frames.\nOnly turn on if necessary.",
-				.default_value = 0,
+				.key	= "minarch_threading",
+				.name	= "Threading",
+				.desc	= "Auto measures this game and threads it\nonly when that verifiably lowers the\nCPU clock. On/Off overrides the machine.",
+				.default_value = 0, // Auto
 				.value = 0,
-				.count = 2,
-				.values = onoff_labels,
-				.labels = onoff_labels,
+				.count = 3,
+				.values = threading_labels,
+				.labels = threading_labels,
 			},
 			[FE_OPT_DEBUG] = {
 				.key	= "minarch_debug_hud",
@@ -1136,8 +1143,18 @@ static void Config_syncFrontend(char* key, int value) {
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
-		int old_value = thread_video || was_threaded;
-		toggle_thread = old_value!=value;
+		// 0=Auto (trial machinery owns it), 1=On, 2=Off (explicit user override)
+		thread_auto = (value == 0);
+		if (value != 0) {
+			int want = (value == 1);
+			int have = thread_video || was_threaded;
+			toggle_thread = have != want;
+			ta_phase = 2; // decided by the user
+			ta_decided_by_user = 1;
+		}
+		else if (ta_phase == 2 && ta_decided_by_user) {
+			ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe (persisted verdicts still apply at next launch)
+		}
 		i = FE_OPT_THREAD;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_OVERCLOCK].key)) {
@@ -5048,14 +5065,13 @@ int main(int argc , char* argv[]) {
 	Menu_initState(); // make ready for state shortcuts
 	
 	{
-		// auto-threading bootstrap: an EXPLICIT unlocked user setting wins and disables
-		// auto; otherwise a persisted verdict applies; otherwise the trial runs.
-		char tmp[16]; int lock = 0;
-		int user_set = 0;
-		if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", tmp, &lock) && !lock) user_set = 1;
-		lock = 0;
-		if (!user_set && config.system_cfg && Config_getValue(config.system_cfg, "minarch_thread_video", tmp, &lock) && !lock) user_set = 1;
-		if (user_set) thread_auto = 0;
+		// auto-threading bootstrap. The Threading option value carries user intent
+		// directly: Auto -> honor a persisted verdict or run the trial; On/Off ->
+		// explicit, machinery stands down. (Replaces cfg-layer sniffing, which broke
+		// on device-tagged config filenames.)
+		int tv = config.frontend.options[FE_OPT_THREAD].value;
+		if (tv == 1) { thread_video = 1; thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
+		else if (tv == 2) { thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
 		else {
 			int v = ta_read_verdict();
 			if (v == 1) { thread_video = 1; ta_phase = 2; }
