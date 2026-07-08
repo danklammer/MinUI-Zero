@@ -50,6 +50,19 @@ static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit ha
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
 static int core_thread_alive = 0;    // guards join: FF auto-disable already joined the thread
+
+// AUTO-THREADING: measure, decide, remember — same philosophy as the governor, no menu.
+// Launch single-threaded; if the settled ceiling shows the game fighting for headroom,
+// trial threading and keep it only if the ceiling verifiably sinks. Verdict persists in
+// a sidecar (game cfgs get rewritten by the options menu; a sidecar survives).
+static int thread_auto = 1;      // 0 when the user set minarch_thread_video explicitly (unlocked cfg line)
+static int ta_phase = 0;         // 0 observing single-thread, 1 trialing threaded, 2 decided
+static uint32_t ta_phase_at = 0;
+static int ta_base_ceil = 0;
+#define TA_OBSERVE_MS 60000
+#define TA_TRIAL_MS 60000
+#define TA_TRIAL_THRESHOLD_KHZ 1008000
+
 static void* coreThread(void *arg);
 
 enum {
@@ -210,6 +223,25 @@ static struct Game {
 	size_t size;
 	int is_open;
 } game;
+
+static void ta_sidecar_path(char* out) {
+	sprintf(out, "%s/%s.thread", core.config_dir, game.name);
+}
+static int ta_read_verdict(void) { // -1 none, 0 no-benefit, 1 threaded
+	char path[MAX_PATH];
+	ta_sidecar_path(path);
+	FILE* f = fopen(path, "r");
+	if (!f) return -1;
+	int v = fgetc(f) == '1' ? 1 : 0;
+	fclose(f);
+	return v;
+}
+static void ta_write_verdict(int v) {
+	char path[MAX_PATH];
+	ta_sidecar_path(path);
+	putFile(path, v ? "1" : "0");
+	LOG_info("auto-thread: verdict %s persisted\n", v ? "THREADED" : "single");
+}
 static void Game_open(char* path) {
 	LOG_info("Game_open\n");
 	memset(&game, 0, sizeof(game));
@@ -5015,6 +5047,21 @@ int main(int argc , char* argv[]) {
 	State_resume();
 	Menu_initState(); // make ready for state shortcuts
 	
+	{
+		// auto-threading bootstrap: an EXPLICIT unlocked user setting wins and disables
+		// auto; otherwise a persisted verdict applies; otherwise the trial runs.
+		char tmp[16]; int lock = 0;
+		int user_set = 0;
+		if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", tmp, &lock) && !lock) user_set = 1;
+		lock = 0;
+		if (!user_set && config.system_cfg && Config_getValue(config.system_cfg, "minarch_thread_video", tmp, &lock) && !lock) user_set = 1;
+		if (user_set) thread_auto = 0;
+		else {
+			int v = ta_read_verdict();
+			if (v == 1) { thread_video = 1; ta_phase = 2; }
+			else if (v == 0) ta_phase = 2; // decided: no benefit (re-decided only if sidecar removed)
+		}
+	}
 	if (thread_video) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
@@ -5204,6 +5251,36 @@ int main(int argc , char* argv[]) {
 						int next = gov_sink_target(&gov_state, &gov_profile);
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+					}
+					// auto-threading state machine (evaluated at tick cadence; cheap)
+					if (thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
+						uint32_t ta_now = SDL_GetTicks();
+						if (!ta_phase_at) ta_phase_at = ta_now;
+						if (ta_phase == 0 && ta_now - ta_phase_at >= TA_OBSERVE_MS) {
+							if (!thread_video && gov_state.ceil_khz >= TA_TRIAL_THRESHOLD_KHZ) {
+								// fighting for headroom: trial threading
+								ta_base_ceil = gov_state.ceil_khz;
+								toggle_thread = 1;
+								ta_phase = 1;
+								LOG_info("auto-thread: trial ON (ceil %d)\n", ta_base_ceil);
+							}
+							else ta_phase_at = ta_now; // floor-dweller: keep watching (heavy-later games re-arm)
+						}
+						else if (ta_phase == 1 && ta_now - ta_phase_at >= TA_OBSERVE_MS + TA_TRIAL_MS) {
+							// commit only if the ceiling verifiably sank a full step; any slip
+							// storm during the trial raises the ceiling and fails this test
+							if (gov_state.ceil_khz <= ta_base_ceil - 200000) {
+								ta_write_verdict(1);
+								ta_phase = 2;
+								LOG_info("auto-thread: COMMIT (ceil %d -> %d)\n", ta_base_ceil, gov_state.ceil_khz);
+							}
+							else {
+								toggle_thread = 1; // revert to single
+								ta_write_verdict(0);
+								ta_phase = 2;
+								LOG_info("auto-thread: revert (ceil %d -> %d)\n", ta_base_ceil, gov_state.ceil_khz);
+							}
+						}
 					}
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
