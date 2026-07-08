@@ -65,11 +65,14 @@ Everyone else handles CPU speed one of two ways:
 - **Static clocks** (stock MinUI, most forks) — a hand-picked speed per console, exposed as a
   "CPU Speed" menu. One number has to cover the heaviest game on the system, so it runs hot
   for everything else, and tuning it is your problem.
-- **Kernel governors** (NextUI) — Linux picks the clock from CPU *utilization*. Better, but
-  utilization can't see the game: it can't tell "60fps with headroom" from "55fps and
-  struggling."
-- **Closed loop** (MinUI Zero) — measure the game's *actual frame rate* and find the lowest
-  clock that verifiably holds it, per game, continuously.
+- **Kernel governors** (NextUI) — Linux picks the clock from CPU *utilization*. Genuinely
+  good: for steady-state clock selection it ties our measurements. But utilization is
+  *target-blind* — it can't know what the game is supposed to be doing. It can't know
+  fast-forward wants 4x speed, that a paused emulator isn't a struggling one, or that
+  the overclock should never be on the menu.
+- **Closed loop** (MinUI Zero) — keep schedutil for what it's great at, and add a frame-aware
+  layer above it that knows the *target*: verify the game's actual frame rate, retarget for
+  fast-forward, and cap at the highest verified-stock clock.
 
 How it works, in five steps:
 
@@ -87,8 +90,12 @@ It climbs within a second. A clock that failed is remembered and not re-tried. A
 probes into saturation, because a maxed-out low clock measures *warmer* than a relaxed higher
 one that finishes early and sleeps.
 
-That's why the CPU Speed setting is gone: the machine answers the question better than a menu
-can — per game, continuously, with receipts. It's also how a stock config bug was caught that
+That's why the CPU Speed setting is gone: between schedutil underneath and the frame-aware
+loop above, the machine answers the question a menu used to ask — per game, continuously,
+with receipts. (Credit where due: on temperature alone, plain schedutil with the overclock
+excluded measures the same. The loop earns its keep at the edges — starting in v1.3,
+fast-forward runs at full 4x speed at the lowest clock that delivers it, measured, instead
+of either pinning max or starving at the floor.) It's also how a stock config bug was caught that
 makes NES run hot on every MinUI device: a system that measures game speed notices when a
 1985 console demands a 1 GHz clock.
 
