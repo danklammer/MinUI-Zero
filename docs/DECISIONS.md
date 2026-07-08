@@ -560,3 +560,23 @@ all five cells: BR2 honest-revert (its bottleneck needs 1800 regardless — also
 (1200 -> 768 in trial, boots threaded at 600 thereafter), Zelda floor-dweller never trials,
 both verdict polarities honored on relaunch. Threshold 1008 provisional pending the full
 benchmark matrix.
+
+## D45 — The smoothness dig: DRC was dormant in production (2026-07-08)
+Dan's feel report ("threaded THPS not quite as smooth") triggered an instrumentation campaign
+that went through THREE wrong sensors (waits!=dups: main normally waits every frame; flip
+intervals: blind to internally-low-fps content AND to the panel beat; flip-block time: queued
+swapchains always block) before unearthing the real finding: **DRC — the v1.1 sync-stutter
+fix — has been ineligible in production the whole time.** Its gate required VSYNC_STRICT;
+the tg5040 system.cfg locks prevent_tearing=Lenient. Both threading modes had the ~1.3s
+panel-beat dup; threading was never a smoothness regression. Fix shipped: eligibility accepts
+any vsync!=OFF (Lenient vsyncs every frame while the game holds rate = DRC's regime).
+STILL OPEN: (1) on-device convergence verification of the revived single-thread DRC (needs a
+ppm telemetry line; the only current print fires once at +6000ppm); (2) threaded-mode panel
+lock — the correct sensor is a long-window precise flip-rate measurement (60.0 vs 60.8
+distinguishable over ~10s; push ppm up until the flip rate plateaus at the panel ceiling =
+locked). Both queued for a fresh session. New permanent instrumentation shipped along the
+way: HUD D/S/U smoothness counters + per-minute thr-stats log lines in threaded mode.
+Also today: live gameplay validation via forged-input navigation (Tony Hawk driven into a
+real Hangar run by synthetic button presses; true-60fps delivery measured 0 dups / 0 skips /
+0 underruns per minute — DELIVERY is clean; the panel beat is the remaining cosmetic item,
+now equally present-or-absent in both modes pending the revival verification).
