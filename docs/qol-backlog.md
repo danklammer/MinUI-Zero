@@ -85,3 +85,21 @@ audio-crackle insurance. Also fix: the core thread busy-spins when paused (shoul
 ## Rewind prior art
 NextUI ships rewind (workspace/all/minarch/ma_rewind.c) — port-or-adapt candidate for the
 core-features list; evaluate its RAM/CPU cost against the efficiency charter on small cores.
+
+## Auto-threading (v1.4 candidate) — "measure, decide, remember" applied to threading
+Replace per-system threading defaults with a runtime verdict, same philosophy as the governor
+(the machine answers, not a menu). Design, riding entirely on existing machinery:
+1. Every game launches single-threaded (safe for any core, incl. sideloaded ones).
+2. After gov settle (~60s): ceiling in the floor band (408-600) -> nothing to win, remember
+   "no". Ceiling >= ~1008 -> flip threading ON at runtime (toggle machinery exists, stress-
+   tested x26) and trial for ~60s.
+3. Verdict: ceiling sank >=1 OPP step with gen rate intact -> commit; slip regression ->
+   revert. Persist by writing minarch_thread_video into the game cfg via existing
+   Config_write plumbing (no new storage).
+4. Re-trial trigger: if an unverdicted single-threaded game later climbs >=1008 (light intro,
+   heavy gameplay), run the trial then.
+Threshold (~1008) to be calibrated from the benchmark matrix (GBC arm = the nothing-to-win
+side). Prereqs: v1.3 threading shipped + hands-on feel pass. Effort ~150 lines.
+Evidence base: SNES stacked-threading benchmark (Brick 2026-07-08): stock supafaust arm =
+excursions to 1416, temp rising 35.3->36.6C, 90 charge units/8min; stacked arm = flat 600,
+temp FALLING 33.3->32.2C, 30 units. PS1/GBC/GBA arms pending (SP).
