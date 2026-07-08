@@ -163,6 +163,7 @@ void GFX_flip(SDL_Surface* screen);
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
 void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)
+uint32_t GFX_getFlipWaitUs(void); // how long the last flip blocked on vsync (panel-lock signal)
 int GFX_didOverrun(void); // 1 if the most recent frame's CPU work exceeded the frame budget (closed-loop governor signal)
 uint32_t GFX_getFrameWorkUs(void); // benchmark: us of CPU work in the last frame (GFX_startFrame->GFX_flip)
 void GFX_quit(void);

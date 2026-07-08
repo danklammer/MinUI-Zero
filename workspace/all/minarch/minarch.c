@@ -5395,16 +5395,21 @@ int main(int argc , char* argv[]) {
 				int prev = drc_ppm;
 				if (thread_video) {
 					// threaded mode: the audio-blocking signal is dead (the core pacer
-					// prevents blocking). REAL signals: dups (a flip spanned 2+ vsyncs ->
-					// core below panel rate) vs overwrites (core replaced an unconsumed
-					// frame -> above panel rate). Neither = converged: hold.
-					int d = mb_dups, o = mb_overwrites;
-					mb_dups = 0; mb_overwrites = 0; mb_waits = 0;
-					if (fps_double > 55.0) { // only judge pacing on 60fps-class content
-						if (d > 0 && o == 0)      drc_ppm += 150; // dupping: below the panel rate
-						else if (o > 0)           drc_ppm -= 150; // overrunning: back off
-						// else: dead zone — at rate, hold ppm
+					// prevents blocking), and delivery-cadence heuristics cannot see the
+					// panel beat. The TRUE panel-lock signal is the flip itself: a flip
+					// that never blocks on vsync means we present below the panel rate
+					// (nudge the core up); consistent blocking means panel-locked (edge
+					// found — back off one notch and hold). Mirrors the single-thread
+					// arrangement where vsync paced the core and audio measured it.
+					static int flip_free_streak = 0;
+					if (fps_double > 55.0) { // only 60fps-class content can panel-lock
+						if (GFX_getFlipWaitUs() < 1500) flip_free_streak++;
+						else flip_free_streak = 0;
+						if (flip_free_streak >= 2)      drc_ppm += 150; // free-running: below panel
+						else if (mb_overwrites > 0)     drc_ppm -= 150; // overran: too fast
+						// blocking without overwrites = locked: hold
 					}
+					mb_dups = 0; mb_overwrites = 0; mb_waits = 0;
 				}
 				else {
 					SND_Stats das; SND_getStats(&das);
