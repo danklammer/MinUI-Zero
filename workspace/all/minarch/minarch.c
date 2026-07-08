@@ -53,6 +53,10 @@ static volatile int mb_waits = 0;
 static volatile int mb_overwrites = 0;
 static volatile int mb_waits_total = 0;      // never reset: HUD/stats read deltas
 static volatile int mb_overwrites_total = 0;
+// REAL smoothness events (the waits counter reads ~1/frame in healthy operation — main
+// normally waits for each next frame — so it is NOT a dup signal; learned the hard way):
+static volatile int mb_dups = 0;        // flip interval spanned 2+ vsync periods
+static volatile int mb_dups_total = 0;
 static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
 static volatile int core_thread_exit = 0;
 static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
@@ -1118,6 +1122,9 @@ static void Gov_start(void) {
 	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
+static int* g_drc_ppm_ptr = NULL;
+static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
+static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
 	int i = -1;
@@ -3109,7 +3116,7 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 			uint32_t sm_now = SDL_GetTicks();
 			if (sm_now - sm_at >= 1000) {
 				SND_Stats ss; SND_getStats(&ss);
-				sm_d = mb_waits_total - sm_w0;      sm_w0 = mb_waits_total;
+				sm_d = mb_dups_total - sm_w0;       sm_w0 = mb_dups_total;
 				sm_s = mb_overwrites_total - sm_o0; sm_o0 = mb_overwrites_total;
 				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
 				sm_at = sm_now;
@@ -5152,6 +5159,10 @@ int main(int argc , char* argv[]) {
 			if (frame) {
 				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
 				GFX_flip(screen);
+				static uint64_t last_flip_us = 0;
+				uint64_t now_us = getMicroseconds();
+				if (last_flip_us && now_us - last_flip_us > 24000) { mb_dups++; mb_dups_total++; } // spanned 2+ vsyncs
+				last_flip_us = now_us;
 			}
 		}
 		
@@ -5324,11 +5335,11 @@ int main(int argc , char* argv[]) {
 						static uint32_t thr_log_at = 0;
 						static int tl_w = 0, tl_o = 0; static long tl_u = 0;
 						uint32_t tl_now = SDL_GetTicks();
-						if (!thr_log_at) { thr_log_at = tl_now; tl_w = mb_waits_total; tl_o = mb_overwrites_total; SND_Stats s0; SND_getStats(&s0); tl_u = s0.underruns; }
+						if (!thr_log_at) { thr_log_at = tl_now; tl_w = mb_dups_total; tl_o = mb_overwrites_total; SND_Stats s0; SND_getStats(&s0); tl_u = s0.underruns; }
 						else if (tl_now - thr_log_at >= 60000) {
 							SND_Stats s1; SND_getStats(&s1);
-							LOG_info("thr-stats: dups/min=%d skips/min=%d underruns/min=%ld\n", mb_waits_total - tl_w, mb_overwrites_total - tl_o, s1.underruns - tl_u);
-							thr_log_at = tl_now; tl_w = mb_waits_total; tl_o = mb_overwrites_total; tl_u = s1.underruns;
+							LOG_info("thr-stats: dups/min=%d skips/min=%d underruns/min=%ld drc_ppm=%d\n", mb_dups_total - tl_w, mb_overwrites_total - tl_o, s1.underruns - tl_u, drc_ppm_now());
+							thr_log_at = tl_now; tl_w = mb_dups_total; tl_o = mb_overwrites_total; tl_u = s1.underruns;
 						}
 					}
 					int prev_ceil = gov_state.ceil_khz;
@@ -5361,6 +5372,7 @@ int main(int argc , char* argv[]) {
 		// ratchets to 0 = stock). ~60fps cores under strict vsync only; ZERO_NO_DRC disables.
 		if (!show_menu) {
 			static int drc_ppm = 0;
+			drc_ppm_expose(&drc_ppm);
 			static int drc_frames = 0;
 			static long drc_prev_wait = 0;
 			static int drc_disabled = -1;
@@ -5381,12 +5393,14 @@ int main(int argc , char* argv[]) {
 				int prev = drc_ppm;
 				if (thread_video) {
 					// threaded mode: the audio-blocking signal is dead (the core pacer
-					// prevents blocking), so read the mailbox instead — waits mean the
-					// present starved (core below panel rate), overwrites mean it overran
-					int w = mb_waits, o = mb_overwrites;
-					mb_waits = 0; mb_overwrites = 0;
-					if (o == 0 && w > 1) drc_ppm += 150; // starving: below the panel rate
-					else                 drc_ppm -= 150; // overrunning (or matched): back off
+					// prevents blocking). REAL signals: dups (a flip spanned 2+ vsyncs ->
+					// core below panel rate) vs overwrites (core replaced an unconsumed
+					// frame -> above panel rate). Neither = converged: hold.
+					int d = mb_dups, o = mb_overwrites;
+					mb_dups = 0; mb_overwrites = 0; mb_waits = 0;
+					if (d > 0 && o == 0)      drc_ppm += 150; // dupping: below the panel rate
+					else if (o > 0)           drc_ppm -= 150; // overrunning: back off
+					// else: dead zone — at rate, hold ppm
 				}
 				else {
 					SND_Stats das; SND_getStats(&das);
