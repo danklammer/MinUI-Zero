@@ -580,3 +580,23 @@ Also today: live gameplay validation via forged-input navigation (Tony Hawk driv
 real Hangar run by synthetic button presses; true-60fps delivery measured 0 dups / 0 skips /
 0 underruns per minute — DELIVERY is clean; the panel beat is the remaining cosmetic item,
 now equally present-or-absent in both modes pending the revival verification).
+
+## D46 — Codex review round + panel-lock convergence (2026-07-08, late)
+Dan ran the branch through Codex: 7 findings, 6 real, all fixed same-night. Headline: config
+load was arming toggle_thread while thread_video was still false — persisted-On booted
+threaded then tore itself down on the first main-loop pass. THAT was the unsolved ON-path
+phantom (BR2 Threading=On death). Regression-proven: persisted-On now boots 11 threads and
+holds. Also fixed: park_core() mandatory before menu/hdmi core access (500ms, logged), FF
+None retargets to max (was floor-starved), trials abort on menu/FF interruption, On-Off-Auto
+cycling cancels stale toggles, legacy minarch_thread_video honored as alias. Codex's
+architecture note (replace thread_video/was_threaded/toggle_thread booleans with an explicit
+lifecycle state machine) = the v1.4 refactor.
+Panel-lock v2 (long-window flip-rate hill-climb, 1000ppm stride): converged in ~1 min and
+held (ppm=850, dups=0, skips=0, underruns=0 across 3 min of THPS). Caveat: locked below the
+panel's nominal 60.8 figure — either the swapchain drain differs from scanout or the beat is
+not fully closed; instruments cannot distinguish, human eyes next session.
+Bench honesty note: unattended benchmark arms ran with the 30s idle DIM active (both arms
+equally — comparisons stand; absolute cc figures are dim-screen values).
+Review roster for this feature, final: 3 self-audits, fork adversary, blind reviewer, a
+16-arm benchmark campaign, Dan's ears (3 real bugs), Codex (6 real bugs). Every reviewer
+found something all the others missed.
