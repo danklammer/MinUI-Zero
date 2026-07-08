@@ -225,6 +225,8 @@ int GFX_didOverrun(void) {
 	return frame_overran;
 }
 
+static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
+#define gfx_flip_wait_us gfx_flip_wait_us_store
 void GFX_flip(SDL_Surface* screen) {
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
@@ -233,8 +235,11 @@ void GFX_flip(SDL_Surface* screen) {
 	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
+	uint64_t flip_t0 = getMicroseconds();
 	PLAT_flip(screen, should_vsync);
+	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
 }
+uint32_t GFX_getFlipWaitUs(void) { return gfx_flip_wait_us; }
 static uint32_t gfx_pace_period_us = 0; // 0 = stock FRAME_BUDGET; set by DRC to the panel period
 void GFX_setPacePeriodUs(uint32_t us) { gfx_pace_period_us = us; }
 void GFX_sync(void) {
