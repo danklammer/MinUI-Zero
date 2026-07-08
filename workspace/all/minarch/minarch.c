@@ -1005,7 +1005,7 @@ static struct Config {
 			},
 			[FE_OPT_THREAD] = {
 				.key	= "minarch_threading",
-				.name	= "Threading",
+				.name	= "Multithreading",
 				.desc	= "Auto measures this game and threads it\nonly when that verifiably lowers the\nCPU clock. On/Off overrides the machine.",
 				.default_value = 0, // Auto
 				.value = 0,
