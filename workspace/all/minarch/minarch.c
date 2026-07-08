@@ -5420,10 +5420,12 @@ int main(int argc , char* argv[]) {
 				// a ceiling-saturated game has no headroom to run +ppm faster — asking
 				// starves the audio ring on schedule (BR2 chop, ear-found 2026-07-08)
 				&& gov_state.ceil_khz < gov_profile.f_max
-				// Lenient vsyncs every frame while the game holds rate — exactly DRC's
-				// operating regime. Requiring STRICT left DRC dormant platform-wide
-				// (tg5040 system.cfg locks Lenient); found 2026-07-08 via a feel report.
-				&& GFX_getVsync()!=VSYNC_OFF);
+				// DORMANT BY DECISION (2026-07-08): a one-line Lenient-revival woke DRC
+				// platform-wide and audibly chopped PS1 audio the same night (BR2 + THPS
+				// titles, ear-verified) — the v1.1 design was only ever validated on
+				// synth-audio handheld cores. Until a per-content-class revalidation,
+				// STRICT-only keeps it dormant = the exact behavior of every release.
+				&& GFX_getVsync()==VSYNC_STRICT);
 			if (!drc_eligible) {
 				if (drc_ppm) { // revert cleanly (vsync toggled off / fast-forward)
 					drc_ppm = 0;
