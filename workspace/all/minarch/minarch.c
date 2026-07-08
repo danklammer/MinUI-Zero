@@ -5381,7 +5381,10 @@ int main(int argc , char* argv[]) {
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_eligible = (!drc_disabled && !fast_forward
 				&& core.fps >= 58.0 && core.fps <= 61.0
-				&& GFX_getVsync()==VSYNC_STRICT);
+				// Lenient vsyncs every frame while the game holds rate — exactly DRC's
+				// operating regime. Requiring STRICT left DRC dormant platform-wide
+				// (tg5040 system.cfg locks Lenient); found 2026-07-08 via a feel report.
+				&& GFX_getVsync()!=VSYNC_OFF);
 			if (!drc_eligible) {
 				if (drc_ppm) { // revert cleanly (vsync toggled off / fast-forward)
 					drc_ppm = 0;
