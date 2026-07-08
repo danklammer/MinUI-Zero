@@ -85,3 +85,20 @@ audio-crackle insurance. Also fix: the core thread busy-spins when paused (shoul
 ## Rewind prior art
 NextUI ships rewind (workspace/all/minarch/ma_rewind.c) — port-or-adapt candidate for the
 core-features list; evaluate its RAM/CPU cost against the efficiency charter on small cores.
+
+## Game open/exit latency (community report: johnnyq via GitHub, 2026-07-08)
+Measured by reporter: ~3s ROM open, ~1.5s close. Miyoo Mini/Plus = the benchmark (near-instant
+both ways). Two threads to pull:
+1. INSTRUMENT the 3s first: pak shell overhead, core dlopen, EGL/GLES init, rom read, gov/uv
+   init — find the fat slice before optimizing anything.
+2. GPU-dark games REVIVAL, load-time angle: we shelved software-present on a battery tie
+   (drain A/B = exact break-even vs GLES) but never measured LOAD TIME — skipping EGL init
+   per launch could be most of the 3s, and exit near-instant. Constraints from the shelved
+   work: Brick-only (SP display scans the GL layer, not fb0 — verified), software scale costs
+   ~72% CPU during play. A load-time-only measurement decides if it earns a Brick-only life.
+Also theirs: 6s boot as the target (we are ~7.15s; the wifi-module-load prune remains the
+known lead). Rewind demand: second community signal (they read our prior-art note as
+"coming" — it is "exploring").
+
+## Enable GitHub Discussions (johnnyq ask)
+Zero-cost community home for the commit-followers. Repo Settings -> Features -> Discussions.
