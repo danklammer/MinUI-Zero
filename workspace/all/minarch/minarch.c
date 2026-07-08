@@ -5161,7 +5161,9 @@ int main(int argc , char* argv[]) {
 				GFX_flip(screen);
 				static uint64_t last_flip_us = 0;
 				uint64_t now_us = getMicroseconds();
-				if (last_flip_us && now_us - last_flip_us > 24000) { mb_dups++; mb_dups_total++; } // spanned 2+ vsyncs
+				// only 60fps-class content can meaningfully "dup" — internally-low-fps
+				// games (THPS demos run 15fps internally) have long intervals by design
+				if (last_flip_us && fps_double > 55.0 && now_us - last_flip_us > 24000) { mb_dups++; mb_dups_total++; }
 				last_flip_us = now_us;
 			}
 		}
@@ -5398,9 +5400,11 @@ int main(int argc , char* argv[]) {
 					// frame -> above panel rate). Neither = converged: hold.
 					int d = mb_dups, o = mb_overwrites;
 					mb_dups = 0; mb_overwrites = 0; mb_waits = 0;
-					if (d > 0 && o == 0)      drc_ppm += 150; // dupping: below the panel rate
-					else if (o > 0)           drc_ppm -= 150; // overrunning: back off
-					// else: dead zone — at rate, hold ppm
+					if (fps_double > 55.0) { // only judge pacing on 60fps-class content
+						if (d > 0 && o == 0)      drc_ppm += 150; // dupping: below the panel rate
+						else if (o > 0)           drc_ppm -= 150; // overrunning: back off
+						// else: dead zone — at rate, hold ppm
+					}
 				}
 				else {
 					SND_Stats das; SND_getStats(&das);
