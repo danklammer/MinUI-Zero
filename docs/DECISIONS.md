@@ -687,3 +687,22 @@ Crisp A/B: PASSED both judges — with the minimal-prescale fix, Crisp == Soft o
 480i screens (0 underruns/90s, same probe ladder, floor 1152) and the look was approved.
 Crisp stays the shipped default; the Soft diagnostic line removed from the device cfg.
 Ear-verified transitions clean. The v1.3 candidate stack is complete.
+
+## D48 third addendum — SP bring-up: two more layers, both devices certified (2026-07-09)
+The SP sounded "very crunchy" on the same screens the Brick had just passed. Two real causes:
+(1) THE CFG-SHADOW TRAP BIT AGAIN, second device in hours: the SP console minarch.cfg
+(written when sharpness was changed in its menu) snapshotted gpu_thread_rendering=auto,
+silently overriding the new pak default — the GPU thread measured 51% busy while "disabled".
+The v1.3 updater MUST ship a one-time cfg migration sweep (auto->disabled across saved PS
+cfgs); release-notes-only was proven insufficient by our own two devices.
+(2) SP-only supersample blowup: selectScaler oversized dst = MAX(ceil-cover) picked scale 3
+for 512x480 on the 1280x720 panel -> a 2048x1440 padded dst the CPU scales into and uploads
+EVERY frame (~3x the Brick cost for the same screen). Fix (045d04af): cap the supersample
+at 2x panel area — every pre-existing Brick/SP case unchanged, only pathological combos
+shrink (SP 480i: scale 3->2 = 1024x960). Upstream had this cap commented out as a TODO.
+Also fixed in the same commit: GOV_SIGNAL_BIGSLIP now outranks the probe-undo restore (a
+deep deficit restored to a too-low pre-sink ceiling paid two ticks; SP log caught it).
+Auto-threading sidecars written under the broken baseline were cleared again — trials only
+count when the environment they judged is the environment that ships.
+Result: GPU thread verified dead on SP (0 jiffies), ear verdict "sounds way better."
+BOTH devices now run the identical ear-certified v1.3 candidate.
