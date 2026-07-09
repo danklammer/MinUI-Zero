@@ -76,6 +76,10 @@ int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us);
 // PLAT_setCPUMaxFreq(). Honors GOV_DISABLE=1 (no-op). Call once per GOV_TICK_FRAMES.
 void gov_tick(GovState* st, const GovProfile* p, int frame_overrun);
 
+// Scene-change burst: a video-mode/geometry switch announces new workload before its cost
+// arrives — jump the ceiling to f_max now, let the sink ladder re-find the floor after.
+void gov_burst(GovState* st, const GovProfile* p);
+
 // Read the CPU thermal zone in Celsius, or -1 if unavailable. Exposed for logging/tests.
 int gov_read_temp_c(void);
 

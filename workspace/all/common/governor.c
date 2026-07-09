@@ -145,14 +145,31 @@ int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us) {
 	return predicted < (long long)budget_us * GOV_SINK_MARGIN_PCT / 100;
 }
 
-void gov_tick(GovState* st, const GovProfile* p, int frame_overrun) {
+static int gov_disabled(void) {
 	// Safety hatch: GOV_DISABLE=1 leaves the static menu clock in charge.
 	static int disabled = -1;
 	if (disabled < 0) {
 		const char* e = getenv("GOV_DISABLE");
 		disabled = (e && e[0] && e[0] != '0') ? 1 : 0;
 	}
-	if (disabled) return;
+	return disabled;
+}
+
+void gov_burst(GovState* st, const GovProfile* p) {
+	// A video-mode/geometry switch announces a scene change BEFORE its cost arrives —
+	// provision for the worst immediately and let the sink ladder re-find the floor.
+	// The reverse order (wait for the slip) is audible: BR2 title->demo / VS-card
+	// transitions crunched for the 1-2 ticks the climb took (2026-07-09).
+	if (gov_disabled()) return;
+	st->ceil_khz = p->f_max;
+	st->slip_run = 0;
+	st->slack_run = 0;
+	st->since_sink = 255; // not a probe: a slip here must not "undo" to a stale ceiling
+	PLAT_setCPUMaxFreq(st->ceil_khz);
+}
+
+void gov_tick(GovState* st, const GovProfile* p, int frame_overrun) {
+	if (gov_disabled()) return;
 
 	int temp_c = gov_read_temp_c();
 	static int last_ceil = 0;
