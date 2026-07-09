@@ -656,3 +656,22 @@ under the old baseline are void — PS sidecars cleared, PS1 bench rows re-run b
 Lesson for the record: D47's replication was sound but its conclusion over-reached — we
 replicated the SYMPTOM's invariance across knobs we had, not the absence of causes we hadn't
 found. "Hardware boundary" claims need a profile, not just an exoneration ladder.
+
+## D48 addendum — the fifth layer, and Dan's sign-off (2026-07-09, morning)
+Dan's fresh ears found the residue the fixed stack still carried: "improved, still crunchy" —
+and the HUD caught it live at 1008MHz/52-per-60 on character select. The crunch was the
+GOVERNOR'S PROBE COST: sink to a too-low ceiling, several audible ticks of stepwise recovery,
+repeat at every fail-hold expiry. Two refinements shipped (cbdec065, harness green):
+(1) a slip arriving within ~8 ticks of a sink is CAUSED by that sink — restore the pre-sink
+ceiling in one tick (thermal sinks deliberately excluded: temp always wins);
+(2) GOV_SIGNAL_BIGSLIP (gen >=10% under target) jumps straight to f_max on the first tick.
+Validation, 75s parked on char select: probe ladder 1584/1368/1152 all held 60/60 (the
+GPU-thread fix lowered this screen's true floor from ~1584 to ~1152), the 1008 probe slipped
+to 52.4, signal=3 recovered in ONE transition, ZERO ALSA underruns across the window
+including the collapse — the ring cushion rode the entire dip. Dan: "Sounds pretty good!"
+BR2 CLOSED at stock clocks, 35-40C. The Phase-3 480i render-skip was never needed.
+Watch what happened in that log: the governor learned the screen's floor by touching it
+once, briefly, inaudibly — the closed-loop thesis in one trace. Also caught during deploy:
+per-game cfgs snapshot ALL core options at save time, so any pre-v1.3 saved PS game cfg pins
+gpu_thread_rendering=auto forever — release notes must tell users to re-save or reset
+per-game settings on PS titles (or minarch grows a migration; lean answer TBD).
