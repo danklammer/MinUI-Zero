@@ -41,6 +41,16 @@ find "$SDCARD_PATH/.fseventsd" -type f ! -name no_log -delete 2>/dev/null
 rm -f "$SDCARD_PATH/.DS_Store" "$SDCARD_PATH"/._* 2>/dev/null
 ( find "$ROMS_PATH" "$BIOS_PATH" "$SAVES_PATH" \( -name "._*" -o -name ".DS_Store" \) -delete 2>/dev/null & )
 
+# v1.3 migration: saved PS cfgs snapshot ALL core options, so pre-v1.3 saves pin
+# pcsx_rearmed_gpu_thread_rendering=auto forever, silently overriding the new disabled
+# default (the async GPU thread serializes on the A133P; DECISIONS D48 — this trap bit
+# both dev devices within hours). Idempotent + cheap: only rewrites files still carrying
+# the old value.
+for _cfg in "$USERDATA_PATH/PS-pcsx_rearmed"/*.cfg; do
+	[ -f "$_cfg" ] && grep -q "pcsx_rearmed_gpu_thread_rendering = auto" "$_cfg" && \
+		sed -i "s/pcsx_rearmed_gpu_thread_rendering = auto/pcsx_rearmed_gpu_thread_rendering = disabled/" "$_cfg"
+done 2>/dev/null
+
 # model detection: NO caching — the SD card can move between a Brick and a Smart Pro
 # (same tg5040 platform), and a cached model would misdetect after the swap (wrong pad
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
