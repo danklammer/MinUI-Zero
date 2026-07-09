@@ -270,8 +270,18 @@ static void resizeVideo(int w, int h, int p) {
 	// TODO: minarch disables crisp (and nn upscale before linear downscale) when native, is this true?
 	
 	if (w>=device_width && h>=device_height) hard_scale = 1;
-	// else if (h>=160) hard_scale = 2; // limits gba and up to 2x (seems sufficient for 640x480)
-	else hard_scale = 4;
+	else {
+		// smallest integer prescale that reaches the screen on either axis — anything
+		// larger is pure GPU-bandwidth waste. A fixed 4x turned PS1 480i menus
+		// (512/640x480, e.g. BR2 char select) into 2048x1920+ render targets
+		// (~1GB/s of fill on the GE8300), saturating the GPU: present blocked, the
+		// emulated machine slowed, and audio chopped while the CPU sat idle.
+		// 240p-and-below content still resolves to 4x, unchanged.
+		hard_scale = 4;
+		for (int hs=2; hs<4; hs++) {
+			if (w*hs>=device_width || h*hs>=device_height) { hard_scale = hs; break; }
+		}
+	}
 
 	LOG_info("resizeVideo(%i,%i,%i) hard_scale: %i crisp: %i\n",w,h,p, hard_scale,vid.sharpness==SHARPNESS_CRISP);
 
