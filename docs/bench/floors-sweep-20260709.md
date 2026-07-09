@@ -15,12 +15,18 @@ v1.0 sweeps.
 | MD   | (first MD rom)       | 600, stable | 600 | PASS exact |
 | PS   | Ace Combat 2         | 1008 cruise, correct burst-to-1800 on scene change | hunts | PASS |
 
-## Smart Pro (partial — chain interrupted by connectivity naps)
+## Smart Pro (complete)
 | system | settled ceiling | notes |
 |--------|-----------------|-------|
 | GBC  | ~1008 | matches Brick exactly — GBC cost is platform-wide, not device-specific |
 | GBA  | 600 | matches Brick |
-| FC/SUPA/MD | pending | arms queued |
+| FC   | descent to 792 captured in log (gen 60.3) before a wifi nap cut telemetry | consistent |
+| SUPA | 600, locked 2+ min | matches Brick exactly |
+| MD   | 600, locked 2+ min | matches Brick exactly |
+
+Cross-device conclusion: identical governor behavior on both panels/calibrations.
+SP uptime through its sweep: no reboots, no sleeps — all SP outages were wifi naps
+(keep-awake daemon effective; the radio drops under sustained idle-ish load).
 
 ## Open questions filed
 1. GBC (Dr. Mario attract) needs ~2ms more per frame than the 07-03 era floor implies —
