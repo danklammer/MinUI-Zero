@@ -102,3 +102,14 @@ known lead). Rewind demand: second community signal (they read our prior-art not
 
 ## Enable GitHub Discussions (johnnyq ask)
 Zero-cost community home for the commit-followers. Repo Settings -> Features -> Discussions.
+
+## MDEC NEON optimization (the BR2 endgame — next-session project, roadmap via Codex)
+The D47 boundary is core-level, not physical: pcsx's MDEC decode costs 42-60ms/frame on the
+A133P; below ~16ms those sections reach realtime at stock clocks and the source-audio chop
+dies. Plan: (1) profiler patch in mdec.c — timers around rl2blk, idct, yuv2rgb15/24, DMA
+copy; rebuild core via cores/patches, run the BR2 sequence, find the dominant cost.
+(2) NEONize yuv2rgb15 if it dominates (classic per-pixel NEON win) OR implement the
+row-sparsity IDCT shortcut (an explicit upstream TODO). Ruled out by Codex: Fast MDEC
+(GLES-path only; we build BUILTIN_GPU=neon), MDEC_BIAS (timing knob, compat-sensitive, not
+wall-clock). Success = BR2 (and all FMV-heavy PS1) flawless at stock clocks; patch is
+upstreamable. Prereq receipts: D47 + addendum (frontend/audio exhausted, replicated).
