@@ -51,6 +51,14 @@ for _cfg in "$USERDATA_PATH/PS-pcsx_rearmed"/*.cfg; do
 		sed -i "s/pcsx_rearmed_gpu_thread_rendering = auto/pcsx_rearmed_gpu_thread_rendering = disabled/" "$_cfg"
 done 2>/dev/null
 
+# dev: Stay Awake tool persistence (workspace/tg5040/dev-tools/, never shipped) — the
+# /tmp flag resets each boot, so re-arm from the shared flag. Inert unless a dev armed it.
+if [ -f "$SHARED_USERDATA_PATH/dev-stay-awake" ]; then
+	touch /tmp/stay_awake
+	iw dev wlan0 set power_save off 2>/dev/null
+	iwconfig wlan0 power off 2>/dev/null
+fi
+
 # model detection: NO caching — the SD card can move between a Brick and a Smart Pro
 # (same tg5040 platform), and a cached model would misdetect after the swap (wrong pad
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
