@@ -863,7 +863,14 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	// smallest table entry >= khz (table sorted ascending); above the table -> stock.
 	if (!uv_init()) return;
 	int uv = 0;
-	for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
+	// LIGHT-LOAD FLOOR GUARD (2026-07-09, measured): undervolt holds at a <=600MHz
+	// ceiling brownout-reboot the device within minutes (DK parked at the 408 floor died
+	// twice with UV on, ran 12 min clean with UV off). The calibration proved the floor
+	// voltage under STRESS; a game idling at the floor puts the buck in light-load mode
+	// where the same rail is not stable. Idle current is tiny — the delta saves uW here
+	// and the measured wins live at the high OPPs — so hold STOCK below 816MHz.
+	if (khz < 816000) uv = UV_STOCK_MAX;
+	else for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
 	if (!uv) uv = UV_STOCK_MAX; // ceiling above table: run stock volts
 	// The kernel RE-ASSERTS its stock voltage on every DVFS transition, so the register is
 	// the only truth — read it and rewrite when it drifted (one i2c read per tick, ~2Hz).
