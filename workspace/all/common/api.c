@@ -1250,7 +1250,10 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error: %s\n", SDL_GetError());
 	
-	snd.buffer_seconds = 5;
+	snd.buffer_seconds = 12; // ring CAPACITY (~200ms), not latency — latency is occupancy,
+	                         // set by the production/consumption balance. 5 frames (83ms)
+	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
+	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
 	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000);
