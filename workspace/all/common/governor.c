@@ -101,9 +101,12 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 			//    tick by restoring the pre-sink ceiling;
 			// 2) big deficit (>=10% under target) -> jump straight to f_max;
 			// 3) small deficit -> one step, then f_max if it survives a second tick.
-			if (st->since_sink < 8 && st->presink_khz > st->ceil_khz)
+			if (frame_overrun == GOV_SIGNAL_BIGSLIP)
+				st->ceil_khz = p->f_max; // severity outranks probe-undo: a deep deficit
+				                         // restored to a too-low pre-sink ceiling pays twice
+			else if (st->since_sink < 8 && st->presink_khz > st->ceil_khz)
 				st->ceil_khz = st->presink_khz;
-			else if (frame_overrun == GOV_SIGNAL_BIGSLIP || st->slip_run >= 2)
+			else if (st->slip_run >= 2)
 				st->ceil_khz = p->f_max;
 			else st->ceil_khz += GOV_STEP_KHZ;
 			if (st->ceil_khz > p->f_max) st->ceil_khz = p->f_max;

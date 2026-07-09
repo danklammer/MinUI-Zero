@@ -2963,8 +2963,12 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		if (r && r<8) scale_y -= 1;
 		
 		scale = MAX(scale_x, scale_y);
-		// if (scale>4) scale = 4;
-		// if (scale>2) scale = 4; // TODO: restore, requires sanity checking
+		// cap the supersample so the dst buffer never exceeds ~2x the panel area — the
+		// CPU scales into and uploads this buffer EVERY frame. Uncapped, PS1 480i content
+		// on the 1280x720 SP picked scale 3 (a 2048x1440 padded dst, ~3x the Brick's cost
+		// for the same screen = the SP VS-card slowdown, 2026-07-09). The cap leaves every
+		// pre-existing Brick/SP case unchanged; only the pathological combos shrink.
+		while (scale > 1 && (long)src_w*scale*src_h*scale > 2L*DEVICE_WIDTH*DEVICE_HEIGHT) scale--;
 		
 		int scaled_w = src_w * scale;
 		int scaled_h = src_h * scale;
