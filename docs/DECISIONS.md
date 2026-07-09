@@ -706,3 +706,30 @@ Auto-threading sidecars written under the broken baseline were cleared again —
 count when the environment they judged is the environment that ships.
 Result: GPU thread verified dead on SP (0 jiffies), ear verdict "sounds way better."
 BOTH devices now run the identical ear-certified v1.3 candidate.
+
+## D49 — The hardcore regression campaign: five governor bugs, one myth, all floors (2026-07-09)
+Dan called for hardcore testing after the BR2 stack landed; the grinder paid for itself.
+GOVERNOR (all fixed same-day, each with a synthetic-harness regression test):
+(1) escalating fail-hold; (2) burst-to-max on persistent slip; (3) fail memory must only
+arm BELOW f_max (boot slips at max banned all sinking — the GBC 1008-pin, found by gate
+telemetry showing signal=SLACK/p95 7.7ms with a frozen ceiling); (4) bursts only on TRUE
+size changes (same-size SET_GEOMETRY resyncs re-fired selectScaler); (5) BUSY no longer
+erases slack progress (sporadic ~20ms stall windows starved the 4-consecutive-slack rule).
+Verdict after fixes, cross-device: GBA/FC/SUPA/MD at-or-below historic floors, PS1 cruising
+1008 with correct scene bursts, GBC honestly holding ~1008 (gen craters to 20.7 at 408 —
+the +2ms-vs-07-03 scene-cost audit is filed, it is NOT a governor defect).
+THE SLEEP "CRASHES" WERE A MYTH: every mid-campaign reboot traced to api.c's designed
+fallback (idle 2min -> deep sleep; 3 failed suspends OR the disable-deep-sleep flag ->
+clean PWR_powerOff). The flag literally guarantees poweroff-after-idle — the Deep Sleep
+tool should say so (task filed). Unattended harnesses need input pokes (L3; NOT L2 — L2
+toggles FF and poisoned one run's floors).
+THPS2 IN-LEVEL A/B (automated level-runner, recorded input sequence): threading Off vs On
+both settle at the 1008 bracket floor, 60/60, 0 underruns. The GPU-thread-off baseline
+moved the single-thread gameplay floor from ~1584 (thread-campaign estimate) to 1008 —
+PS1 frontend threading is now moot for this class; its value concentrates on SuperFX SNES.
+15BPP MDEC HUNT: probe core over the full 44-game PS library — every FMV that decoded
+(BR2, Blood Omen, SotN, Wipeout XL at 14k blocks/2s) is 24bpp; zero 15bpp users found.
+Ship decision: yuv2rgb15 routed back to upstream scalar (d7332124) — unverified vector
+code does not ship hot; NEON15 returns if a verified specimen appears.
+Reusable harness artifacts from the campaign: single-arm floor runner, keep-awake poker
+daemon, and the visually-verified level-runner (press -> fb-capture -> confirm -> record).
