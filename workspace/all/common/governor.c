@@ -21,7 +21,6 @@ void PLAT_setCPUVoltForCeil(int khz);
 #define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
 #define GOV_T_CEIL_C   72      // hard back-off above this — always wins
 #define GOV_STEP_KHZ   216000  // one real OPP step (MEASURED gaps 192-216MHz; 108k snapped back up)
-#define GOV_UP_DWELL   1       // ticks of slip before climbing (climb fast)
 #define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
@@ -55,6 +54,7 @@ void gov_init(GovState* st, const GovProfile* p) {
 	st->slack_run = 0;
 	st->fail_khz = 0;
 	st->fail_hold = 0;
+	st->fail_streak = 0;
 }
 
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
@@ -66,8 +66,10 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		return st->ceil_khz;
 	}
 
-	// failed-floor memory decays each tick; on expiry allow one re-probe (scene may have lightened)
-	if (st->fail_hold > 0 && --st->fail_hold == 0) st->fail_khz = 0;
+	// failed-floor memory decays each tick; on expiry allow one re-probe (scene may have
+	// lightened). fail_khz itself is kept: if the re-probe slips again it's a repeat offense
+	// and the hold escalates (see the slip branch) instead of limit-cycling every ~60s.
+	if (st->fail_hold > 0) --st->fail_hold;
 
 	if (frame_overrun == GOV_SIGNAL_BUSY) {
 		// 2a) holding frame rate but with little headroom — do not probe lower (race-to-idle,
@@ -77,15 +79,25 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		st->slack_run = 0;
 	}
 	else if (frame_overrun) {
-		// 2) need more performance — climb fast, and remember the ceiling that proved too low
+		// 2) need more performance — climb fast, and remember the ceiling that proved too low.
+		// A slip at/below a ceiling that already failed is a repeat offense: escalate the hold
+		// (60s -> 2m -> 4m -> 8m) so known-bad probes become rare instead of periodic
+		// (BR2 480i screens 2026-07-09: the ~60s re-probe cycle was an audible slowdown burst).
+		if (st->fail_khz > 0 && st->ceil_khz <= st->fail_khz) {
+			if (st->fail_streak < 3) st->fail_streak++;
+		}
+		else st->fail_streak = 0;
 		if (st->ceil_khz > st->fail_khz) st->fail_khz = st->ceil_khz;
-		st->fail_hold = GOV_FAIL_HOLD;
+		st->fail_hold = GOV_FAIL_HOLD << st->fail_streak;
 		st->slip_run++;
 		st->slack_run = 0;
-		if (st->slip_run >= GOV_UP_DWELL && st->ceil_khz < p->f_max) {
-			st->ceil_khz += GOV_STEP_KHZ;
+		if (st->ceil_khz < p->f_max) {
+			// one step on the first slip tick; if the deficit survives that, burst straight
+			// to f_max — race-to-idle: a crawling climb is an audible multi-second slowdown,
+			// brief over-provisioning is not. The slow sink re-finds the level afterwards.
+			if (st->slip_run >= 2) st->ceil_khz = p->f_max;
+			else st->ceil_khz += GOV_STEP_KHZ;
 			if (st->ceil_khz > p->f_max) st->ceil_khz = p->f_max;
-			st->slip_run = 0;
 		}
 	} else {
 		// 3) have slack — probe downward (the cold win), but only when cool enough and not

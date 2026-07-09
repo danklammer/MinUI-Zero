@@ -32,6 +32,7 @@ typedef struct {
 	int slack_run; // consecutive ticks of frame slack
 	int fail_khz;  // highest ceiling that recently slipped — don't sink back to it while fail_hold>0
 	int fail_hold; // ticks until we may re-probe at/below fail_khz (prevents 600<->816 limit cycling)
+	int fail_streak; // consecutive re-probes that slipped again — escalates fail_hold (repeat offender)
 } GovState;
 
 // Named brackets from docs/thermal-governor-design.md (ASSUMED — verify the OPP ladder and
