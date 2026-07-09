@@ -231,10 +231,22 @@ static void test_boot_slip_at_max_still_sinks(void) {
 	      p->f_min, st.ceil_khz);
 }
 
+static void test_sink_despite_busy_noise(void) {
+	printf("[busy-noise] sporadic BUSY windows (fsync stalls) must not block sinking\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	// light game with a stall window every 3rd tick: SLACK,SLACK,BUSY,repeat
+	for (int i = 0; i < 120; i++)
+		gov_step(&st, p, 40, (i % 3 == 2) ? GOV_SIGNAL_BUSY : GOV_SIGNAL_SLACK);
+	CHECK(st.ceil_khz == p->f_min, "busy-noise pinned the ceiling at %d (want f_min=%d)",
+	      st.ceil_khz, p->f_min);
+}
+
 int main(void) {
 	printf("== governor synthetic harness ==\n");
 	test_cold_idle();
 	test_boot_slip_at_max_still_sinks();
+	test_sink_despite_busy_noise();
 	test_hot_ceiling();
 	test_hot_caps_below_max();
 	test_oscillation();
