@@ -615,3 +615,14 @@ with the 2GHz overclock; we do not, by charter (reaffirmed by Dan mid-investigat
 original user report is hereby explained: their NextUI comparison ran Performance=2000.
 Fixes kept from the dig: audio prefill gate (real, principled), audio-ring capacity note,
 per-minute drc/thr telemetry. The reporter reply: gameplay receipts + the honest boundary.
+
+## D47 addendum — replication closes it (2026-07-08, later still)
+Dan rejected the first closure ("still sounds like shit") — correctly: the tuning sweep had
+not run. It ran: psxclock=50+lighting-off scored 11 (hope!), psxclock=45 scored 30, and the
+50-replicate scored 30. Full series: 30/23/33/25/11/30/30 = ~27±7, one lucky outlier, seven
+configurations. NOTHING moves it. The MDEC-section boundary is now REPLICATED, not asserted.
+Methodology lesson recorded: single short-sequence runs carry ±7 noise — the 11 fooled us for
+one arm; conclusions need replicates (the 8-min benchmark pairs are long enough to be stable;
+3-min sequence probes are not). BR2 final state: gameplay flawless (multi-day receipts),
+non-interactive MDEC sections chop ~10 gaps/min on ANY stock-clock configuration; the only
+cure is the 2GHz overclock, declined by charter, twice, with eyes open.
