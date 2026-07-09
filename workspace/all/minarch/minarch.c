@@ -5297,9 +5297,11 @@ int main(int argc , char* argv[]) {
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? (max_ff_speed + 1) : 1000) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
+					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
 					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
-					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
+					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
+					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
 					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
 					// the per-frame work measurement is unreliable while presentation is skipping,
 					// and the user is explicitly asking for speed. Sinking resumes when FF ends.

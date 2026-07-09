@@ -55,6 +55,8 @@ void gov_init(GovState* st, const GovProfile* p) {
 	st->fail_khz = 0;
 	st->fail_hold = 0;
 	st->fail_streak = 0;
+	st->presink_khz = 0;
+	st->since_sink = 255;
 }
 
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
@@ -70,6 +72,7 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	// lightened). fail_khz itself is kept: if the re-probe slips again it's a repeat offense
 	// and the hold escalates (see the slip branch) instead of limit-cycling every ~60s.
 	if (st->fail_hold > 0) --st->fail_hold;
+	if (st->since_sink < 255) st->since_sink++;
 
 	if (frame_overrun == GOV_SIGNAL_BUSY) {
 		// 2a) holding frame rate but with little headroom — do not probe lower (race-to-idle,
@@ -92,10 +95,16 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		st->slip_run++;
 		st->slack_run = 0;
 		if (st->ceil_khz < p->f_max) {
-			// one step on the first slip tick; if the deficit survives that, burst straight
-			// to f_max — race-to-idle: a crawling climb is an audible multi-second slowdown,
-			// brief over-provisioning is not. The slow sink re-finds the level afterwards.
-			if (st->slip_run >= 2) st->ceil_khz = p->f_max;
+			// Recovery sizing, cheapest-adequate first (every extra tick under target is
+			// audible — BR2 char select 2026-07-09: probe to 1008 on a ~1584 screen = crunch):
+			// 1) the slip arrived right after a sink -> that probe CAUSED it; undo it in one
+			//    tick by restoring the pre-sink ceiling;
+			// 2) big deficit (>=10% under target) -> jump straight to f_max;
+			// 3) small deficit -> one step, then f_max if it survives a second tick.
+			if (st->since_sink < 8 && st->presink_khz > st->ceil_khz)
+				st->ceil_khz = st->presink_khz;
+			else if (frame_overrun == GOV_SIGNAL_BIGSLIP || st->slip_run >= 2)
+				st->ceil_khz = p->f_max;
 			else st->ceil_khz += GOV_STEP_KHZ;
 			if (st->ceil_khz > p->f_max) st->ceil_khz = p->f_max;
 		}
@@ -109,6 +118,8 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		if (next_khz < p->f_min) next_khz = p->f_min;
 		int not_failed = (st->fail_hold == 0) || (next_khz > st->fail_khz);
 		if (st->slack_run >= GOV_DN_DWELL && cool_enough && not_failed && st->ceil_khz > p->f_min) {
+			st->presink_khz = st->ceil_khz; // remembered so a probe-caused slip undoes in one tick
+			st->since_sink = 0;             // (thermal sinks deliberately don't set these: temp wins)
 			st->ceil_khz = next_khz;
 			st->slack_run = 0;
 		}
