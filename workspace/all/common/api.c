@@ -1028,6 +1028,9 @@ static struct SND_Context {
 	int rate_adjust_ppm;    // dynamic rate control: pace the core to the panel's true rate
 	
 	int buffer_seconds;     // current_audio_buffer_size
+	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
+	                        // on an empty ring guarantees startup underruns — the choppy
+	                        // logo/demo audio on PS1, ear-found 2026-07-08)
 	SND_Frame* buffer;		// buf
 	size_t frame_count; 	// buf_len
 	
@@ -1163,6 +1166,14 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 	SND_selectResampler();
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
+	if (snd.prefilling) {
+		int queued = snd.frame_in - snd.frame_out;
+		if (queued < 0) queued += snd.frame_count;
+		if (queued >= snd.frame_count * 2 / 5) { // ~40% full: start the DAC
+			snd.prefilling = 0;
+			SDL_PauseAudio(0);
+		}
+	}
 	
 	// return frame_count; // TODO: tmp, silent
 	
@@ -1247,7 +1258,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	SND_selectResampler();
 	SND_resizeBuffer();
 	
-	SDL_PauseAudio(0);
+	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
 
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
@@ -1269,7 +1280,7 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	spec_in.callback = SND_audioCallback;
 
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error (resume): %s\n", SDL_GetError());
-	SDL_PauseAudio(0);
+	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
 	if (!snd.initialized) return;
