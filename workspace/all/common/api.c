@@ -1173,10 +1173,16 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 	SND_selectResampler();
 }
 static int SND_ringLow(void) {
+	// hysteresis: start bursting below 1/2, keep bursting until 2/3 (~130ms) — the
+	// measured MDEC stalls are 42-60ms, so the refloor must exceed them with margin.
+	// (First attempt refilled to only 25% ≈ 50ms and still chopped — ear-caught.)
+	static int bursting = 0;
 	if (!snd.initialized || snd.frame_count <= 0) return 0;
 	int queued = snd.frame_in - snd.frame_out;
 	if (queued < 0) queued += snd.frame_count;
-	return queued < snd.frame_count / 4;
+	if (bursting) { if (queued >= snd.frame_count * 2 / 3) bursting = 0; }
+	else          { if (queued <  snd.frame_count / 2)      bursting = 1; }
+	return bursting;
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	if (snd.prefilling) {
