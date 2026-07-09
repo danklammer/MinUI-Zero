@@ -675,3 +675,15 @@ once, briefly, inaudibly — the closed-loop thesis in one trace. Also caught du
 per-game cfgs snapshot ALL core options at save time, so any pre-v1.3 saved PS game cfg pins
 gpu_thread_rendering=auto forever — release notes must tell users to re-save or reset
 per-game settings on PS titles (or minarch grows a migration; lean answer TBD).
+
+## D48 second addendum — scene-change burst + Crisp restored (2026-07-09)
+The last residue, ear-caught: brief crunch at TRANSITIONS (title->demo, VS card). Cause:
+scene changes land on whatever clock the governor had settled for the previous scene; the
+climb happened after the slip. Fix (35d941c7): gov_burst() — a video-mode/geometry switch is
+an early-warning bell that fires BEFORE the new scene's cost, so the ceiling jumps to f_max
+at the announcement and the sink ladder re-finds the floor afterward. Event-driven, no
+polling. Hooked at the selectScaler trigger in minarch (fires only on real source-size change).
+Crisp A/B: PASSED both judges — with the minimal-prescale fix, Crisp == Soft on the worst
+480i screens (0 underruns/90s, same probe ladder, floor 1152) and the look was approved.
+Crisp stays the shipped default; the Soft diagnostic line removed from the device cfg.
+Ear-verified transitions clean. The v1.3 candidate stack is complete.
