@@ -733,3 +733,28 @@ Ship decision: yuv2rgb15 routed back to upstream scalar (d7332124) — unverifie
 code does not ship hot; NEON15 returns if a verified specimen appears.
 Reusable harness artifacts from the campaign: single-arm floor runner, keep-awake poker
 daemon, and the visually-verified level-runner (press -> fb-capture -> confirm -> record).
+
+## D50 — The floor brownout: undervolt vs light load, caught by variety testing (2026-07-09)
+Every "GBC crash" in the campaign was one bug: a calibrated-undervolt device REBOOTS within
+minutes when a light game dwells at the 408 floor. Dr. Mario never triggered it (its attract
+scene pins ~1008); Donkey Kong sinks to 408 and died twice, heartbeat-documented (final
+words: game=1 cur=408000, then power loss). Controlled A/B/A on the same scene:
+UV on -> dead in ~2.5 min; ZERO_NO_UV=1 -> 12 min clean; UV on + floor guard -> 12 min clean.
+ROOT CAUSE (physics, consistent with all data): the P2 calibration proved 762.5mV under
+STRESS; a game idling at the floor puts the TCS4838 buck into light-load/PFM mode where the
+same undervolted rail is not stable. Stress-proof != idle-proof — a calibration-methodology
+gap, now recorded.
+FIX (8c02bd31): PLAT_setCPUVoltForCeil holds STOCK voltage below an 816MHz ceiling. Idle
+current at the floor is tiny (the delta saved uW), the measured UV wins live at the high
+OPPs, so the guard costs ~nothing. Future calibrations must add idle-dwell arms per OPP.
+Exposure: opt-in feature (calibrated devices only) — but OUR two devices are exactly that,
+and any Tune Voltage user would have hit it. Ship-blocker caught before ship.
+Credit where due: Dan's "test different games" call found in one afternoon what the
+first-rom sweep design would never have hit.
+Also shipped same evening: Stay Awake dev tool (workspace/tg5040/dev-tools/, never
+packaged) — blocks all autosleep + WiFi power-save via the existing /tmp/stay_awake flag,
+reboot-persistent; ends the harness sleep-roulette documented in D49. Codex audit round 2
+verified NEON MDEC scalar-equivalence independently and yielded 5 fixes (0b0c76a5): hard
+1.8GHz choke clamp, unconditional uv restore, clean-slate auto-thread trials, watchdog-gated
+calibration, full-chain make targets; C11-atomics telemetry hardening deferred to v1.4
+deliberately (post-soak sync rewrites invalidate certification).
