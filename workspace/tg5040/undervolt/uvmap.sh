@@ -50,7 +50,13 @@ pin() {
 	sleep 1
 }
 
-# watchdog petter: keep-alive every 5s; if the machine locks, the dog fires (~16s)
+# watchdog petter: keep-alive every 5s; if the machine locks, the dog fires (~16s).
+# REFUSE to calibrate without it — a marginal voltage can hang the machine indefinitely
+# instead of rebooting-and-recording-a-cliff (Codex audit 2026-07-09).
+if ! ( exec 3<> /dev/watchdog ) 2>/dev/null; then
+	echo "uvmap: /dev/watchdog unavailable — refusing to run an unprotected calibration"
+	exit 1
+fi
 ( exec 3<> /dev/watchdog || exit 0
   while [ -f /tmp/uvmap.running ]; do echo k >&3; sleep 5; done
   printf 'V' >&3 # magic close: disarm cleanly when the campaign exits on its own

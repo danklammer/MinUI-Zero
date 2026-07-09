@@ -5366,6 +5366,14 @@ int main(int argc , char* argv[]) {
 							if (!thread_video && gov_state.ceil_khz >= TA_TRIAL_THRESHOLD_KHZ) {
 								// fighting for headroom: trial threading
 								ta_base_ceil = gov_state.ceil_khz;
+								// the trial's verdict = "did the ceiling sink a full step?" —
+								// single-thread fail memory (holds up to 8 min) would block
+								// the very sink being tested and falsely persist a "0"
+								// verdict forever. Judge the trial from a clean slate
+								// (Codex audit 2026-07-09).
+								gov_state.fail_khz = 0;
+								gov_state.fail_hold = 0;
+								gov_state.fail_streak = 0;
 								toggle_thread = 1;
 								ta_phase = 1;
 								LOG_info("auto-thread: trial ON (ceil %d)\n", ta_base_ceil);
@@ -5543,11 +5551,15 @@ int main(int argc , char* argv[]) {
 		}
 	}
 
-	PLAT_restoreCPUVolt(); // before the launcher touches max_freq (always-safe stock write)
 	Menu_quit();
 	QuitSettings();
-	
+
 finish:
+
+	// Always-safe stock voltage restore — MUST sit below the finish label so early-exit
+	// paths (failed core.load_game etc.) restore too, not just the clean-quit path
+	// (Codex audit 2026-07-09). Harmless when the uv engine never armed.
+	PLAT_restoreCPUVolt();
 
 	tlm_quit(); // benchmark: flush + close the CSV (no-op unless enabled)
 
