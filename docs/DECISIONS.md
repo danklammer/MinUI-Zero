@@ -600,3 +600,18 @@ equally — comparisons stand; absolute cc figures are dim-screen values).
 Review roster for this feature, final: 3 self-audits, fork adversary, blind reviewer, a
 16-arm benchmark campaign, Dan's ears (3 real bugs), Codex (6 real bugs). Every reviewer
 found something all the others missed.
+
+## D47 — The BR2 audio-chop investigation: a hardware-class boundary (2026-07-08, late)
+Dan's ears reopened the case the counters had closed. Systematic exoneration ladder, each arm
+measured on the exact logo->demo sequence (underruns): governor (30 at PINNED 1800 — not
+clocks), revived DRC (chop survived the revert — not DRC; but the revival DID chop PS1
+separately and was reverted, see D46), ring capacity 5->12 frames (33 — not buffering),
+DAC prefill gate at 40% (23 — kept: right on principle, adapted from NextUI), pcsx Threaded
+SPU (25 — not SPU contention). Invariance across every lever = structural: telemetry shows
+42-60ms MDEC decode frames; during each, audio production halts beyond what any ring rides.
+CONCLUSION: BR2's non-interactive sections exceed the A133P's stock-clock realtime capability
+in pcsx. Gameplay is measured-flawless (60/60 fights, zero underruns). Others cover this class
+with the 2GHz overclock; we do not, by charter (reaffirmed by Dan mid-investigation). The
+original user report is hereby explained: their NextUI comparison ran Performance=2000.
+Fixes kept from the dig: audio prefill gate (real, principled), audio-ring capacity note,
+per-minute drc/thr telemetry. The reporter reply: gameplay receipts + the honest boundary.
