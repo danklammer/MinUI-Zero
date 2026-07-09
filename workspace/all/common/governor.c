@@ -86,12 +86,19 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		// A slip at/below a ceiling that already failed is a repeat offense: escalate the hold
 		// (60s -> 2m -> 4m -> 8m) so known-bad probes become rare instead of periodic
 		// (BR2 480i screens 2026-07-09: the ~60s re-probe cycle was an audible slowdown burst).
-		if (st->fail_khz > 0 && st->ceil_khz <= st->fail_khz) {
-			if (st->fail_streak < 3) st->fail_streak++;
+		// Fail memory only arms for a ceiling BELOW f_max: a slip while already fully
+		// provisioned proves nothing about lower clocks (no probe failed), and remembering
+		// it blocked ALL sinking — boot-load slips at f_max pinned GBC at 1008 for up to
+		// 8 min (the escalated hold), refreshed forever by borderline slips. Found by the
+		// 2026-07-09 gate telemetry: signal=SLACK, p95 7.7ms/16.7ms, ceiling frozen.
+		if (st->ceil_khz < p->f_max) {
+			if (st->fail_khz > 0 && st->ceil_khz <= st->fail_khz) {
+				if (st->fail_streak < 3) st->fail_streak++;
+			}
+			else st->fail_streak = 0;
+			if (st->ceil_khz > st->fail_khz) st->fail_khz = st->ceil_khz;
+			st->fail_hold = GOV_FAIL_HOLD << st->fail_streak;
 		}
-		else st->fail_streak = 0;
-		if (st->ceil_khz > st->fail_khz) st->fail_khz = st->ceil_khz;
-		st->fail_hold = GOV_FAIL_HOLD << st->fail_streak;
 		st->slip_run++;
 		st->slack_run = 0;
 		if (st->ceil_khz < p->f_max) {

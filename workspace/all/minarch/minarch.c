@@ -3106,9 +3106,14 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// if source has changed size (or forced by dst_p==0)
 	// eg. true src + cropped src + fixed dst + cropped dst
 	if (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h) {
+		// burst only on a TRUE size change — same-size re-inits (SET_GEOMETRY aspect
+		// resyncs, menu returns) fire selectScaler too, and bursting on those pinned
+		// GBC at 1008 instead of its 408 floor (gambatte resyncs periodically; caught
+		// by the 2026-07-09 regression sweep). A real scene switch changes dimensions.
+		int size_changed = (width!=renderer.true_w || height!=renderer.true_h);
 		selectScaler(width, height, pitch);
 		GFX_clearAll();
-		gov_burst(&gov_state, &gov_profile); // scene change: provision before the cost lands
+		if (size_changed) gov_burst(&gov_state, &gov_profile); // provision before the cost lands
 	}
 	
 	// debug
@@ -5338,6 +5343,13 @@ int main(int argc , char* argv[]) {
 						int next = gov_sink_target(&gov_state, &gov_profile);
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						{ // ZERO_GOV_DEBUG=1: periodic gate telemetry (why does/doesn't it sink?)
+							static int zgd = -1, zgd_n = 0;
+							if (zgd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zgd = (e && e[0] && e[0] != '0') ? 1 : 0; }
+							if (zgd && (++zgd_n % 10) == 0)
+								LOG_info("gov-gate: p95=%dus budget=%dus next=%d signal=%d ceil=%d gen=%.1f\n",
+									p95, budget_us, next, frame_overrun, gov_state.ceil_khz, cpu_double);
+						}
 					}
 					// auto-threading state machine (evaluated at tick cadence; cheap).
 					// A menu, sleep, or FF pause mid-window invalidates the comparison

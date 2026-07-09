@@ -217,9 +217,24 @@ static void test_tick_io(void) {
 	}
 }
 
+static void test_boot_slip_at_max_still_sinks(void) {
+	printf("[boot-slip] slips at f_max must not arm fail memory (GBC 1008-pin, 2026-07-09)\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	// boot churn: several slip ticks while fully provisioned (load spikes at f_max)
+	for (int i = 0; i < 6; i++) gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
+	CHECK(st.fail_khz == 0, "slip at f_max armed fail memory (fail_khz=%d)", st.fail_khz);
+	CHECK(st.fail_hold == 0, "slip at f_max armed a hold (fail_hold=%d)", st.fail_hold);
+	// then a genuinely light workload: the controller must be free to sink to the floor
+	for (int i = 0; i < 40; i++) gov_step(&st, p, 40, GOV_SIGNAL_SLACK);
+	CHECK(st.ceil_khz == p->f_min, "post-boot light load should reach f_min=%d, stuck at %d",
+	      p->f_min, st.ceil_khz);
+}
+
 int main(void) {
 	printf("== governor synthetic harness ==\n");
 	test_cold_idle();
+	test_boot_slip_at_max_still_sinks();
 	test_hot_ceiling();
 	test_hot_caps_below_max();
 	test_oscillation();
