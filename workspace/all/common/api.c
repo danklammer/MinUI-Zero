@@ -225,6 +225,7 @@ int GFX_didOverrun(void) {
 	return frame_overran;
 }
 
+static int SND_ringLow(void); // defined after the snd context (audio-priority catch-up)
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
 void GFX_flip(SDL_Surface* screen) {
@@ -235,6 +236,12 @@ void GFX_flip(SDL_Surface* screen) {
 	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
+	// AUDIO-PRIORITY CATCH-UP: when the ring runs low (MDEC/FMV frames stall production
+	// for 42-60ms and nothing in the old design ever refilled occupancy — capacity was
+	// never the problem), skip this vsync wait so the core immediately produces the next
+	// frame: a brief burst refills the ring. An occasional unpaced video frame during
+	// already-choppy FMV is imperceptible; an audio gap is not. (BR2 saga, 2026-07-08)
+	if (should_vsync && SND_ringLow()) should_vsync = 0; // ring below 25%: catch up
 	uint64_t flip_t0 = getMicroseconds();
 	PLAT_flip(screen, should_vsync);
 	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
@@ -1164,6 +1171,12 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 	snd.rate_adjust_ppm = ppm;
 	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
 	SND_selectResampler();
+}
+static int SND_ringLow(void) {
+	if (!snd.initialized || snd.frame_count <= 0) return 0;
+	int queued = snd.frame_in - snd.frame_out;
+	if (queued < 0) queued += snd.frame_count;
+	return queued < snd.frame_count / 4;
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	if (snd.prefilling) {
