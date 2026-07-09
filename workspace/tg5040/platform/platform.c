@@ -625,6 +625,8 @@ void PLAT_enableBacklight(int enable) {
 }
 
 void PLAT_powerOff(void) {
+	PLAT_restoreCPUVolt(); // stock voltage for the shutdown path (Codex audit; no-op if uv never armed)
+
 	// break the MinUI.pak/launch.sh while loop
 	unlink("/tmp/minui_exec");
 	sleep(2);
@@ -657,6 +659,10 @@ int PLAT_supportsDeepSleep(void) { return 1; } // tg5040/Brick can suspend-to-RA
 static int uv_last_ceiling = 0;
 static void uv_ceilingWrite(int khz) {
 	if (khz <= 0) return;
+	// HARD stock cap at the choke point: the kernel exposes a 2.0GHz OC OPP, and env
+	// overrides (MINARCH_FMIN/FMAX) or third-party paks could request it. The charter
+	// is no-overclock-ever — enforce it where EVERY ceiling writer passes (Codex audit).
+	if (khz > 1800000) khz = 1800000;
 	if (khz > uv_last_ceiling) {
 		PLAT_setCPUVoltForCeil(khz);
 		putInt(MAX_FREQ_PATH, khz);

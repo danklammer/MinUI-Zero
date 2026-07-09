@@ -167,5 +167,7 @@ package: tidy
 .DEFAULT:
 	# ----------------------------------------------------
 	# $@
-	@echo "$(PLATFORMS)" | grep -q "\b$@\b" && (make common PLATFORM=$@) || (exit 1)
+	# a bare platform target (eg. `make tg5040`) runs the full release chain — without
+	# setup/package it died at final packaging with nothing staged (Codex audit 2026-07-09)
+	@echo "$(PLATFORMS)" | grep -q "\b$@\b" && (make setup && make common PLATFORM=$@ && make special && make package && make done) || (exit 1)
 	
