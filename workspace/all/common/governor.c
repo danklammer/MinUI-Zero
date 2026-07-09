@@ -75,11 +75,14 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	if (st->since_sink < 255) st->since_sink++;
 
 	if (frame_overrun == GOV_SIGNAL_BUSY) {
-		// 2a) holding frame rate but with little headroom — do not probe lower (race-to-idle,
-		// D14/D21: saturated-at-a-low-clock is the anti-pattern), but nothing is slipping, so
-		// don't climb either.
+		// 2a) holding frame rate but with little headroom — do not probe lower this tick
+		// (race-to-idle, D14/D21), but nothing is slipping, so don't climb either.
+		// BUSY no longer ERASES slack progress: rare stall frames (SRAM fsync, ~20ms)
+		// sprinkle BUSY windows through otherwise-idle games, and a hard reset meant the
+		// 4-consecutive-slack requirement never accumulated — GBC pinned at 1008 with
+		// p95=7.7ms/16.7 (2026-07-09 gate telemetry). A wrong sink is cheap now (one-tick
+		// probe-undo + BIGSLIP-to-max + fail memory), so the gate can afford leniency.
 		st->slip_run = 0;
-		st->slack_run = 0;
 	}
 	else if (frame_overrun) {
 		// 2) need more performance — climb fast, and remember the ceiling that proved too low.
