@@ -626,3 +626,33 @@ one arm; conclusions need replicates (the 8-min benchmark pairs are long enough 
 3-min sequence probes are not). BR2 final state: gameplay flawless (multi-day receipts),
 non-interactive MDEC sections chop ~10 gaps/min on ANY stock-clock configuration; the only
 cure is the 2GHz overclock, declined by charter, twice, with eyes open.
+
+## D48 — D47 overturned: the "hardware boundary" was four software layers (2026-07-09)
+Codex's profile-first roadmap cracked what seven invariant configurations couldn't: the MDEC
+profiler split the 42-60ms frames into rl2blk+idct (~80ms/2s) vs yuv2rgb (~115ms/2s) and the
+split counters caught BR2 decoding EXCLUSIVELY on the 24bpp path (blocks15=0) — the first
+NEON port (yuv2rgb15) was dead code and only the counters could have said so. Four fixes,
+each measured on-device, all at stock 1800:
+(1) NEON yuv2rgb24 — 115→50ms/2s window; attract underruns 27±7/run → ~0-1/11min (the D47
+    "boundary" itself). Ships in patches/pcsx_rearmed.patch, fresh-clone-proven.
+(2) Crisp scaler's fixed 4x NN prescale made 480i menus into 2048x1920 GPU render targets
+    (~1GB/s fill on the GE8300) — present blocked, machine slowed, CPU idle. Now: smallest
+    integer prescale that reaches the panel (2x for 480-line; 240p unchanged at 4x).
+(3) Governor limit-cycled on heavy screens (sink into a known-bad ceiling every FAIL_HOLD
+    expiry = audible collapse ~every 60s). Now: repeat-offender holds escalate 60s→2m→4m→8m
+    and a slip that survives one climb step bursts straight to f_max (race-to-idle: brief
+    over-provisioning is inaudible; a crawling climb is not). Harness green.
+(4) THE decisive layer: pcsx's async GPU thread (upstream default-on for multicore) —
+    gpu_async's scanout-sync handshake serialized emu<->gpu threads on 480i screens (both
+    half-idle, gen 41/60 at pinned max; raw work = 86% of ONE core). Config-only fix:
+    pcsx_rearmed_gpu_thread_rendering=disabled, now the PS.pak default on both devices.
+    Fights: HUD-verified 60/60 @1800/39C.
+The no-OC charter survives with arithmetic teeth: the 2GHz OC is +11% against a 46% deficit —
+NextUI/CrossMix users running this game overclocked are still degraded on these screens and
+NEITHER fork touches any of the four causes (both ship async-GPU-on + brute-force clock).
+Codex's speculative gpu_async scanout patch was reviewed and unwound (dormant once the thread
+is off; preserved in .notes/upstream/ as an upstream PR candidate). Threading verdicts learned
+under the old baseline are void — PS sidecars cleared, PS1 bench rows re-run before v1.3.
+Lesson for the record: D47's replication was sound but its conclusion over-reached — we
+replicated the SYMPTOM's invariance across knobs we had, not the absence of causes we hadn't
+found. "Hardware boundary" claims need a profile, not just an exoneration ladder.
