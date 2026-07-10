@@ -144,6 +144,16 @@ and the system appears, tuned core already installed.
 - **Fresh:** unzip `MinUI-Zero-*-base.zip` onto a blank FAT32 SD card.
 - **Update:** drop the new zip on the card root and reboot — it self-applies.
 
+## Disclaimer
+
+MinUI Zero is unofficial personal firmware. Use it at your own risk.
+
+Installing or updating custom firmware can cause data loss, broken saves, failed boots, SD card corruption, unexpected crashes, or other device issues. Back up your SD card, saves, BIOS files, and ROMs before installing.
+
+MinUI Zero changes low-level behavior including CPU scaling, sleep, resume, power management, and optional per-device CPU optimization. These features are designed to fail safely, but no firmware can guarantee that every SD card, device revision, battery condition, or user setup will behave perfectly.
+
+This project is provided as-is, without warranty of any kind. The author and contributors are not responsible for lost data, damaged devices, bricked handhelds, corrupted SD cards, battery issues, overheating, failed updates, or any other problems resulting from use of this software.
+
 ## Credits
 
 Built on [MinUI](https://github.com/shauninman/MinUI) by Shaun Inman. Deep sleep from
@@ -151,4 +161,6 @@ Built on [MinUI](https://github.com/shauninman/MinUI) by Shaun Inman. Deep sleep
 [MyMinUI](https://github.com/Turro75/MyMinUI) and [NextUI](https://github.com/LoveRetro/NextUI);
 the dynamic rate control idea comes from [RetroArch](https://github.com/libretro/RetroArch);
 the power-off haptic cue idea from [SpruceOS](https://github.com/spruceUI/spruceOS).
-An independent fork — not affiliated with any of them.
+An independent personal fork — not affiliated with, endorsed by, or supported by any of them.
+See [`LICENSE.md`](LICENSE.md) for license, provenance, and support notes, and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for detailed attribution.
