@@ -57,6 +57,9 @@ if [ -f "$SHARED_USERDATA_PATH/dev-stay-awake" ]; then
 	touch /tmp/stay_awake
 	iw dev wlan0 set power_save off 2>/dev/null
 	iwconfig wlan0 power off 2>/dev/null
+	# net-keeper self-heals a wedged wifi driver (dev tool file; absent on shipped cards)
+	NK="$SDCARD_PATH/Tools/$PLATFORM/Stay Awake.pak/net-keeper.sh"
+	[ -f "$NK" ] && ( /bin/sh "$NK" </dev/null >/dev/null 2>&1 ) &
 fi
 
 # model detection: NO caching — the SD card can move between a Brick and a Smart Pro

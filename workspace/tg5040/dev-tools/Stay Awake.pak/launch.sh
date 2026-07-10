@@ -27,16 +27,20 @@ keep WiFi active (dev/testing)." "TURN ON" "BACK" || exit 0
 	touch "$FLAG_PERSIST"
 	touch /tmp/stay_awake
 	wifi_awake
+	# net-keeper: pings the gateway and bounces wlan0 when the driver wedges
+	( /bin/sh "$(dirname "$0")/net-keeper.sh" </dev/null >/dev/null 2>&1 ) &
 	sync
 	say.elf "Stay Awake is ON.
 
-No autosleep, WiFi stays active.
+No autosleep, WiFi stays active
+and self-heals if it stalls.
 Survives reboots. Battery will drain."
 else
 	confirm.elf --ok "Stay Awake On" "No autosleep, WiFi stays active.
 Battery drains at the full rate." "" "BACK" "TURN OFF"
 	[ "$?" = "2" ] || exit 0
 	rm -f "$FLAG_PERSIST" /tmp/stay_awake
+	# net-keeper exits on its own when the flag disappears (checked each loop)
 	wifi_normal
 	sync
 	say.elf "Stay Awake is off.
