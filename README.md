@@ -35,6 +35,8 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Optimize CPU power reduction | **Up to 20% less CPU power at the same clock** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
 | PlayStation battery life | **~6.5-7 hours** measured on tuned hardware |
+| Bloody Roar II, a game other firmwares handle with the 2.0GHz overclock | **Full speed at stock clocks**, 35-40°C |
+| Tony Hawk's Pro Skater 2, measured in-level | **60fps at 1008 MHz** — just over half the stock maximum clock |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
 | Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
@@ -52,7 +54,8 @@ The governor and Optimize CPU figures come from separate tests, so they are list
 | **Deep sleep by default** | Suspend-to-RAM keeps your place and wakes almost instantly |
 | **Stock bugs fixed** | Hot-running NES settings, crackling audio, hanging quit menus, and LEDs turning themselves back on |
 | **Smoother gameplay** | Panel-matched pacing, improved audio resampling, and roughly one frame less input latency |
-| **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware |
+| **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware, including NEON-accelerated PlayStation video decoding |
+| **Multithreading (Auto)** | Games are measured on your device and threaded only when that provably lowers the clock |
 | **Safer failure handling** | Bad ROMs exit cleanly, mid-game resolution changes are handled, and saves are written safely |
 | **Menu clock (opt-in)** | Time next to the battery, in the menu and pause screen — Tools -> Clock to enable |
 | **Charging screen** | Idle on the charger shows a dim battery display, then sleeps — cooler charging, honest percentages |
