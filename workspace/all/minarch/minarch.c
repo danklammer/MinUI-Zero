@@ -1824,6 +1824,12 @@ static void Menu_saveState(void);
 static void Menu_loadState(void);
 
 static int setFastForward(int enable) {
+	{ // ZERO_GOV_DEBUG: trace every FF transition + caller context (FF-busted hunt 2026-07-10)
+		static int zfd = -1;
+		if (zfd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd = (e && e[0] && e[0] != '0') ? 1 : 0; }
+		if (zfd && fast_forward != enable)
+			LOG_info("ff-trace: %d -> %d (thread_video=%d was_threaded=%d)\n", fast_forward, enable, thread_video, was_threaded);
+	}
 	if (!fast_forward && enable && thread_video) {
 		// LOG_info("entered fast forward with threaded core...\n");
 		was_threaded = 1;
@@ -1888,9 +1894,13 @@ static void input_poll_callback(void) {
 				}
 			}
 			else if (i==SHORTCUT_HOLD_FF) {
-				// don't allow turn off fast_forward with a release of the hold button 
+				// don't allow turn off fast_forward with a release of the hold button
 				// if it was initially turned on with the toggle button
 				if (PAD_justPressed(btn) || (!toggled_ff_on && PAD_justReleased(btn))) {
+					{ static int zfd2 = -1;
+					  if (zfd2 < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd2 = (e && e[0] && e[0] != '0') ? 1 : 0; }
+					  if (zfd2) LOG_info("ff-trace: HOLD branch fired (btn=0x%x jp=%d jr=%d ip=%d toggled=%d)\n",
+					      btn, PAD_justPressed(btn), PAD_justReleased(btn), PAD_isPressed(btn), toggled_ff_on); }
 					fast_forward = setFastForward(PAD_isPressed(btn));
 					if (mapping->mod) ignore_menu = 1; // very unlikely but just in case
 				}
@@ -5358,6 +5368,13 @@ int main(int argc , char* argv[]) {
 						ta_phase = 0; ta_phase_at = 0;
 						toggle_thread = 1; // abort the trial: back to single, re-observe later
 						LOG_info("auto-thread: trial aborted (menu/FF interrupted the window)\n");
+					}
+					// FF during OBSERVATION poisons the baseline the same way: an FF-pinned
+					// ceiling makes FF-release look like a huge sink -> false "threaded"
+					// commit (reconstructed from Bomberman's bogus sidecar, 2026-07-10).
+					// Restart the observation clock whenever FF runs in phase 0.
+					if (thread_auto && ta_phase == 0 && fast_forward) {
+						ta_phase_at = 0;
 					}
 					if (thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
 						uint32_t ta_now = SDL_GetTicks();
