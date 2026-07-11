@@ -75,11 +75,35 @@ fi
 
 # ---------- STATE 2: calibration in progress (armed, resuming across reboots) ----------
 if [ -f "$UV_DIR/ARMED" ]; then
-	say.elf "Measuring...
+	MLOG="$UV_DIR/margins.log"
+	DONE_N=$(grep -cE "^[0-9]+ (CLIFF|DONE)" "$MLOG" 2>/dev/null)
+	[ -n "$DONE_N" ] || DONE_N=0
+	LAST=$(grep "uV survived" "$MLOG" 2>/dev/null | tail -1 | awk '{f=$3; sub(/:/,"",f); printf "%d MHz: %.1f mV ok", f/1000, $4/1000}')
+	if [ "$STATUS" != "Charging" ] && [ "$STATUS" != "Full" ]; then
+		confirm.elf --ok "Measurement PAUSED
 
-Keep it charging.
-The device restarts itself several times.
-Done in about 90 minutes."
+Not charging. Progress: $DONE_N of 8
+steps done. Plug in the charger and
+restart to resume." "" "BACK" "CANCEL"
+		if [ "$?" = "2" ]; then
+			confirm.elf "Cancel Measurement?
+
+Progress is kept; re-run
+Optimize CPU to resume later." "CANCEL IT" "BACK" || exit 0
+			rm -f "$UV_DIR/ARMED"
+			sync
+			say.elf "Measurement cancelled.
+
+Factory voltages remain active."
+		fi
+	else
+		say.elf "Measuring... $DONE_N of 8 steps done.
+${LAST:-Warming up.}
+
+Keep it charging. The device
+restarts itself several times.
+Check back here any time."
+	fi
 	exit 0
 fi
 
@@ -98,7 +122,9 @@ confirm.elf "Before You Start
 * Reboots are always factory-safe.
   This cannot damage your device." "START" "BACK" || exit 0
 
-if [ "$STATUS" = "Discharging" ]; then
+# require an affirmative charging state — the PMIC also reports "Not charging",
+# which the old != Discharging test let through (armed-but-paused-forever trap)
+if [ "$STATUS" != "Charging" ] && [ "$STATUS" != "Full" ]; then
 	say.elf "Connect the charger first,
 then run Optimize CPU again."
 	exit 0
