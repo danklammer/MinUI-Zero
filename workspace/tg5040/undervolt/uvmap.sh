@@ -162,11 +162,20 @@ for OPP in $OPPS; do
 	while [ "$UV" -gt "$FLOOR" ]; do
 		UV=$((UV - STEP))
 		echo "$OPP $UV" > "$STATE"; sync   # if we reboot past here, this point crashed
-		"$BIN/uvtool" set "$UV" >> "$LOG" 2>&1 || { echo "$OPP uvtool-refused at $UV" >> "$LOG"; break; }
+		# userspace deadman: a SOFT wedge (CPU stuck but procd still feeding the hw dog)
+		# hangs the campaign forever — the procd-held-watchdog path can't catch it.
+		# If this round runs far past budget, force the reboot ourselves; the breadcrumb
+		# above then records this voltage as the cliff. (Live-fired 2026-07-11: chip
+		# wedged mid-campaign and needed a manual power cut.)
+		( sleep $((STRESS_SECS + 120)) && reboot -f ) &
+		DEADMAN=$!
+		"$BIN/uvtool" set "$UV" >> "$LOG" 2>&1 || { kill $DEADMAN 2>/dev/null; echo "$OPP uvtool-refused at $UV" >> "$LOG"; break; }
 		if ! "$BIN/stress" $STRESS_SECS >> "$LOG" 2>&1; then
+			kill $DEADMAN 2>/dev/null
 			echo "$OPP CLIFF $UV (stress-fail)" >> "$LOG"; sync
 			break
 		fi
+		kill $DEADMAN 2>/dev/null
 		echo "$(date +%T) opp $OPP: $UV uV survived" >> "$LOG"; sync
 	done
 	[ "$UV" -le "$FLOOR" ] && echo "$OPP DONE floor $FLOOR reached, no cliff" >> "$LOG"
