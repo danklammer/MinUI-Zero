@@ -1,5 +1,10 @@
 # Addendum (2026-07-11): powersave modes, frame-rate receipts, energy, undervolt
 
+> **Superseded by three-firmware-benchmark-202607.md** (the consolidated report), which
+> also corrects three figures below: the captured fps logs cover the final ~3.3 minutes
+> of each cell, not the full 8 — NextUI drop rates are ~12/s (auto) and ~15/s
+> (Powersave), and stock Powersave's video floor is 10.7 fps.
+
 Extends three-firmware-real-20260710.md with four measurement passes run the following day
 on the same TESTER multiboot card and Brick. Raw CSVs + fps logs in bench3-real-raw/.
 
@@ -31,22 +36,24 @@ contested cells, then restored the shipped binaries. Patches: .notes/upstream/*-
 
 | Config | Verdict | Evidence |
 |---|---|---|
-| stock Powersave (1200) | **FAILS — ~15 fps video** | own fps counter: 14.6-17.7 fps (core ticks 60/s, so audio is clean — a fluid-audio slideshow) |
-| NextUI Powersave (816) | **FAILS — ~6 drops/sec** | own drop counter: +2,886 drops/cell |
-| NextUI auto (1800, default) | **FAILS — ~5 drops/sec** | +2,340 drops/cell |
-| NextUI Performance (2000 OC) | **holds** | +5 drops/cell |
+| stock Powersave (1200) | **FAILS — ~11-18 fps video** | own fps counter: 10.7-17.7 fps (core ticks 60/s, so audio is clean — a fluid-audio slideshow) |
+| NextUI Powersave (816) | **FAILS — ~15 drops/sec** | own drop counter: +2,886 over the logged final ~3.3 min |
+| NextUI auto (1800, default) | **FAILS — ~12 drops/sec** | +2,340 over the logged window; fps dipped to 53.4 |
+| NextUI Performance (2000 OC) | **holds** | +5 over the logged window |
 | Zero default (modal 1008) | **holds** | D48 HUD receipts (60/60), 0 underruns campaign-wide |
-| NextUI Powersave, THPS2 | holds | +1 drop/cell — the community "1008-1200 works" report is right *for THPS2* |
+| NextUI Powersave, THPS2 | holds | +1 in the logged window — the community "1008-1200 works" report is right *for THPS2* |
 
-Only two configurations hold BR2 at full speed: **Zero at modal 1008 / ~30 mAh / 37.7°C***
-and **NextUI Performance at 2000 locked / 90 mAh / 46.5°C (50.6 peak)**. Double the clock,
-triple the energy, +9°C, for the same on-screen result. See br2-hero.png.
+Only two configurations hold BR2 at full speed: **Zero at modal 1008 / 37.7°C** and
+**NextUI Performance at 2000 locked / 46.5°C (50.6 peak)**. Double the clock and +8.8°C
+for the same on-screen result; the energy comparison (~3×) rests on an instrumented cell
+and is indicative (see §3). See br2-hero.png.
 
 ## 3. Energy (AXP2202 coulomb counter, per 8-min cell)
 
 The fuel gauge steps in 30 mAh quanta, so only multi-quantum deltas are claims:
 - THPS2: Zero 30 · stock 30 · NextUI **60** (their GL pipeline + daemons cost real current)
-- BR2 at full speed: Zero **30** vs NextUI Performance **90** — 3×.
+- BR2 at full speed: Zero **30** (shipped binary) vs NextUI Performance **90** (instrumented
+  cell — indicative only, see next bullet) — ~3×.
 - Instrumented NextUI cells read 90 across modes (logging + late-chain heat inflate them;
   compare only shipped-binary cells across firmwares).
 
