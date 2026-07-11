@@ -77,7 +77,9 @@ Real values captured over SSH on the Brick; the ASSUMED placeholders above are n
 - **Thermal zone: thermal_zone0 = cpu_thermal_zone** (confirmed). zone1=gpu, zone2=ddr, zone3=battery.
 - **Battery: axp2202-battery** (path fixed). `current_now` is EMPTY on the AXP2202 -> no instantaneous
   power; mJ/frame must use capacity-drain, not V*I. `voltage_now`=4.03V, `capacity`=98%.
-- **Undervolt: NOT feasible at runtime** — all regulators (incl. tcs4838-dcdc0=0.9V, axp2202-cpusldo)
-  are read-only (`-r--r--r--`). Needs a custom DTB. Spike stays OFF. VERDICT DELIVERED.
+- **Undervolt: ~~NOT feasible at runtime~~ SUPERSEDED** — sysfs regulators are read-only, but the
+  shipped implementation writes the TCS4838 VSEL registers directly over i2c-6 (gated on a
+  per-chip calibration table + eFUSE serial + VSEL decode match; see platform.c uv_* and the
+  Optimize CPU tool). Line kept for history: the sysfs finding was correct, the verdict was not.
 - **Deep sleep: `mem` supported** (`/sys/power/state` = `freeze mem`). Suspend-to-RAM will work.
 - **2.0GHz** IS an exposed OPP (cpuinfo_max=2000000) but we keep the 1.8 cap (no overclock).

@@ -1,5 +1,11 @@
 # DTB undervolt primer — the last big lever, and why it's not as scary as it sounds
 
+> **HISTORICAL (2026-07-11):** runtime undervolting shipped via direct PMIC i2c instead of a
+> DTB (see the Optimize CPU tool + platform.c uv_*). Voltage figures below came from the vendor
+> DTB as read at writing time and differ from the measured per-OPP stock values in
+> docs/bench/receipts/uv-calibration/margins.log — trust the receipts. A DTB approach remains
+> unimplemented research.
+
 *Status: educational / research. Nothing here is implemented. Facts are marked
 **[KNOWN]** (verified), **[LIKELY]** (standard Allwinner behavior, verify on-device), or
 **[PROBE]** (must be measured before any real work).*
