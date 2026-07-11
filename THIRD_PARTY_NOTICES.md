@@ -1,6 +1,6 @@
 # Third-party notices / provenance
 
-This is a community fork of `shauninman/MinUI`. We borrow and adapt code from sibling
+This is an independent personal fork of `shauninman/MinUI`. It borrows and adapts code from sibling
 forks freely; this file records what was taken and from where, so provenance is preserved.
 Add an entry whenever code or a non-trivial technique is imported, with the donor repo,
 branch, and commit SHA(s).

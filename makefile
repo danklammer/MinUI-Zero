@@ -163,7 +163,18 @@ package: tidy
 	# v1: ONE download. Base is the whole product — 6 systems shown, extra systems dormant in
 	# .system (add a Roms folder to unlock), and the 4 curated Tools. No extras zip to maintain.
 	cp -R ./build/EXTRAS/Tools ./build/BASE/Tools
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools trimui MinUI.zip README.txt .metadata_never_index .fseventsd
+	# license compliance (audit 2026-07-11): GPL'd cores ship as binaries, so their license
+	# texts, the fork's own terms, and a corresponding-source statement travel in the artifact.
+	mkdir -p ./build/BASE/LICENSES
+	cp LICENSE.md THIRD_PARTY_NOTICES.md ./build/BASE/LICENSES/
+	for d in ./workspace/$(PLATFORM)/cores/src/*/; do \
+		n=$$(basename $$d); \
+		for f in COPYING COPYING.LIB LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
+			if [ -f "$$d$$f" ]; then mkdir -p ./build/BASE/LICENSES/$$n && cp "$$d$$f" ./build/BASE/LICENSES/$$n/; fi; \
+		done; \
+	done; true
+	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI (tag matching version.txt inside MinUI.zip/.system).\nEmulator cores are built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that tag; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################
