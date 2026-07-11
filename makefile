@@ -19,7 +19,7 @@ endif
 ###########################################################
 
 BUILD_HASH:=$(shell git rev-parse --short HEAD)
-ZERO_VERSION=v1.2.0
+ZERO_VERSION=v1.3.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
@@ -152,8 +152,12 @@ package: tidy
 	mkdir -p ./build/PAYLOAD
 	mv ./build/SYSTEM ./build/PAYLOAD/.system
 	cp -R ./build/BOOT/.tmp_update ./build/PAYLOAD/
-	
-	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update
+	# Tools ship INSIDE the updater payload too: existing users update by dropping
+	# MinUI.zip alone (per README), and tool fixes must reach them (audit 2026-07-11 —
+	# v1.3's Optimize CPU fixes would otherwise never reach v1.2 cards).
+	cp -R ./build/EXTRAS/Tools ./build/PAYLOAD/Tools
+
+	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update Tools
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
 	# v1: ONE download. Base is the whole product — 6 systems shown, extra systems dormant in

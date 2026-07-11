@@ -808,6 +808,16 @@ static int uv_init(void) {
 		uv_table[uv_n].khz = khz; uv_table[uv_n].uv = uv; uv_n++;
 	}
 	fclose(f);
+	// ENVELOPE NORMALIZATION: the voltage held for a ceiling must cover EVERY OPP the
+	// kernel can pick beneath it, so rows must be non-decreasing. Real tables can measure
+	// non-monotonic (this Brick: 1800 cliffed below 1608); raise such rows to the running
+	// max — still >= their own measured-safe value, and the by-ceiling lookup then covers
+	// all lower OPPs by construction.
+	for (int i = 1; i < uv_n; i++) if (uv_table[i].uv < uv_table[i-1].uv) {
+		LOG_info("uv: normalizing non-monotonic row %dkHz %duV -> %duV\n",
+			uv_table[i].khz, uv_table[i].uv, uv_table[i-1].uv);
+		uv_table[i].uv = uv_table[i-1].uv;
+	}
 	if (!uv_n) { LOG_info("uv: table invalid, staying stock\n"); pthread_mutex_unlock(&uv_init_lock); return 0; }
 	int fd = open(UV_I2C_DEV, O_RDWR);
 	if (fd < 0) { pthread_mutex_unlock(&uv_init_lock); return 0; }
@@ -867,11 +877,19 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	// ceiling brownout-reboot the device within minutes (DK parked at the 408 floor died
 	// twice with UV on, ran 12 min clean with UV off). The calibration proved the floor
 	// voltage under STRESS; a game idling at the floor puts the buck in light-load mode
-	// where the same rail is not stable. Idle current is tiny — the delta saves uW here
-	// and the measured wins live at the high OPPs — so hold STOCK below 816MHz.
-	if (khz < 816000) uv = UV_STOCK_MAX;
-	else for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
-	if (!uv) uv = UV_STOCK_MAX; // ceiling above table: run stock volts
+	// where the same rail is not stable — so run STOCK voltage below an 816MHz ceiling.
+	// "Stock" means STAND DOWN (uv_target=0: the hold thread stops and the kernel's own
+	// per-OPP stock voltages rule). The previous code held UV_STOCK_MAX here — the TOP
+	// OPP's 1187.5mV against a 408MHz clock whose real stock is 762.5mV, actively
+	// overvolting exactly the light loads this guard exists to protect (audit 2026-07-11).
+	if (khz >= 816000)
+		for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
+	if (!uv) { // low ceiling, or ceiling above the table: stock rules, stop holding
+		pthread_mutex_lock(&uv_lock);
+		uv_target = 0;
+		pthread_mutex_unlock(&uv_lock);
+		return;
+	}
 	// The kernel RE-ASSERTS its stock voltage on every DVFS transition, so the register is
 	// the only truth — read it and rewrite when it drifted (one i2c read per tick, ~2Hz).
 	pthread_mutex_lock(&uv_lock);

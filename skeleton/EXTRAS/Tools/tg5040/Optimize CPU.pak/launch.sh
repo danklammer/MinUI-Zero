@@ -17,6 +17,17 @@ for f in uvtool stress uvmap.sh; do
 	fi
 done
 
+# archive_campaign: retire EVERY artifact of a previous campaign before starting a new
+# one. Leaving any behind is unsafe: table.conf+table.model without table.chip lets the
+# runtime's model-string fallback apply another chip's voltages after a card swap, and a
+# stale margins.log/state would seed gen_table with the old chip's cliffs (audit 2026-07-11).
+archive_campaign() {
+	[ -f "$UV_DIR/margins.log" ] && mv "$UV_DIR/margins.log" "$UV_DIR/margins.log.prev" 2>/dev/null
+	rm -f "$UV_DIR/table.conf" "$UV_DIR/table.model" "$UV_DIR/table.chip" \
+	      "$UV_DIR/calibration" "$UV_DIR/RETRIES" "$UV_DIR/state" "$UV_DIR/ARMED"
+	sync
+}
+
 STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 
 # ---------- STATE 3b: calibrated, but for a DIFFERENT chip (card swapped) ----------
@@ -30,17 +41,18 @@ device. Every chip is different, so
 the tuning is not applied here.
 
 Optimize this device now?" "OPTIMIZE" "BACK" || exit 0
-	rm -f "$UV_DIR/calibration" "$UV_DIR/table.chip"
+	archive_campaign # a different chip: EVERYTHING from the old campaign must go
 	# fall through to the charger check + arming below
 elif [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	. "$UV_DIR/calibration" 2>/dev/null
-	# derive rough headline benefits from the measured margin (V^2 -> ~1.6x the mV% in power)
+	# headline from the APPLIED reduction (V^2 -> ~1.6x the mV% in rail power). No
+	# temperature claim: degrees depend on the game and chassis, not derivable here.
 	MV=${min_margin_mv:-0}
 	PCT=$(( MV * 16 / 120 ))          # ~% CPU-rail power saved at the top clock
-	COOL=$(( MV / 30 ))               # ~degrees C cooler in heavy games
-	[ "$COOL" -lt 1 ] && COOL=1
-	confirm.elf --ok "CPU Optimized" "${PCT}% less CPU power. ${COOL}C cooler.
-Tuned to this exact chip." "" "BACK" "MANAGE"
+	[ "$PCT" -lt 1 ] && PCT=1
+	confirm.elf --ok "CPU Optimized" "About ${PCT}% less CPU power
+at full load. Tuned to this
+exact chip." "" "BACK" "MANAGE"
 	RC=$?
 	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
 
@@ -69,7 +81,7 @@ Launch a game to apply."
 	confirm.elf "Re-measure This Chip?
 
 Takes ~90 min. Keep it charging." "RE-RUN" "BACK" || exit 0
-	rm -f "$UV_DIR/calibration"
+	archive_campaign # fresh campaign: no stale cliffs/table may leak into the new table
 	# fall through to arm
 fi
 
@@ -94,6 +106,7 @@ Optimize CPU to resume later." "CANCEL IT" "BACK" || exit 0
 			sync
 			say.elf "Measurement cancelled.
 
+Stops within about a minute.
 Factory voltages remain active."
 		fi
 	else

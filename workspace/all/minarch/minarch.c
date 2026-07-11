@@ -1447,6 +1447,7 @@ static void Config_free(void) {
 	if (config.system_cfg) free(config.system_cfg);
 	if (config.default_cfg) free(config.default_cfg);
 	if (config.user_cfg) free(config.user_cfg);
+	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
 	Config_readOptionsString(config.system_cfg);
@@ -5125,6 +5126,12 @@ int main(int argc , char* argv[]) {
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+	int legacy_tv = 0; // pre-rename minarch_thread_video (v1.2 cfgs) — must read while user_cfg is alive
+	{
+		char lv[256]; int llock = 0; // Config_getValue writes up to 256 bytes, always
+		if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", lv, &llock) && !llock)
+			legacy_tv = (lv[0]=='O' && lv[1]=='n') ? 1 : 2;
+	}
 	Config_free();
 		
 	SND_init(core.sample_rate, core.fps);
@@ -5139,11 +5146,7 @@ int main(int argc , char* argv[]) {
 		// explicit, machinery stands down. (Replaces cfg-layer sniffing, which broke
 		// on device-tagged config filenames.)
 		int tv = config.frontend.options[FE_OPT_THREAD].value;
-		if (tv == 0) { // legacy alias: minarch_thread_video (pre-rename) maps to explicit On/Off
-			char lv[16]; int llock = 0;
-			if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", lv, &llock) && !llock)
-				tv = (lv[0]=='O' && lv[1]=='n') ? 1 : 2;
-		}
+		if (tv == 0) tv = legacy_tv; // legacy alias read above, before Config_free
 		if (tv == 1) { thread_video = 1; thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
 		else if (tv == 2) { thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
 		else {

@@ -79,16 +79,24 @@ GUARD=50000 # -50mV guardband below each measured cliff
 
 gen_table() {
 	# Build table.conf from the log: for each OPP, guardband below its CLIFF; for OPPs that
-	# reached the floor without cracking, use the floor (already the safe minimum we tested).
+	# reached the floor without cracking (explicit DONE), guardband above the tested floor.
+	# REFUSE to publish unless every OPP carries a verdict: a refused uvtool write or
+	# malformed state can leave an OPP with neither CLIFF nor DONE, and guessing "floor"
+	# for an untested OPP would apply an unproven voltage (audit 2026-07-11).
 	OUT="$UV_DIR/table.conf"
+	for OPP in 408000 600000 816000 1008000 1200000 1416000 1608000 1800000; do
+		grep -q "^$OPP CLIFF\|^$OPP DONE" "$LOG" 2>/dev/null || {
+			echo "$(date +%T) gen_table: $OPP has no CLIFF/DONE verdict — refusing to publish" >> "$LOG"
+			return 1
+		}
+	done
 	: > "$OUT.tmp"
 	for OPP in 408000 600000 816000 1008000 1200000 1416000 1608000 1800000; do
 		CLIFF=$(grep "^$OPP CLIFF" "$LOG" 2>/dev/null | tail -1 | awk "{print \$3}")
 		if [ -n "$CLIFF" ]; then
 			UV=$((CLIFF + GUARD))
 		else
-			# DONE at floor without cracking: guardband ABOVE the tested floor, same
-			# philosophy as cliff+GUARD (first production run shipped the raw floor — fixed)
+			# explicit DONE at floor without cracking (verified present above)
 			UV=$((FLOOR + GUARD))
 		fi
 		# quantize down to a 12.5mV step and clamp to [FLOOR..stock-safe]
@@ -105,29 +113,46 @@ gen_table() {
 	# chip binding: the eFUSE serial is unique per die — the table belongs to THIS chip only
 	CHIP=$(grep sunxi_serial /sys/class/sunxi_info/sys_info 2>/dev/null | awk -F: "{print \$2}" | tr -d " \t")
 	[ -n "$CHIP" ] && echo "$CHIP" > "$UV_DIR/table.chip"
-	# state file for the Tune Voltage tool: worst-case margin summary
-	MINMARGIN=999000
+	# state file for the tool UI: worst-case APPLIED reduction at the high OPPs —
+	# stock voltage minus the PUBLISHED table row (cliff+guard), not stock-to-cliff.
+	# The UI's benefit claims must describe what production actually applies
+	# (audit 2026-07-11: the old stock-to-cliff figure overstated the benefit).
+	MINSAVE=999000
 	for OPP in 1200000 1416000 1608000 1800000; do
-		C=$(grep "^$OPP CLIFF" "$LOG" | tail -1 | awk "{print \$3}")
-		[ -z "$C" ] && continue
+		APPLIED=$(grep "^$OPP " "$OUT" | awk "{print \$2}")
+		[ -z "$APPLIED" ] && continue
 		STOCK=$(grep "opp $OPP: stock" "$LOG" | tail -1 | awk "{print \$5}")
-		[ -z "$STOCK" ] && continue
 		case "$STOCK" in *[!0-9]*|"") continue;; esac
-		M=$((STOCK - C))
-		[ "$M" -gt 0 ] && [ "$M" -lt "$MINMARGIN" ] && MINMARGIN=$M
+		M=$((STOCK - APPLIED))
+		[ "$M" -lt 0 ] && M=0
+		[ "$M" -lt "$MINSAVE" ] && MINSAVE=$M
 	done
 	{
 		echo "calibrated=$(date +%Y-%m-%d)"
-		echo "min_margin_mv=$((MINMARGIN/1000))"
+		echo "min_margin_mv=$((MINSAVE/1000))" # key kept for compat; value = applied reduction
 	} > "$UV_DIR/calibration"
 	sync
 }
 
 finish() {
 	rm -f /tmp/uvmap.running
-	gen_table
-	echo "$(date +%T) campaign COMPLETE — table.conf written, disarming" >> "$LOG"
-	rm -f "$UV_DIR/ARMED" "$STATE"
+	if gen_table; then
+		echo "$(date +%T) campaign COMPLETE — table.conf written, disarming" >> "$LOG"
+		rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES"
+	else
+		# incomplete: some OPP has no verdict. Stay armed so the resume loop re-runs
+		# just the missing OPPs next boot — but cap retries so a persistently failing
+		# OPP can't reboot-loop the device forever.
+		N=$(cat "$UV_DIR/RETRIES" 2>/dev/null); [ -n "$N" ] || N=0
+		N=$((N + 1)); echo "$N" > "$UV_DIR/RETRIES"
+		if [ "$N" -ge 3 ]; then
+			echo "$(date +%T) campaign INCOMPLETE after $N attempts — giving up, no table published (stock voltages remain)" >> "$LOG"
+			rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES"
+		else
+			echo "$(date +%T) campaign incomplete (attempt $N) — staying armed to retry missing OPPs" >> "$LOG"
+			rm -f "$STATE"
+		fi
+	fi
 	sync
 	reboot
 }
@@ -160,6 +185,20 @@ for OPP in $OPPS; do
 	echo "$(date +%T) opp $OPP: stock $UV uV, stepping down" >> "$LOG"; sync
 
 	while [ "$UV" -gt "$FLOOR" ]; do
+		# re-check disarm and charger EVERY round (audit 2026-07-11: cancel used to be
+		# read only at startup, so a running campaign outlived the user's cancel; and a
+		# yanked charger mid-campaign kept stressing on battery)
+		if [ ! -f "$UV_DIR/ARMED" ]; then
+			echo "$(date +%T) opp $OPP: cancelled mid-campaign — stopping cleanly" >> "$LOG"
+			rm -f "$STATE" /tmp/uvmap.running; sync
+			exit 0
+		fi
+		CHG=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
+		if [ "$CHG" != "Charging" ] && [ "$CHG" != "Full" ]; then
+			echo "$(date +%T) opp $OPP: charger lost mid-campaign — pausing (resumes next charged boot)" >> "$LOG"
+			rm -f "$STATE" /tmp/uvmap.running; sync
+			exit 0
+		fi
 		UV=$((UV - STEP))
 		echo "$OPP $UV" > "$STATE"; sync   # if we reboot past here, this point crashed
 		# userspace deadman: a SOFT wedge (CPU stuck but procd still feeding the hw dog)
