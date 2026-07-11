@@ -96,10 +96,12 @@ signal. Same game, same duration, shipped binaries:
 | stock default (1608) | 30 mAh |
 | NextUI auto | 60 mAh |
 
-One BR2 comparison exists only via an instrumented cell (disclosed exception): NextUI
-Performance BR2 consumed 90 mAh where Zero's (shipped, undervolted) BR2 cell consumed
-30 mAh. The instrumented build's logging overhead is negligible but the cell ran late
-in a warm chain; treat the 3× as indicative, the 2× THPS2 figure as solid.
+By the stated rule, none of these single-cell deltas is conclusive on its own: 30 vs 60
+is a one-quantum gap whose true-value ranges overlap. The THPS2 comparison (2×) and the
+BR2 Performance comparison (3×, via an instrumented cell run late in a warm chain) are
+therefore both **indicative**; confirming them needs longer or repeated windows. They
+point the same direction as the load-average and clock data, which is why they are
+reported at all.
 
 Undervolt A/B (Zero, UV on vs off, back-to-back): the difference is **below the gauge's
 30 mAh resolution** in 8-minute cells. The supportable statement is the rail arithmetic
@@ -154,8 +156,10 @@ docs/bench/receipts/.
 
 ## Corrections (2026-07-11 re-verification)
 
-Two figures published in the addendum were wrong and are corrected here: NextUI drop
-rates were computed against the full 8-minute cell, but the captured logs cover only
-the final ~3.3 minutes — the correct rates are ~12/s (auto) and ~15/s (Powersave), not
-~5/s and ~6/s. Stock Powersave's BR2 video floor is 10.7 fps, not 14.6. The direction
-of every conclusion is unchanged; the magnitudes were understated.
+Three figures published in the addendum were wrong or overstated and are corrected
+here: NextUI drop rates were computed against the full 8-minute cell, but the captured
+logs cover only the final ~3.3 minutes — the correct rates are ~12/s (auto) and ~15/s
+(Powersave), not ~5/s and ~6/s. Stock Powersave's BR2 video floor is 10.7 fps, not
+14.6. And the THPS2 energy comparison was called "solid" despite being a one-quantum
+gauge difference — it is indicative, per this document's own resolution rule. The
+direction of every conclusion is unchanged.

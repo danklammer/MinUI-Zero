@@ -19,6 +19,7 @@ All A/B pairs measure ATTRACT/INTRO content, not player gameplay: THPS2/DKC/Alad
 true engine demos (representative); Yoshi/Mario RPG/AC2 measure intro sequences (coprocessors
 active, lighter than player load). Threading DELTAS are robust to this (heavier scenes give
 threading more present-path cost to remove); ABSOLUTE floors are attract-mode figures — real
-gameplay sits somewhat higher. Player-load verification: hands-on HUD sessions (pending).
+gameplay sits somewhat higher. Player-load verification: THPS2 in-level HUD sessions confirmed
+60/60 at the same 1008 floor (D48, 2026-07-09); broader per-game gameplay passes remain future work.
 - DIM CAVEAT (2026-07-08): unattended arms ran with the 30s idle dim active after their
   first 30s (both arms equally). A/B comparisons unaffected; absolute cc values = dim-screen.

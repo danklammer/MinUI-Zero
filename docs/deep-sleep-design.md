@@ -1,6 +1,8 @@
 # Deep sleep (suspend-to-RAM) — idle-heat lever
 
-> **STATUS (2026-07-01): shipped + validated on-device + enabled** (opt-in `enable-deep-sleep`).
+> **STATUS (2026-07-11): shipped, validated on-device, ON BY DEFAULT** (opt-OUT via the Deep
+> Sleep tool's `disable-deep-sleep` flag). Earlier drafts below describing an opt-in flag are
+> historical design notes, not current behavior.
 > On-device: **33 → 27°C, clean resume, no `EBUSY`.** The "On-device validation" checklist below is done.
 
 The governor handles **active gameplay** heat. This handles the other half: **idle/menu/
