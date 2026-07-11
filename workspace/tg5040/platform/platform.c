@@ -878,9 +878,12 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	// twice with UV on, ran 12 min clean with UV off). The calibration proved the floor
 	// voltage under STRESS; a game idling at the floor puts the buck in light-load mode
 	// where the same rail is not stable — so run STOCK voltage below an 816MHz ceiling.
-	// "Stock" means STAND DOWN (uv_target=0: the hold thread stops and the kernel's own
-	// per-OPP stock voltages rule). The previous code held UV_STOCK_MAX here — the TOP
-	// OPP's 1187.5mV against a 408MHz clock whose real stock is 762.5mV, actively
+	// "Stock" means STAND DOWN (uv_target=0: the hold thread stops writing). The kernel
+	// re-asserts its per-OPP stock voltage on the next DVFS transition; at a PINNED floor
+	// (no transitions) the register simply retains the last held table voltage — which is
+	// always >= stock for every OPP at or below the old ceiling, so never a brownout risk
+	// (gate-verified 2026-07-11: 812.5mV retained at 408MHz vs 762.5 stock). The previous
+	// code actively held UV_STOCK_MAX here — the TOP OPP's 1187.5mV against a 408MHz clock,
 	// overvolting exactly the light loads this guard exists to protect (audit 2026-07-11).
 	if (khz >= 816000)
 		for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
