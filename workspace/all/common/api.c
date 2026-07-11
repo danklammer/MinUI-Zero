@@ -1097,8 +1097,14 @@ static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 	SDL_LockAudio();
 	
 	int buffer_bytes = snd.frame_count * sizeof(SND_Frame);
-	snd.buffer = realloc(snd.buffer, buffer_bytes);
-	
+	void* grown = realloc(snd.buffer, buffer_bytes);
+	if (!grown) { // OOM: keep the old ring (and its old frame_count) rather than crash
+		snd.frame_count = snd.buffer ? snd.frame_count : 0;
+		SDL_UnlockAudio();
+		LOG_info("SND_resizeBuffer: realloc(%i) failed, keeping previous ring\n", buffer_bytes);
+		return;
+	}
+	snd.buffer = grown;
 	memset(snd.buffer, 0, buffer_bytes);
 	
 	snd.frame_in = 0;
@@ -1265,7 +1271,13 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 	
-	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error: %s\n", SDL_GetError());
+	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
+		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
+		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
+		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
+		snd.initialized = 0;
+		return;
+	}
 	
 	snd.buffer_seconds = 12; // ring CAPACITY (~200ms), not latency — latency is occupancy,
 	                         // set by the production/consumption balance. 5 frames (83ms)
@@ -1299,7 +1311,13 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 
-	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error (resume): %s\n", SDL_GetError());
+	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
+		// resume failed: without a consumer the producer would fill the ring and stall
+		// forever — drop to silent-but-safe instead (audit 2026-07-11)
+		LOG_info("SDL_OpenAudio error (resume): %s — audio disabled\n", SDL_GetError());
+		snd.initialized = 0;
+		return;
+	}
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish

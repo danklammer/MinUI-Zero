@@ -3200,7 +3200,8 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 		}
 		if (!backbuffer) {
 			uint16_t* pixels = malloc(height*pitch);
-			backbuffer = SDL_CreateRGBSurfaceFrom(pixels, width, height, FIXED_DEPTH, pitch, RGBA_MASK_565);
+			if (pixels) backbuffer = SDL_CreateRGBSurfaceFrom(pixels, width, height, FIXED_DEPTH, pitch, RGBA_MASK_565);
+			if (!backbuffer) { free(pixels); return; } // OOM: drop this frame, latest-wins mailbox recovers on the next
 		}
 		
 		memcpy(backbuffer->pixels, data, backbuffer->h*backbuffer->pitch);
@@ -5118,8 +5119,10 @@ int main(int argc , char* argv[]) {
 	options_menu.items[1].desc = (char*)core.version;
 	
 	if (!Core_load()) {
-		// game failed to load — bail cleanly. The core is initialized but holds no game, so
-		// clear the flag to keep Core_quit from tearing down a game that isn't there.
+		// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
+		// run, but an initialized core still owes retro_deinit before dlclose: call it
+		// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
+		core.deinit();
 		core.initialized = 0;
 		goto finish;
 	}
@@ -5158,8 +5161,12 @@ int main(int argc , char* argv[]) {
 	if (thread_video) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-		pthread_create(&core_pt, NULL, &coreThread, NULL);
-		core_thread_alive = 1; // without this the quit-join is skipped -> dlclose SIGSEGV
+		if (pthread_create(&core_pt, NULL, &coreThread, NULL) == 0) {
+			core_thread_alive = 1; // without this the quit-join is skipped -> dlclose SIGSEGV
+		} else { // creation failed: fall back to single-threaded rather than deadlock waiting on a thread that never ran
+			LOG_info("thread_video: pthread_create failed, running single-threaded\n");
+			thread_video = 0; thread_auto = 0; ta_phase = 2;
+		}
 	}
 	toggle_thread = 0;  // config load must not leave a stale toggle armed (Codex #1)
 	game_running = 1;   // runtime toggles legal from here
@@ -5223,6 +5230,16 @@ int main(int argc , char* argv[]) {
 		
 		if (show_menu) {
 			park_core("menu"); // savestates must never overlap a running core.run
+			// a menu visit invalidates any in-flight auto-threading window HERE: the
+			// abort check in the tick path never observes show_menu because Menu_loop
+			// is synchronous and clears it before returning (audit 2026-07-11). Without
+			// this, menu wall-clock silently counted toward the timed comparison.
+			if (thread_auto && ta_phase == 1) {
+				ta_phase = 0; ta_phase_at = 0;
+				toggle_thread = 1; // abort the trial: back to single, re-observe later
+				LOG_info("auto-thread: trial aborted (menu opened mid-window)\n");
+			}
+			else if (thread_auto && ta_phase == 0) ta_phase_at = 0; // restart observation clock
 			Menu_loop();
 			// reset the rate window: a second that spans the menu would read as a false
 			// generation-rate drop and spuriously climb the governor on menu exit.
@@ -5251,8 +5268,12 @@ int main(int argc , char* argv[]) {
 				thread_video = 1;
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-				pthread_create(&core_pt, NULL, &coreThread, NULL);
-				core_thread_alive = 1;
+				if (pthread_create(&core_pt, NULL, &coreThread, NULL) == 0) {
+					core_thread_alive = 1;
+				} else {
+					LOG_info("thread toggle: pthread_create failed, staying single-threaded\n");
+					thread_video = 0;
+				}
 			}
 			else {
 				// disable: thread_video stays 1 until the join returns — the thread's
