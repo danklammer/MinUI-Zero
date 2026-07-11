@@ -54,15 +54,26 @@ pin() {
 # REFUSE to calibrate without it — a marginal voltage can hang the machine indefinitely
 # instead of rebooting-and-recording-a-cliff (Codex audit 2026-07-09).
 if ! ( exec 3<> /dev/watchdog ) 2>/dev/null; then
-	echo "uvmap: /dev/watchdog unavailable — refusing to run an unprotected calibration"
-	exit 1
+	# exclusive open failed — on procd systems (this BSP) PID 1 owns and feeds the dog
+	# full-time, which provides the same hang-reset guarantee: a lockup stops procd's
+	# feeding and the hardware dog fires. Proceed under procd protection; refuse only
+	# when NOBODY is petting the hardware.
+	if ls -l /proc/1/fd 2>/dev/null | grep -q watchdog; then
+		echo "uvmap: watchdog held by procd (PID 1) — proceeding under its feeder"
+		touch /tmp/uvmap.running
+		WDPID=""
+	else
+		echo "uvmap: /dev/watchdog unavailable — refusing to run an unprotected calibration"
+		exit 1
+	fi
+else
+	( exec 3<> /dev/watchdog || exit 0
+	  while [ -f /tmp/uvmap.running ]; do echo k >&3; sleep 5; done
+	  printf 'V' >&3 # magic close: disarm cleanly when the campaign exits on its own
+	) &
+	touch /tmp/uvmap.running
+	WDPID=$!
 fi
-( exec 3<> /dev/watchdog || exit 0
-  while [ -f /tmp/uvmap.running ]; do echo k >&3; sleep 5; done
-  printf 'V' >&3 # magic close: disarm cleanly when the campaign exits on its own
-) &
-touch /tmp/uvmap.running
-WDPID=$!
 
 GUARD=50000 # -50mV guardband below each measured cliff
 
