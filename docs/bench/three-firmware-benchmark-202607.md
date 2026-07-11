@@ -120,7 +120,7 @@ The mechanisms are separable, and were measured separately:
   color decoder (115→50 ms per 2-second window) and disables the emulator's async GPU
   thread, which serializes on this SoC (that change alone lowered THPS2's required
   clock from 1584 to 1008). The other firmwares ship the default core configuration and
-  compensate with clock. The decoder fix has been submitted upstream; if adopted, their
+  compensate with clock. The decoder fix is prepared for upstream submission; if adopted, their
   PS1 numbers should improve.
 - **Stack weight**: NextUI runs a GL render pipeline plus batmon/audiomon/gametimectl
   daemons — features with real costs that its users may value; the THPS2 energy row
