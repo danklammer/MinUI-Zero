@@ -64,7 +64,7 @@ out upstream; NextUI computes fps/drops for its on-screen debug HUD but does not
 them). To measure, we built instrumented builds from each project's own tree — stock:
 the author's own two debug lines uncommented (tag v20251127-1); NextUI: a 5-second log
 of the exact fields its HUD displays (main @ 1672c89a) — ran the cells below, then
-restored the shipped binaries. Patches (~35 lines each): .notes/upstream/*-instrumentation.patch.
+restored the shipped binaries. Patches (~35 lines each): docs/bench/receipts/ (stock-instrumentation.patch, nextui-instrumentation.patch).
 Instrumented builds were used only for these verdicts, with one disclosed exception in
 the Energy section.
 
@@ -150,7 +150,7 @@ The mechanisms are separable, and were measured separately:
 
 Everything above traces to bench3-real-raw/ (CSVs, *.fpslog, charts) and
 bench3-raw/ (the emulated three-policy pass). Instrumentation patches:
-.notes/upstream/stock-instrumentation.patch, nextui-instrumentation.patch.
+docs/bench/receipts/.
 
 ## Corrections (2026-07-11 re-verification)
 

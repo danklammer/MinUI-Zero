@@ -43,6 +43,19 @@ baselines our tree doesn't share. Not porting them **is** the thesis working.
 - **`CLOCK_MONOTONIC` timing** (MyMinUI) — complements our absolute-schedule pacer.
 - **Per-game config re-read on option republish** (NextUI) — cheap correctness.
 - **Wake-from-sleep shutdown fix** (MyMinUI) — reference for `feat/deep-sleep`.
+- **No Sleep tool — DEV-ONLY** (Dan, final call 2026-07-11: not user-facing; users don't
+  need it and the Tools menu stays minimal). One dev pak (successor of/same as "Stay Awake",
+  they were always meant to be the same tool): blocks idle autosleep, handles vendor dimtime,
+  keeps WiFi awake + net-keeper self-heal, persists via boot re-arm. Stays in
+  workspace/tg5040/dev-tools/, never packaged. Optional nicety if ever cheap: coffee-cup
+  status icon while active (dev-visible only — flag never set on user installs). Decision
+  kept for the record: NO icon for deep-sleep-disabled regardless.
+- **Zero-native HUD diagnostics** (idea from NextUI's debug HUD, `ma_video.c:689-722`; decided
+  2026-07-10) — extend OUR existing HUD toggle with the fields that serve the closed-loop story:
+  governor state (ceiling / last signal / sink+burst events), audio buffer fill vs target +
+  underrun counter, frame pacing (avg/max ms, drops), CPU usage%/clock/temp. Not a port — our
+  fields, our layout. Build alongside the FF-Audio work (it reopens the buffer machinery anyway).
+  Rationale: would have cut days off the BR2 saga; turns "sounds choppy" reports into two numbers.
 
 ## Sources exhausted
 - **upstream/main** — frozen at our exact sync point (`dbf89435`); we're a 100% superset.
@@ -52,7 +65,8 @@ baselines our tree doesn't share. Not porting them **is** the thesis working.
 ## 🚫 Consciously NOT adopting (bloat — out of scope by design)
 Box art / art scraping · WiFi / NTP / networking · Pak Store · RetroAchievements · ambient/LED ·
 shaders / overlays · cheat browsers · theme engines · added emulators (NDS, DOSBox, MAME, …) ·
-rewind · debug HUD · extra aspect ratios · multiplayer.
+rewind · extra aspect ratios · multiplayer. (debug HUD moved to backlog 2026-07-10 —
+Zero-native diagnostics version, see above.)
 
 ## 💡 Key insight
 MyMinUI *raised* its menu clock ~2× on weak SoCs (miyoomini/my282) because ultra-low felt

@@ -1,0 +1,34 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index dfa12b09..98de78ea 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -689,6 +689,14 @@ void GFX_flip(SDL_Surface *screen)
+ 
+ 	perf.fps = current_fps;
+ 	fps_counter++;
++	{ // bench instrumentation: 5s-cadence perf log (fields identical to the debug HUD)
++		static uint32_t last_perf_log = 0;
++		uint32_t now_perf_ms = SDL_GetTicks();
++		if (now_perf_ms - last_perf_log >= 5000) {
++			last_perf_log = now_perf_ms;
++			LOG_info("BENCHPERF fps=%.2f req=%.2f drops=%d buf=%d/%d\n", perf.fps, perf.req_fps, perf.frame_drops, perf.buffer_free, perf.buffer_target);
++		}
++	}
+ 
+ 	uint64_t performance_frequency = SDL_GetPerformanceFrequency();
+ 	uint64_t frame_duration = SDL_GetPerformanceCounter() - per_frame_start;
+@@ -747,6 +755,14 @@ void GFX_GL_Swap()
+ 
+ 	perf.fps = current_fps;
+ 	fps_counter++;
++	{ // bench instrumentation: 5s-cadence perf log (fields identical to the debug HUD)
++		static uint32_t last_perf_log = 0;
++		uint32_t now_perf_ms = SDL_GetTicks();
++		if (now_perf_ms - last_perf_log >= 5000) {
++			last_perf_log = now_perf_ms;
++			LOG_info("BENCHPERF fps=%.2f req=%.2f drops=%d buf=%d/%d\n", perf.fps, perf.req_fps, perf.frame_drops, perf.buffer_free, perf.buffer_target);
++		}
++	}
+ 
+ 	uint64_t performance_frequency = SDL_GetPerformanceFrequency();
+ 	uint64_t frame_duration = SDL_GetPerformanceCounter() - per_frame_start;

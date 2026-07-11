@@ -30,7 +30,7 @@ Stock and NextUI never log frame rate (stock's fps/underrun lines are commented 
 NextUI renders fps/drops to its debug HUD only). We built instrumented twins from their
 own trees — stock: the author's own two log lines uncommented (v20251127-1 tag); NextUI:
 a 5s-cadence log of the exact fields their HUD shows (main @ 1672c89a ≈ v6.12.0) — ran the
-contested cells, then restored the shipped binaries. Patches: .notes/upstream/*-instrumentation.patch.
+contested cells, then restored the shipped binaries. Patches: docs/bench/receipts/ (stock-instrumentation.patch, nextui-instrumentation.patch).
 
 **Bloody Roar II, 8-minute cells, by the firmwares' own counters:**
 
@@ -61,7 +61,7 @@ The fuel gauge steps in 30 mAh quanta, so only multi-quantum deltas are claims:
 
 First completed calibration on this chip (Optimize CPU campaign, 2026-07-11): min margin
 75 mV; 408-1008 MHz never cracked down to the tool floor (run at 812.5 mV); cliffs at
-1200/1416/1608/1800 = 800/875/1025/1012.5 mV. Full log: .notes/uv-calibration/.
+1200/1416/1608/1800 = 800/875/1025/1012.5 mV. Full log: docs/bench/receipts/uv-calibration/.
 
 - **Energy A/B (UV on vs off, back-to-back cells): delta below the gauge's 30 mAh
   resolution in 8-minute cells.** We say that plainly instead of claiming a number. The
