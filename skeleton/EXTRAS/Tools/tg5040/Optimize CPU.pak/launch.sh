@@ -117,14 +117,17 @@ Optimize this device now?" "OPTIMIZE" "BACK" || exit 0
 	# fall through to the charger check + arming below
 elif [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
 	load_calibration || exit 1
-	# headline from the APPLIED reduction (V^2 -> ~1.6x the mV% in rail power). No
-	# temperature claim: degrees depend on the game and chassis, not derivable here.
+	# headline from the APPLIED reduction (V^2 -> ~1.6x the mV% in rail power).
+	# Dan's original pitch copy (3a76f3a2), restored 2026-07-12: both figures are
+	# per-chip estimates — PCT is first-order V^2 at the top OPP; COOL is a rough
+	# heavy-game figure consistent with the measured 1416MHz A/B (27% less heat).
 	MV=${top_reduction_mv:-${min_margin_mv:-0}}
 	PCT=$(( MV * 200 / 1187 ))        # first-order V^2 estimate at the 1187.5mV top OPP
 	[ "$PCT" -lt 1 ] && PCT=1
-	confirm.elf --ok "CPU Optimized" "About ${PCT}% less CPU power
-at full load. Tuned to this
-exact chip." "" "BACK" "MANAGE"
+	COOL=$(( MV / 30 ))               # ~degrees C cooler in heavy games
+	[ "$COOL" -lt 1 ] && COOL=1
+	confirm.elf --ok "CPU Optimized" "${PCT}% less CPU power. ${COOL}C cooler.
+Tuned to this exact chip." "" "BACK" "MANAGE"
 	RC=$?
 	[ "$RC" != "2" ] && exit 0 # B (or anything but X): back to the menu
 
