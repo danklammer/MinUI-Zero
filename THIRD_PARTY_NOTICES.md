@@ -39,3 +39,22 @@ during sleep"). Reimplemented against our stock-MinUI `SND_*` engine, not copied
 `sunxi_display2.h` and `sunxi_ion.h` are Allwinner kernel UAPI headers, taken via MyMinUI
 (Turro75/MyMinUI, `workspace/m21/platform/`). Used only by the `/dev/disp` recon probe to match the
 A133P display-engine ioctl ABI. Kernel-origin headers (GPL); attribution retained as courtesy.
+
+---
+
+## Shipped third-party binaries (release-zip audit 2026-07-12)
+The base release zip ships three prebuilt third-party programs alongside the emulator cores:
+
+- **Info-ZIP unzip 6.0** (`.tmp_update/tg5040/unzip`) — built from `shauninman/unzip60`
+  (cloned by `workspace/tg5040/makefile`); Info-ZIP license text ships in `LICENSES/unzip60/`.
+- **Dropbear 2022.83** (`.system/tg5040/bin/dropbearmulti`) — SSH server/client for dev access
+  (the Smart Pro firmware ships no sshd). Built from the `dropbear-2022.83` release tarball
+  (https://matt.ucc.asn.au/dropbear/) with the MinUI tg5040 Docker toolchain as a dynamically
+  linked multi-call binary (static builds segfault on this BSP — see docs/DECISIONS.md).
+  Dropbear is MIT-licensed (per-file notices in its LICENSE); only spawned when the
+  `enable-ssh` dev flag exists.
+- **DinguxCommander** (`Tools/tg5040/Files.pak/DinguxCommander`) — the Files tool, built from
+  `shauninman/DinguxCommander-sdl2` @ `8eaa0ef` (cloned, hash-pin-verified, and built by
+  `workspace/tg5040/makefile`). Inherited from upstream MinUI, which ships the same program. The source tree
+  carries no license file (OpenDingux-scene lineage, original by Mia); provenance and
+  corresponding source are recorded here and in `LICENSES/SOURCES.txt`.

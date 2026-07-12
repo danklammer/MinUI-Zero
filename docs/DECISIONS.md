@@ -792,8 +792,13 @@ turned off, one core covers the tested library at stock clocks (THPS2 threaded-v
 A/B: tie at 1008 MHz). The release audit then found the mailbox implementation mutates
 renderer state across threads under `-O3 -flto` without a sound memory model. Decision:
 ship v1.3 with `ZERO_DISABLE_FRONTEND_THREADING` (option locked Off, machinery
-unreachable) — zero measured cost, a whole class of latent races removed. Re-enable only
-after a thread-ownership redesign (v1.4 candidate). The legacy `minarch_thread_video`
+unreachable) — a whole class of latent races removed at no measured cost *on the PS1
+titles that motivated the branch* (THPS2 tie; a matched BR2 A/B on the release binary:
+both arms ~1800, threaded ran 3°C warmer). The honest cost is on SNES/supafaust, where
+the receipts show threading was a real efficiency win: DKC mean 747→600 MHz with coulomb
+delta 90→30, Yoshi (SP) mean 1212→741 MHz (docs/bench/2026-07-08-snes-*). That measured
+opportunity is deferred to — and is the primary motivation for — the v1.4 thread-ownership
+redesign, not denied. Re-enable only after that redesign. The legacy `minarch_thread_video`
 migration still parses safely; it now lands on the locked-Off option. Emulator cores'
 own internal worker threads are unaffected. Honest data does not care what the branch
 is called.

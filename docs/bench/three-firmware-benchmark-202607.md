@@ -161,8 +161,13 @@ Both are real BR2; neither modal alone is "the" number. The honest row is:
 overclock, still ~7°C cooler than NextUI's Performance mode on the same content.**
 A matched-conditions A/B additionally confirmed frontend threading does not change
 this (single 37.0°C vs threaded 40.0°C, both ~1800): BR2's heavy sections are
-decode-bound, which is why v1.3 ships frontend threading compiled out (see D52)
-at zero measured cost on this library.
+decode-bound, which is why v1.3 ships frontend threading compiled out (see D52) at no
+measured cost on the PS1 titles that motivated it. (On SNES the same 2026-07-08 A/Bs
+measured threading as a real efficiency win — DKC 747→600 MHz, Yoshi 1212→741 — deferred
+to the v1.4 thread-ownership redesign, not denied.) The release-build zero-underruns
+figure was read from the on-device underrun counter during this re-bench; that log was
+not archived (the RC-build HUD receipt in receipts/ shows the same behavior) — re-capture
+on the release binary is queued.
 
 ## Caveats
 

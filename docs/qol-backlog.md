@@ -127,3 +127,18 @@ row-sparsity IDCT shortcut (an explicit upstream TODO). Ruled out by Codex: Fast
 (GLES-path only; we build BUILTIN_GPU=neon), MDEC_BIAS (timing knob, compat-sensitive, not
 wall-clock). Success = BR2 (and all FMV-heavy PS1) flawless at stock clocks; patch is
 upstreamable. Prereq receipts: D47 + addendum (frontend/audio exhausted, replicated).
+
+## Deferred from the 2026-07-12 release audit (P2s, v1.3.1/v1.4)
+Verified real, consciously not blocking v1.3 (none affects a default configuration's
+correctness; each needs its own on-device re-gate):
+- **Audio catch-up is a no-op on tg5040**: `api.c` clears `should_vsync` for catch-up, but
+  the SDL renderer is created with `SDL_RENDERER_PRESENTVSYNC` and `PLAT_flip` ignores the
+  argument; ring/stat reads on that path are also unsynchronized. Either remove the dead
+  hot-path work or implement real pacing control - measure first.
+- **`PLAT_uvReassert` per-flip mutex contention**: every flip takes `uv_lock`, which the
+  UV hold thread holds during 200 Hz I2C traffic. Only material with UV active; fix is an
+  atomic already-started fast path, then re-measure frame-time tails before shipping.
+- **Pre-merge `tg3040` Extras invisible after upgrade**: `update.sh` migrates
+  `.userdata/tg3040` configs but not `/Emus/tg3040` / `/Tools/tg3040` pak folders; lookup
+  is tg5040-only now. Affects only ancient pre-merge Brick cards upgraded in place -
+  document or migrate.
