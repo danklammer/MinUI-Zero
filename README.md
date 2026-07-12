@@ -32,16 +32,16 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Gameplay vs stock MinUI's default 1608 MHz clock | **2-3°C (4-5°F) cooler** |
 | Gameplay vs MinUI's 2.0GHz Performance mode | **4-5°C (7-9°F) cooler** |
 | Optimize CPU, identical pinned-clock stress test | **3°C (5°F) lower temperature rise** |
-| Optimize CPU power reduction | **Up to ~18% less CPU-rail dynamic power at the same clock** |
+| Optimize CPU power reduction | **~20% less CPU power at the same clock** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
 | PlayStation battery life | **~6.5-7 hours** measured on tuned hardware |
-| Bloody Roar II, a game other firmwares handle with the 2.0GHz overclock | **Full speed at stock clocks**, 35-40°C |
-| Tony Hawk's Pro Skater 2, measured in-level | **60fps at 1008 MHz** — just over half the stock maximum clock |
+| Bloody Roar II — other firmwares need the 2.0GHz overclock | **Full speed at stock clocks** |
+| Tony Hawk's Pro Skater 2, in-level | **60fps at 1008 MHz** — half the stock clock |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
-| Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
+| Boot to menu | **~10 seconds** — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
 
-The governor and Optimize CPU figures come from separate tests, so they are listed separately rather than added together; a tuned device may see a larger combined benefit. Absolute temperatures vary with the game, brightness, ambient temperature, and individual silicon. On CPU scaling alone, NextUI's auto mode and Zero measure about the same — it's the same kernel mechanism underneath. Zero's edge comes from everything else: the per-chip undervolt, the GPU-dark menu, the idle and boot work, and carrying no extras — no shaders, overlays, or background services spending power on anything but the game. See [`docs/nextui-comparison.md`](docs/nextui-comparison.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the test results and engineering decisions behind these claims.
+Your games, silicon, and settings will vary. Raw data and the reasoning behind every claim live in [`docs/bench/`](docs/bench/) and [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## What is different?
 
@@ -84,22 +84,9 @@ How it works, in five steps:
 4. If a demanding scene needs more, the ceiling rises again within about a second.
 5. A clock that failed to hold full speed is remembered and not immediately retried.
 
-Zero closes the loop. The frontend measures the **actual outcome** — the core's real frame
-rate against its target — every half second, and walks the clock ceiling down to the lowest
-point where the game *verifiably* runs full speed. Every game gets its own answer (Zelda DX
-settles at 408 MHz; Contra needs ~800 — same console family, different truths). Heavy scene?
-It climbs within a second. A clock that failed is remembered and not re-tried. And it never
-probes into saturation, because a maxed-out low clock measures *warmer* than a relaxed higher
-one that finishes early and sleeps.
-
-That's why the CPU Speed setting is gone: between schedutil underneath and the frame-aware
-loop above, the machine answers the question a menu used to ask — per game, continuously,
-with receipts. (Credit where due: on temperature alone, plain schedutil with the overclock
-excluded measures the same. The loop earns its keep at the edges — starting in v1.3,
-fast-forward runs at full 4x speed at the lowest clock that delivers it, measured, instead
-of either pinning max or starving at the floor.) It's also how a stock config bug was caught that
-makes NES run hot on every MinUI device: a system that measures game speed notices when a
-1985 console demands a 1 GHz clock.
+Every game gets its own answer — Zelda DX settles at 408 MHz, Bloody Roar II pays 1800 only
+in the scenes that need it. That's why the CPU Speed setting is gone: the machine answers the
+question a menu used to ask, per game, continuously.
 
 ## Optimize CPU (the self-calibrating undervolt)
 
@@ -108,19 +95,13 @@ margin, and some individual chips can run reliably below them. Optimize CPU meas
 device-specific margin instead of applying another device's numbers.
 
 Run **Tools → Optimize CPU**, leave the device on its charger, and for about 90 minutes it
-measures its own silicon: stepping the CPU voltage down under a high-load stressor, watchdog
-armed, until it finds each clock's real limit. It restarts itself several times — that is
-the measurement working. The result is a voltage table for YOUR exact chip, with a safety
-guard above every measured failure threshold and a per-OPP cap at the recorded stock voltage.
-
-From then on the governor uses the guarded table only where calibration is active. Verified
-on hardware: **up to ~18% less CPU-rail dynamic power at identical clocks** and a
-**3°C lower temperature rise in the matched pinned-clock stress test** — same workload,
+measures its own silicon — stepping the voltage down under load until it finds each clock's
+real limit, then adding a safety guard. It restarts itself several times; that is the
+measurement working. Result: **~20% less CPU power at identical clocks**, measured, with
 nothing to configure afterward.
 
-Voltages are applied at runtime only; rebooting returns control to the kernel's stock table.
-The tool verifies device identity and register readback, and refuses incomplete calibration
-data. Back up saves before calibration, and revert anytime from the same tool.
+Voltages apply at runtime only — any reboot returns to factory-safe values. Back up saves
+before calibrating, and revert anytime from the same tool.
 
 ## Deep sleep
 
@@ -150,13 +131,10 @@ and the system appears, tuned core already installed.
 
 ## Disclaimer
 
-MinUI Zero is unofficial personal firmware. Use it at your own risk.
-
-Installing or updating custom firmware can cause data loss, broken saves, failed boots, SD card corruption, unexpected crashes, or other device issues. Back up your SD card, saves, BIOS files, and ROMs before installing.
-
-MinUI Zero changes low-level behavior including CPU scaling, sleep, resume, power management, and optional per-device CPU optimization. These features are designed to fail safely, but no firmware can guarantee that every SD card, device revision, battery condition, or user setup will behave perfectly.
-
-This project is provided as-is, without warranty of any kind. The author and contributors are not responsible for lost data, damaged devices, bricked handhelds, corrupted SD cards, battery issues, overheating, failed updates, or any other problems resulting from use of this software.
+MinUI Zero is unofficial personal firmware, provided as-is, without warranty of any kind.
+Use it at your own risk: custom firmware can cause data loss, failed boots, or other device
+issues, and the author is not responsible for any of them. Back up your SD card before
+installing.
 
 ## Credits
 
