@@ -23,7 +23,9 @@ ZERO_VERSION=v1.3.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
-RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | wc -l | sed 's/ //g')
+# highest existing suffix + 1 — counting files breaks after any deletion (a stale count
+# can re-issue an existing name and zip -r would append into the shipped artifact)
+RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | sed -E 's/.*-([0-9]+)-base\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
 LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba
 
@@ -183,6 +185,7 @@ package: tidy
 	mkdir -p ./build/BASE/LICENSES/unzip60
 	cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/
 	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
+	@if [ -e ./releases/$(RELEASE_NAME)-base.zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME)-base.zip already exists — refusing to overwrite a release"; exit 1; fi
 	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
