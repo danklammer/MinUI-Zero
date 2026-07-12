@@ -783,3 +783,17 @@ a successful stress round there; a refused uvtool write or floor stress failure 
 a publishable success. Release builds also re-check every non-core pin, verify each core's
 tracked source delta exactly equals its declared patches, and clean-rebuild all core outputs.
 This prevents stale marker files or stale `.so` files from disagreeing with `commits.txt`.
+
+## D52 — v1.3 disables the feature it was named after (2026-07-11)
+The branch was born `feat/thread-aware-governor`; frontend multithreading was the
+original thesis. The trial machinery built to prove it instead proved the workload was
+the problem: once the FMV decoder went NEON and the serializing async-GPU thread was
+turned off, one core covers the tested library at stock clocks (THPS2 threaded-vs-single
+A/B: tie at 1008 MHz). The release audit then found the mailbox implementation mutates
+renderer state across threads under `-O3 -flto` without a sound memory model. Decision:
+ship v1.3 with `ZERO_DISABLE_FRONTEND_THREADING` (option locked Off, machinery
+unreachable) — zero measured cost, a whole class of latent races removed. Re-enable only
+after a thread-ownership redesign (v1.4 candidate). The legacy `minarch_thread_video`
+migration still parses safely; it now lands on the locked-Off option. Emulator cores'
+own internal worker threads are unaffected. Honest data does not care what the branch
+is called.
