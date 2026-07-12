@@ -70,17 +70,33 @@ if [ -f "$UPDATE_PATH" ]; then
 	fi
 	./show.elf ./$DEVICE/$ACTION.png
 	
-	./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH" # &> /mnt/SDCARD/unzip.txt
-	rm -f "$UPDATE_PATH"
-	sync
-	
-	# the updated system finishes the install/update
-	if [ -f $SYSTEM_PATH/$PLATFORM/bin/install.sh ]; then
-		$SYSTEM_PATH/$PLATFORM/bin/install.sh # &> $SDCARD_PATH/log.txt
+	# CRC-test the whole archive before touching the installed system (audit 2026-07-12:
+	# extracting unverified and unconditionally deleting the package could leave a partial
+	# install with no recovery copy). On extraction failure the package is renamed aside —
+	# kept for diagnosis but unable to install-loop; a power-cut mid-extract leaves the
+	# package in place so the next boot retries.
+	UPDATED=
+	if ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
+		if ./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH"; then # &> /mnt/SDCARD/unzip.txt
+			rm -f "$UPDATE_PATH"
+			UPDATED=yes
+		else
+			mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
+		fi
+	else
+		mv -f "$UPDATE_PATH" "$UPDATE_PATH.bad"
 	fi
-	
-	if [ "$ACTION" = "installing" ]; then
-		reboot
+	sync
+
+	if [ "$UPDATED" = "yes" ]; then
+		# the updated system finishes the install/update
+		if [ -f $SYSTEM_PATH/$PLATFORM/bin/install.sh ]; then
+			$SYSTEM_PATH/$PLATFORM/bin/install.sh # &> $SDCARD_PATH/log.txt
+		fi
+
+		if [ "$ACTION" = "installing" ]; then
+			reboot
+		fi
 	fi
 fi
 
