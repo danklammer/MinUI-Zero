@@ -804,8 +804,8 @@ own internal worker threads are unaffected. Honest data does not care what the b
 is called.
 
 ## D53 — calibration freezes must self-recover (2026-07-12)
-Dan's verdict after three marginal-voltage freezes in one day each needed a manual
-POWER-hold: "It has to reboot on its own" — release blocker. The first deadman
+Dan's verdict after repeated marginal-voltage freezes (one 2026-07-11, two today) each
+needing a manual POWER-hold: "It has to reboot on its own" — release blocker. The first deadman
 (`sleep && reboot -f`, normal priority) never woke in the frozen state even though the
 kernel reserves 5% CPU for non-RT tasks, which means those freezes were deeper than
 scheduler starvation (partial core wedge while procd's RT feeder kept the hardware
