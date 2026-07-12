@@ -138,6 +138,32 @@ The mechanisms are separable, and were measured separately:
   the current defaults, and the Performance-mode BR2 row confirms the pinned mode does
   what it promises.
 
+## Release-build re-validation (2026-07-12)
+
+The cells above were measured on the v1.3 release candidate (20260710-0). The shipped
+v1.3.0 binary (20260712-2: audit fixes, frontend threading compiled out, undervolt
+calibration active) was re-benchmarked on the same card:
+
+| Game | RC (published above) | Release build | Verdict |
+|---|---|---|---|
+| Zelda DX | 408 flat · 35.6°C | 408 flat · 33.8°C | reproduced |
+| Yoshi's Island | modal 600 (600–1416) · 38.0°C | modal 1008 (600–1416) · 36.8°C | same envelope |
+| THPS2 | modal 1008 (600–1200) · 34.9°C | 1008 flat · 35.6°C | reproduced, steadier |
+| Bloody Roar II | modal 1008 (bursts to 1800) · 37.7°C | modal 1800 (rests at 1008) · 39.3°C | see below |
+
+**The BR2 row needs honest reframing.** BR2's attract sequence is nondeterministic —
+its menu/fight stretches genuinely run at 1008 (the governor's own telemetry shows
+sinks to 1008 and a measured generation collapse to 38.9/60 in the FMV stretch that
+correctly re-provisioned to 1800), while FMV-heavy stretches genuinely need 1800.
+The RC cell's statistics window landed on a light mix; the release cells landed heavy.
+Both are real BR2; neither modal alone is "the" number. The honest row is:
+**1008–1800 depending on scene, zero audio underruns, 37.7–39.3°C by mix — still no
+overclock, still ~7°C cooler than NextUI's Performance mode on the same content.**
+A matched-conditions A/B additionally confirmed frontend threading does not change
+this (single 37.0°C vs threaded 40.0°C, both ~1800): BR2's heavy sections are
+decode-bound, which is why v1.3 ships frontend threading compiled out (see D52)
+at zero measured cost on this library.
+
 ## Caveats
 
 - Attract mode, not gameplay input. Single device, single run per cell (except Zelda,
@@ -158,7 +184,9 @@ Zero BR2 fight result is a labeled HUD observation with a narrative receipt, not
 
 ## Corrections (2026-07-11 re-verification)
 
-Three figures published in the addendum were wrong or overstated and are corrected
+Four figures published earlier were wrong, overstated, or unrepresentative and are
+corrected here. The BR2 "modal 1008" row was measured on a light attract mix and is
+reframed as scene-dependent (see Release-build re-validation). The remaining three: 
 here: NextUI drop rates were computed against the full 8-minute cell, but the captured
 logs cover only the final ~3.3 minutes — the correct rates are ~12/s (auto) and ~15/s
 (Powersave), not ~5/s and ~6/s. Stock Powersave's BR2 video floor is 10.7 fps, not
