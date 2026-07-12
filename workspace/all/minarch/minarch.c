@@ -486,23 +486,33 @@ static void SRAM_write(void) {
 	SRAM_getPath(filename);
 	printf("sav path (write): %s\n", filename);
 		
-	FILE *sram_file = fopen(filename, "w");
+	void *sram = core.get_memory_data(RETRO_MEMORY_SAVE_RAM);
+	if (!sram) {
+		LOG_error("Error getting SRAM data\n");
+		return;
+	}
+
+	// write-to-tmp + fsync + rename so a mid-write death (power cut, crash) can never
+	// truncate the last good save — same pattern as the crash handler (audit 2026-07-12).
+	// flush just this file to disk (was a global sync() — flushed every filesystem and
+	// stalled menu-open/sleep while unrelated dirty data drained)
+	char tmp_path[MAX_PATH+8];
+	sprintf(tmp_path, "%s.tmp", filename);
+	FILE *sram_file = fopen(tmp_path, "w");
 	if (!sram_file) {
 		LOG_error("Error opening SRAM file: %s\n", strerror(errno));
 		return;
 	}
-
-	void *sram = core.get_memory_data(RETRO_MEMORY_SAVE_RAM);
-
-	if (!sram || sram_size != fwrite(sram, 1, sram_size, sram_file)) {
+	if (sram_size != fwrite(sram, 1, sram_size, sram_file)) {
 		LOG_error("Error writing SRAM data to file\n");
+		fclose(sram_file);
+		unlink(tmp_path);
+		return;
 	}
-
-	// flush just this file to disk (was a global sync() — flushed every filesystem and
-	// stalled menu-open/sleep while unrelated dirty data drained)
 	fflush(sram_file);
 	fsync(fileno(sram_file));
 	fclose(sram_file);
+	if (rename(tmp_path, filename)) LOG_error("Error renaming SRAM file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -537,21 +547,29 @@ static void RTC_write(void) {
 	RTC_getPath(filename);
 	printf("rtc path (write) size(%u): %s\n", rtc_size, filename);
 		
-	FILE *rtc_file = fopen(filename, "w");
+	void *rtc = core.get_memory_data(RETRO_MEMORY_RTC);
+	if (!rtc) {
+		LOG_error("Error getting RTC data\n");
+		return;
+	}
+
+	char tmp_path[MAX_PATH+8];
+	sprintf(tmp_path, "%s.tmp", filename);
+	FILE *rtc_file = fopen(tmp_path, "w");
 	if (!rtc_file) {
 		LOG_error("Error opening RTC file: %s\n", strerror(errno));
 		return;
 	}
-
-	void *rtc = core.get_memory_data(RETRO_MEMORY_RTC);
-
-	if (!rtc || rtc_size != fwrite(rtc, 1, rtc_size, rtc_file)) {
+	if (rtc_size != fwrite(rtc, 1, rtc_size, rtc_file)) {
 		LOG_error("Error writing RTC data to file\n");
+		fclose(rtc_file);
+		unlink(tmp_path);
+		return;
 	}
-
 	fflush(rtc_file);
 	fsync(fileno(rtc_file));
 	fclose(rtc_file);
+	if (rename(tmp_path, filename)) LOG_error("Error renaming RTC file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -622,6 +640,9 @@ static void State_read(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
+	// declared before the first goto — jumping over the initializer left it
+	// indeterminate at the error label (audit 2026-07-12)
+	FILE *state_file = NULL;
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
@@ -630,8 +651,8 @@ static void State_read(void) { // from picoarch
 
 	char filename[MAX_PATH];
 	State_getPath(filename);
-	
-	FILE *state_file = fopen(filename, "r");
+
+	state_file = fopen(filename, "r");
 	if (!state_file) {
 		if (state_slot!=8) { // st8 is a default state in MiniUI and may not exist, that's okay
 			LOG_error("Error opening state file: %s (%s)\n", filename, strerror(errno));
@@ -664,38 +685,50 @@ static void State_write(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
+	// serialize into memory BEFORE touching the file, then write-to-tmp + fsync + rename:
+	// the old code truncated the existing state first, so a failed serialize destroyed the
+	// last good save. state_file is declared before the first goto — jumping over the
+	// initializer left it indeterminate at the error label (audit 2026-07-12)
+	FILE *state_file = NULL;
+	char filename[MAX_PATH];
+	char tmp_path[MAX_PATH+8];
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
 		goto error;
 	}
 
-	char filename[MAX_PATH];
 	State_getPath(filename);
-	
-	FILE *state_file = fopen(filename, "w");
-	if (!state_file) {
-		LOG_error("Error opening state file: %s (%s)\n", filename, strerror(errno));
-		goto error;
-	}
 
 	if (!core.serialize(state, state_size)) {
 		LOG_error("Error creating save state: %s (%s)\n", filename, strerror(errno));
 		goto error;
 	}
 
-	if (state_size != fwrite(state, 1, state_size, state_file)) {
-		LOG_error("Error writing state data to file: %s (%s)\n", filename, strerror(errno));
+	sprintf(tmp_path, "%s.tmp", filename);
+	state_file = fopen(tmp_path, "w");
+	if (!state_file) {
+		LOG_error("Error opening state file: %s (%s)\n", tmp_path, strerror(errno));
 		goto error;
 	}
 
+	if (state_size != fwrite(state, 1, state_size, state_file)) {
+		LOG_error("Error writing state data to file: %s (%s)\n", tmp_path, strerror(errno));
+		fclose(state_file);
+		state_file = NULL;
+		unlink(tmp_path);
+		goto error;
+	}
+
+	fflush(state_file);
+	fsync(fileno(state_file));
+	fclose(state_file);
+	state_file = NULL;
+	if (rename(tmp_path, filename)) LOG_error("Error renaming state file: %s (%s)\n", filename, strerror(errno));
+
 error:
 	if (state) free(state);
-	if (state_file) {
-		fflush(state_file);
-		fsync(fileno(state_file));
-		fclose(state_file);
-	}
+	if (state_file) fclose(state_file);
 
 	fast_forward = was_ff;
 }
@@ -3259,9 +3292,14 @@ void Core_getName(char* in_name, char* out_name) {
 void Core_open(const char* core_path, const char* tag_name) {
 	LOG_info("Core_open\n");
 	core.handle = dlopen(core_path, RTLD_LAZY);
-	
-	if (!core.handle) LOG_error("%s\n", dlerror());
-	
+
+	if (!core.handle) {
+		// a missing/corrupt core used to fall through into dlsym(NULL)+call = segfault;
+		// exit cleanly so the launcher returns to the menu (pillar 5, audit 2026-07-12)
+		LOG_error("dlopen %s failed: %s\n", core_path, dlerror());
+		exit(EXIT_FAILURE);
+	}
+
 	core.init = dlsym(core.handle, "retro_init");
 	core.deinit = dlsym(core.handle, "retro_deinit");
 	core.get_system_info = dlsym(core.handle, "retro_get_system_info");
@@ -3292,7 +3330,21 @@ void Core_open(const char* core_path, const char* tag_name) {
 	set_audio_sample_batch_callback = dlsym(core.handle, "retro_set_audio_sample_batch");
 	set_input_poll_callback = dlsym(core.handle, "retro_set_input_poll");
 	set_input_state_callback = dlsym(core.handle, "retro_set_input_state");
-	
+
+	// every libretro core exports all of these; any NULL means a truncated/corrupt build
+	// and the calls below would segfault (audit 2026-07-12)
+	if (!core.init || !core.deinit || !core.get_system_info || !core.get_system_av_info
+	 || !core.set_controller_port_device || !core.reset || !core.run
+	 || !core.serialize_size || !core.serialize || !core.unserialize
+	 || !core.load_game || !core.load_game_special || !core.unload_game
+	 || !core.get_region || !core.get_memory_data || !core.get_memory_size
+	 || !set_environment_callback || !set_video_refresh_callback
+	 || !set_audio_sample_callback || !set_audio_sample_batch_callback
+	 || !set_input_poll_callback || !set_input_state_callback) {
+		LOG_error("core %s is missing required libretro symbols\n", core_path);
+		exit(EXIT_FAILURE);
+	}
+
 	struct retro_system_info info = {};
 	core.get_system_info(&info);
 	
