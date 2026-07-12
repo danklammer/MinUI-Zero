@@ -177,6 +177,10 @@ void gov_burst(GovState* st, const GovProfile* p) {
 	st->ceil_khz = p->f_max;
 	st->slip_run = 0;
 	st->slack_run = 0;
+	st->fail_khz = 0;
+	st->fail_hold = 0;
+	st->fail_streak = 0;
+	st->presink_khz = 0;
 	st->since_sink = 255; // not a probe: a slip here must not "undo" to a stale ceiling
 	PLAT_setCPUMaxFreq(st->ceil_khz);
 }

@@ -33,3 +33,13 @@ index 0d1dc08f81a11cef6b3b7238367b1ff27fcf1ead..1f87c76c3242023c4095f0c9087c5276
  # Windows MSVC 2017 all architectures
  else ifneq (,$(findstring windows_msvc2017,$(platform)))
  	NO_GCC := 1
+
+diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
+index d3e3a7c..356b8d8 100644
+--- forkSrcPrefix/Makefile
++++ forkDstPrefix/Makefile
+@@ -416,2 +416,3 @@
++CLEAN_OBJS := $(filter-out platform/gp2x/warm_2.4.25.o platform/gp2x/warm_2.4.26-open2x.o,$(OBJS))
+ clean:
+-	$(RM) $(TARGET) $(OBJS) pico/pico_int_offs.h
++	$(RM) $(TARGET) $(CLEAN_OBJS) pico/pico_int_offs.h

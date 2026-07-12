@@ -28,7 +28,9 @@ tell() {
 
 cores() {
 	echo CORES
-	list ./workspace/$1/cores/src
+	for D in fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba; do
+		show "./workspace/$1/cores/src/$D"
+	done
 	bump
 }
 
@@ -55,6 +57,7 @@ bump() {
 	show ./workspace/tg5040/other/evtest
 	show ./workspace/tg5040/other/jstest
 	show ./workspace/tg5040/other/unzip60
+	show ./workspace/tg5040/other/DinguxCommander-sdl2
 	cores tg5040
 	
 	tell CHECK

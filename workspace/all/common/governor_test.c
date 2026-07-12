@@ -242,11 +242,68 @@ static void test_sink_despite_busy_noise(void) {
 	      st.ceil_khz, p->f_min);
 }
 
+static void test_slip_recovery_priority(void) {
+	printf("[slip-recovery] BIGSLIP outranks probe undo; ordinary slip restores presink\n");
+	const GovProfile* p = &GOV_P_PS1;
+	GovState st; gov_init(&st, p);
+	st.ceil_khz = 1200000;
+	st.presink_khz = 1416000;
+	st.since_sink = 1;
+	CHECK(gov_step(&st, p, 40, GOV_SIGNAL_BIGSLIP) == p->f_max,
+	      "BIGSLIP should jump directly to f_max=%d, got %d", p->f_max, st.ceil_khz);
+
+	gov_init(&st, p);
+	st.ceil_khz = 1200000;
+	st.presink_khz = 1416000;
+	st.since_sink = 1;
+	CHECK(gov_step(&st, p, 40, GOV_SIGNAL_SLIP) == 1416000,
+	      "probe-caused slip should restore presink=1416000, got %d", st.ceil_khz);
+}
+
+static void test_fail_hold_escalates(void) {
+	printf("[fail-hold] repeat failures escalate 120 -> 240 -> 480 ticks\n");
+	const GovProfile* p = &GOV_P_16BIT;
+	GovState st; gov_init(&st, p);
+	st.ceil_khz = p->f_min;
+	gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
+	CHECK(st.fail_hold == 120 && st.fail_streak == 0,
+	      "first failure should hold 120 ticks (hold=%d streak=%d)", st.fail_hold, st.fail_streak);
+	st.ceil_khz = p->f_min; st.fail_hold = 0;
+	gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
+	CHECK(st.fail_hold == 240 && st.fail_streak == 1,
+	      "second failure should hold 240 ticks (hold=%d streak=%d)", st.fail_hold, st.fail_streak);
+	st.ceil_khz = p->f_min; st.fail_hold = 0;
+	gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
+	CHECK(st.fail_hold == 480 && st.fail_streak == 2,
+	      "third failure should hold 480 ticks (hold=%d streak=%d)", st.fail_hold, st.fail_streak);
+}
+
+static void test_scene_burst_resets_floor_memory(void) {
+	printf("[scene-burst] geometry change resets stale floor memory and provisions f_max\n");
+	const GovProfile* p = &GOV_P_PS1;
+	GovState st; gov_init(&st, p);
+	st.ceil_khz = 1200000;
+	st.fail_khz = 1200000;
+	st.fail_hold = 960;
+	st.fail_streak = 3;
+	st.presink_khz = 1416000;
+	g_last_set_khz = -1;
+	gov_burst(&st, p);
+	CHECK(st.ceil_khz == p->f_max && g_last_set_khz == p->f_max,
+	      "burst should command f_max=%d (state=%d write=%d)", p->f_max, st.ceil_khz, g_last_set_khz);
+	CHECK(st.fail_khz == 0 && st.fail_hold == 0 && st.fail_streak == 0 && st.presink_khz == 0,
+	      "burst retained stale failure memory (%d/%d/%d presink=%d)",
+	      st.fail_khz, st.fail_hold, st.fail_streak, st.presink_khz);
+}
+
 int main(void) {
 	printf("== governor synthetic harness ==\n");
 	test_cold_idle();
 	test_boot_slip_at_max_still_sinks();
 	test_sink_despite_busy_noise();
+	test_slip_recovery_priority();
+	test_fail_hold_escalates();
+	test_scene_burst_resets_floor_memory();
 	test_hot_ceiling();
 	test_hot_caps_below_max();
 	test_oscillation();

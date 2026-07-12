@@ -1031,8 +1031,14 @@ static struct Config {
 				.key	= "minarch_threading",
 				.name	= "Multithreading",
 				.desc	= "Auto measures the active game and threads it\nonly when that verifiably lowers the CPU clock.\nOn always threads it. Off never does.",
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+				.default_value = 2,
+				.value = 2,
+				.lock = 1,
+#else
 				.default_value = 0, // Auto
 				.value = 0,
+#endif
 				.count = 3,
 				.values = threading_labels,
 				.labels = threading_labels,
@@ -1170,6 +1176,18 @@ static void Config_syncFrontend(char* key, int value) {
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+		// The current mailbox path mutates renderer/scaler state from the core thread.
+		// Keep it unreachable on the release platform until ownership is redesigned.
+		thread_video = 0;
+		was_threaded = 0;
+		thread_auto = 0;
+		ta_phase = 2;
+		ta_decided_by_user = 1;
+		toggle_thread = 0;
+		config.frontend.options[FE_OPT_THREAD].value = 2;
+		config.frontend.options[FE_OPT_THREAD].lock = 1;
+#else
 		// 0=Auto (trial machinery owns it), 1=On, 2=Off (explicit user override).
 		// During config LOAD this only records the value — arming toggle_thread while
 		// thread_video is still false made a persisted On start threaded and then
@@ -1190,6 +1208,7 @@ static void Config_syncFrontend(char* key, int value) {
 				ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe
 			}
 		}
+#endif
 		i = FE_OPT_THREAD;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_OVERCLOCK].key)) {
@@ -5129,12 +5148,14 @@ int main(int argc , char* argv[]) {
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+#ifndef ZERO_DISABLE_FRONTEND_THREADING
 	int legacy_tv = 0; // pre-rename minarch_thread_video (v1.2 cfgs) — must read while user_cfg is alive
 	{
 		char lv[256]; int llock = 0; // Config_getValue writes up to 256 bytes, always
 		if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", lv, &llock) && !llock)
 			legacy_tv = (lv[0]=='O' && lv[1]=='n') ? 1 : 2;
 	}
+#endif
 	Config_free();
 		
 	SND_init(core.sample_rate, core.fps);
@@ -5144,6 +5165,15 @@ int main(int argc , char* argv[]) {
 	Menu_initState(); // make ready for state shortcuts
 	
 	{
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+		thread_video = 0;
+		was_threaded = 0;
+		thread_auto = 0;
+		ta_phase = 2;
+		ta_decided_by_user = 1;
+		config.frontend.options[FE_OPT_THREAD].value = 2;
+		config.frontend.options[FE_OPT_THREAD].lock = 1;
+#else
 		// auto-threading bootstrap. The Threading option value carries user intent
 		// directly: Auto -> honor a persisted verdict or run the trial; On/Off ->
 		// explicit, machinery stands down. (Replaces cfg-layer sniffing, which broke
@@ -5157,6 +5187,7 @@ int main(int argc , char* argv[]) {
 			if (v == 1) { thread_video = 1; ta_phase = 2; }
 			else if (v == 0) ta_phase = 2; // decided: no benefit (re-decided only if sidecar removed)
 		}
+#endif
 	}
 	if (thread_video) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;

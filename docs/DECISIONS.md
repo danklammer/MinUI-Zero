@@ -453,7 +453,8 @@ displayed "-138% less CPU power". Fixed + arithmetic hardened against non-numeri
 Validation methodology settled: pinned-clock A/B with PROOF-OF-HELD rail sampling (two earlier
 attempts invalidated themselves — kernel re-stock + thermal throttle at 1800); clean result
 @1416: stock +11C vs undervolt +8C for identical 60s stress = ~27% less heat, consistent with
-the V^2 prediction (~19%; "up to 20%" at the top OPP is honest: 1062.5^2/1187.5^2 = 0.8006).
+the V^2 prediction (~19% for that pre-envelope row). D51 supersedes this as a production
+claim: the corrected ceiling envelope uses 1075mV at 1800MHz, about 18%.
 WoWLAN probed: impossible (wlan0 has no wakeup attribute); dev answer = the disable-deep-sleep
 flag; "summonable sleep" (RTC-heartbeat wake windows) designed but unbuilt.
 
@@ -547,7 +548,7 @@ Option renamed conceptually (still "Prioritize Audio" in UI pending rename decis
 for PS1, still hidden for SUPA (supafaust pins its own threads). Default Off until hands-on +
 gameplay floor A/B decide promotion.
 
-## D44 — Auto-threading ships in v1.3 (2026-07-08)
+## D44 — Auto-threading ships in v1.3 (2026-07-08; superseded by D51)
 Dan's call: no per-system threading list, no visible option ("I'd hate to give an option then
 take it away") — the machine decides, same charter as the clock. Implemented as measure/decide/
 remember: launch single-threaded (safe for any core incl. sideloaded), trial threading when the
@@ -744,7 +745,7 @@ ROOT CAUSE (physics, consistent with all data): the P2 calibration proved 762.5m
 STRESS; a game idling at the floor puts the TCS4838 buck into light-load/PFM mode where the
 same undervolted rail is not stable. Stress-proof != idle-proof — a calibration-methodology
 gap, now recorded.
-FIX (8c02bd31): PLAT_setCPUVoltForCeil holds STOCK voltage below an 816MHz ceiling. Idle
+FIX (8c02bd31): PLAT_setCPUVoltForCeil stands down at or below an 816MHz ceiling. Idle
 current at the floor is tiny (the delta saved uW), the measured UV wins live at the high
 OPPs, so the guard costs ~nothing. Future calibrations must add idle-dwell arms per OPP.
 Exposure: opt-in feature (calibrated devices only) — but OUR two devices are exactly that,
@@ -758,3 +759,27 @@ verified NEON MDEC scalar-equivalence independently and yielded 5 fixes (0b0c76a
 1.8GHz choke clamp, unconditional uv restore, clean-slate auto-thread trials, watchdog-gated
 calibration, full-chain make targets; C11-atomics telemetry hardening deferred to v1.4
 deliberately (post-soak sync rewrites invalidate certification).
+
+## D51 — v1.3 release audit: frontend threading deferred; UV publication hardened (2026-07-11)
+The final whole-branch audit supersedes D44's ship decision. The frontend thread invokes
+scaler/SDL renderer mutation and governor bursts from the core callback while the main thread
+presents and ticks the same state. Those are real ownership/data races, and no tested library
+title needs the path after the PS1 GPU-thread fix (THPS2 was 1008 MHz either way, with the
+threaded arm slightly warmer). v1.3 compiles frontend threading unavailable on tg5040, forces
+legacy On/Auto configs to Off, and hides the option. The dormant implementation remains for a
+future ownership redesign; core-internal worker threads are unaffected.
+
+The same audit made calibration data fail closed: campaigns bind chip+model before the first
+test and verify them on every resume; OPP pinning is ordered and read back; crash breadcrumbs,
+stock rows, and exactly one numeric verdict per OPP are required; both VSEL writes require
+readback; and table.conf publishes last only after eight validated rows. The generator now caps
+each row at measured stock and emits the non-decreasing ceiling envelope. From the preserved
+2026-07-11 log this means a 25 mV minimum applied high-OPP reduction and 112.5 mV at 1800 MHz
+(about 18% CPU-rail dynamic power), distinct from the 75 mV minimum raw cliff headroom.
+
+The post-audit verification pass found two more fail-closed requirements. Calibration now has
+an atomic single-instance lock, and `DONE floor` requires either stock already at the floor or
+a successful stress round there; a refused uvtool write or floor stress failure cannot become
+a publishable success. Release builds also re-check every non-core pin, verify each core's
+tracked source delta exactly equals its declared patches, and clean-rebuild all core outputs.
+This prevents stale marker files or stale `.so` files from disagreeing with `commits.txt`.

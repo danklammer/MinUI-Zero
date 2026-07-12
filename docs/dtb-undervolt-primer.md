@@ -33,17 +33,17 @@ OPPs, least at the 408 floor where voltage is already lowest). Real, not revolut
 
 ## 3. The risk model — what can and cannot happen
 
-The one-sentence reassurance: **undervolting cannot physically damage silicon.** Too little
-voltage makes transistors miss timing → crashes, hangs, corrupted computation. Annoying, not
-destructive. (Over-volting and over-heating damage chips; under-volting does not.)
+Undervolting is not expected to physically damage silicon, but instability can crash the
+system or corrupt data being written. That data-loss risk is why calibration requires a
+watchdog, guarded output, runtime readback, and save backups.
 
 | Failure | Can it happen? | Consequence | Recovery |
 |---|---|---|---|
 | Crash / freeze during play | Yes — that's how you find the limit | Reboot | Automatic (and our crash-safe saves + targeted fsync limit the blast radius) |
 | Fails to boot with the modified DTB | Yes, if too aggressive | Device won't start **with that DTB** | Restore the original DTB / boot media (see §5) |
 | SD-card data corruption from a crash mid-write | Rare | A damaged file | fsync discipline + FAT repair; saves are small and synced |
-| Permanent hardware damage | **No** | — | — |
-| "Bricked" (unrecoverable) | **Effectively no on Allwinner** — see §5 | — | FEL mode |
+| Permanent hardware damage | Not expected from undervolting | — | Restore stock settings |
+| Unbootable configuration | Possible for a future DTB implementation | Device-specific recovery | Prove SD/FEL recovery first (§5) |
 
 The real risk isn't the device — it's **shipping someone else's silicon a voltage their chip
 can't do**. Chips vary ("silicon lottery"); a margin that's comfortable on your Brick may be
@@ -65,7 +65,7 @@ marginal on another. That's a *policy* problem (§7), not a safety one.
 - **[LIKELY]** Allwinner BROM tries **SD card first, then internal flash**. If true for the
   Brick, that's the golden safety property: a complete boot package (boot0 + U-Boot + kernel +
   modified DTB) on a **test SD card** boots without ever writing internal storage — and
-  *removing the card* restores stock perfectly. Unbrickable by construction.
+  *removing the card* should restore stock. This must be proven on the target before use.
 
 ## 5. Why Allwinner devices are near-unbrickable: FEL
 
@@ -86,7 +86,7 @@ ever contemplated. Rule regardless: **we never modify internal storage** — SD-
    proceeds.
 3. **Margin search (test card, our device):** lower all OPP voltages by one PMIC step
    (~25 mV, **[PROBE]** actual granularity), then stress: BENCH runs + the sleep-soak + a
-   worst-case load loop (PS1 + supafaust) across temperatures. Repeat stepwise until first
+	   high-load loop (PS1 + supafaust) across temperatures. Repeat stepwise until first
    instability; back off **two full steps** from the failure point. Per-OPP refinement after
    (low OPPs usually have the least margin to give).
 4. **Long soak:** days of normal use on the candidate table. Any anomaly = back off further.
@@ -105,9 +105,10 @@ ever contemplated. Rule regardless: **we never modify internal storage** — SD-
 
 ## 8. Bottom line
 
-- Undervolting is a **data-file change, not a hardware mod**; it cannot damage anything.
-- On Allwinner, the recovery story (SD-first boot + FEL mask-ROM rescue) makes true bricking
-  effectively impossible — *provided we never touch internal storage*, which is the standing rule.
+- The shipped runtime tuning is RAM-only and returns to kernel control on reboot; crashes
+  can still corrupt in-flight data, so backups and guarded publication remain required.
+- A future DTB path requires a demonstrated SD/FEL recovery procedure before any internal
+  storage change; recovery must not be assumed from generic Allwinner behavior.
 - The engineering cost is real (boot-chain work, long validation), the payoff is a genuine
   but single-digit-percent power win, and the shipping risk is managed by opt-in + self-test
   + auto-revert.
@@ -150,9 +151,10 @@ in 91 minutes with 4 deliberate crash-reboots, zero human intervention, nothing 
 | 600 | 900.0 | none at floor | >=137.5 | 812.5 | -18.5% |
 | 408 | 900.0 | none at floor | >=137.5 | 812.5 | -18.5% |
 
-Headline: **the ENTIRE gaming range (408-1008) survived the harness floor** — this chip's true
-floor there is below 762.5mV. The guardbanded table cuts ~18-20% CPU-rail power at every
-operating point. Notes: margins are THIS chip's (silicon lottery — the tool must run per
+Historical headline: **the entire 408-1008 MHz range survived this harness floor.** Later
+light-load tests showed that stress stability does not prove idle stability, so production
+stands down at or below 816 MHz and caps each generated row at its measured stock voltage.
+Notes: margins are THIS chip's (silicon lottery — the tool must run per
 device); the ~14-min dark windows during floor-runs are stress starving sshd (expected);
 campaign self-disarmed and the device returned to full stock.
 
@@ -161,4 +163,3 @@ find where the DTB lives in the boot chain (boot partition layout) + how to flas
 FEL rescue drill BEFORE any write. A runtime voltage daemon was considered and REJECTED:
 racing schedutil transitions can apply a low-OPP voltage to a high OPP (below-cliff = crash);
 only the kernel can sequence voltage/frequency atomically, hence DTB.
-

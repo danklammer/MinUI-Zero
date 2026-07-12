@@ -59,14 +59,17 @@ The fuel gauge steps in 30 mAh quanta, so only multi-quantum deltas are claims:
 
 ## 4. Undervolt: calibrated, armed, and honestly bounded
 
-First completed calibration on this chip (Optimize CPU campaign, 2026-07-11): min margin
-75 mV; 408-1008 MHz never cracked down to the tool floor (run at 812.5 mV); cliffs at
-1200/1416/1608/1800 = 800/875/1025/1012.5 mV. Full log: docs/bench/receipts/uv-calibration/.
+First completed calibration on this chip (Optimize CPU campaign, 2026-07-11): minimum raw
+cliff headroom 75 mV; 408-1008 MHz never cracked down to the 762.5 mV tool floor; cliffs at
+1200/1416/1608/1800 = 800/875/1025/1012.5 mV. The corrected production envelope applies
+850/925/1075/1075 mV at those high OPPs. Full log and derived table:
+docs/bench/receipts/uv-calibration/.
 
 - **Energy A/B (UV on vs off, back-to-back cells): delta below the gauge's 30 mAh
   resolution in 8-minute cells.** We say that plainly instead of claiming a number. The
-  supported statement is the tool's rail arithmetic: ~10% CPU-rail power at the top clock
-  (V² on 75 mV), physically real but small against screen + GL + radios in short cells.
+  supported statement is the production table's rail arithmetic: ~18% CPU-rail dynamic
+  power at the top clock (1187.5 -> 1075 mV), physically real but small against the rest
+  of the device in short cells.
 - UV-after temperature cells are NOT comparable to day-1 cells (they ran on a chassis
   heat-soaked by the 2h plugged-in calibration; several show elevated temps + more governor
   provisioning for identical content). Flagged, not published as UV results.

@@ -43,6 +43,10 @@ pcsx_rearmed_MAKEFILE = Makefile.libretro
 
 picodrive_REPO = https://github.com/irixxxx/picodrive
 picodrive_MAKEFILE = Makefile.libretro
+# Upstream tracks two prebuilt GP2X objects and its broad clean rule deleted them before
+# this release audit. They are irrelevant to tg5040; ignore only those exact non-source paths
+# while old dependency checkouts converge to the patched clean rule.
+picodrive_VERIFY_IGNORE = platform/gp2x/warm_2.4.25.o platform/gp2x/warm_2.4.26-open2x.o
 # NOTE: no ARCH override — picodrive's M68K JIT (Cyclone) is ARM32-only, so aarch64 uses the FAMEC C
 # core regardless; ARCH=aarch64 was verified byte-identical (SH2 DRC + NEON draw already on). Inert.
 

@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
+#include <linux/i2c-dev.h>
 
 #include <msettings.h>
 
@@ -656,22 +658,89 @@ int PLAT_supportsDeepSleep(void) { return 1; } // tg5040/Brick can suspend-to-RA
 // ceiling from menu-low straight to 1608/1800, and without this ordering the hold thread
 // kept asserting the low-ceiling voltage at the new high clock — below the chip's cliff
 // — for up to one governor tick. Found in the pre-merge audit; do not bypass this helper.
+static int uv_set_for_ceil(int khz);
 static int uv_last_ceiling = 0;
+static pthread_mutex_t uv_ceiling_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int uv_readCeiling(void) {
+	FILE* f = fopen(MAX_FREQ_PATH, "r");
+	int khz = 0;
+	if (f) {
+		if (fscanf(f, "%d", &khz) != 1) khz = 0;
+		fclose(f);
+	}
+	return khz;
+}
+
+static int uv_writeCeiling(int khz, int* actual) {
+	FILE* f = fopen(MAX_FREQ_PATH, "w");
+	int wrote = 0;
+	if (f) {
+		wrote = fprintf(f, "%d", khz) > 0 && fflush(f) == 0 && !ferror(f);
+		if (fclose(f) != 0) wrote = 0;
+	}
+	int got = uv_readCeiling();
+	if (actual) *actual = got;
+	if (!wrote || got != khz) {
+		LOG_info("uv: ceiling write %dkHz failed readback (actual=%d, errno=%d)\n",
+			khz, got, errno);
+		return 0;
+	}
+	return 1;
+}
+
 static void uv_ceilingWrite(int khz) {
 	if (khz <= 0) return;
 	// HARD stock cap at the choke point: the kernel exposes a 2.0GHz OC OPP, and env
 	// overrides (MINARCH_FMIN/FMAX) or third-party paks could request it. The charter
 	// is no-overclock-ever — enforce it where EVERY ceiling writer passes (Codex audit).
 	if (khz > 1800000) khz = 1800000;
-	if (khz > uv_last_ceiling) {
-		PLAT_setCPUVoltForCeil(khz);
-		putInt(MAX_FREQ_PATH, khz);
+	pthread_mutex_lock(&uv_ceiling_lock);
+	int current = uv_last_ceiling;
+	if (current <= 0) {
+		current = uv_readCeiling();
+		if (current <= 0) {
+			// Unknown startup state: assume the highest stock OPP so the first transition
+			// can only lower the clock before it lowers voltage.
+			current = 1800000;
+			LOG_info("uv: could not read initial ceiling; assuming %dkHz for safe ordering\n", current);
+		}
+		uv_last_ceiling = current;
+	}
+
+	int actual = 0;
+	if (khz > current) {
+		if (!uv_set_for_ceil(khz)) {
+			LOG_info("uv: refusing ceiling raise to %dkHz; voltage readback failed\n", khz);
+			pthread_mutex_unlock(&uv_ceiling_lock);
+			return;
+		}
+		if (!uv_writeCeiling(khz, &actual)) {
+			// A readable ceiling is authoritative. If readback itself failed, hold the
+			// voltage for stock max because the write may still have reached the kernel.
+			if (actual > 0) uv_set_for_ceil(actual);
+			else uv_set_for_ceil(1800000);
+			if (actual > 0) uv_last_ceiling = actual;
+			pthread_mutex_unlock(&uv_ceiling_lock);
+			return;
+		}
 	}
 	else {
-		putInt(MAX_FREQ_PATH, khz);
-		PLAT_setCPUVoltForCeil(khz);
+		if (!uv_writeCeiling(khz, &actual)) {
+			// Do not lower voltage unless a readback proves the live ceiling. Keeping the
+			// previous (higher) target is inefficient but electrically safe.
+			if (actual > 0) {
+				uv_last_ceiling = actual;
+				uv_set_for_ceil(actual);
+			}
+			pthread_mutex_unlock(&uv_ceiling_lock);
+			return;
+		}
+		if (!uv_set_for_ceil(actual))
+			LOG_info("uv: voltage update failed after lowering to %dkHz; retaining higher rail\n", actual);
 	}
-	uv_last_ceiling = khz;
+	uv_last_ceiling = actual;
+	pthread_mutex_unlock(&uv_ceiling_lock);
 }
 
 void PLAT_setCPUSpeed(int speed) {
@@ -702,28 +771,34 @@ void PLAT_setCPUMaxFreq(int khz) {
 //   - VSEL register decode matches the kernel regulator's reported voltage at init
 //   - requested voltage within [table floor .. stock max], on a 12.5mV step
 //   - ZERO_NO_UV=1 env kills it
-// The GOVERNOR is the only caller and owns the ordering (volt-up before clock-up,
-// clock-down before volt-down) — see gov_tick.
-#include <pthread.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
+// Every ceiling caller is ordered by uv_ceilingWrite (volt-up before clock-up,
+// clock-down before volt-down).
 
 #define SHARED_UV_DIR  "/mnt/SDCARD/.userdata/tg5040/undervolt"
 #define UV_TABLE_PATH  SHARED_UV_DIR "/table.conf"
+#define UV_STOCK_PATH  SHARED_UV_DIR "/table.stock"
 #define UV_I2C_DEV     "/dev/i2c-6"
 #define UV_I2C_ADDR    0x41
 #define UV_BASE_UV     712500
 #define UV_STEP_UV     12500
+#define UV_CAL_FLOOR   762500
 #define UV_STOCK_MAX   1187500 // stock voltage of the top OPP: always-safe restore value
 
-static struct { int khz; int uv; } uv_table[16];
+#define UV_TABLE_ROWS 8
+static const int uv_expected_khz[UV_TABLE_ROWS] = {
+	408000, 600000, 816000, 1008000, 1200000, 1416000, 1608000, 1800000
+};
+static struct { int khz; int uv; } uv_table[UV_TABLE_ROWS];
+static int uv_stock[UV_TABLE_ROWS];
 static int uv_n = 0;
 static int uv_fd = -1;      // -1 = uninitialized, -2 = permanently disabled
 static int uv_applied = 0;  // last commanded uV (0 = stock/untouched)
 static int uv_target = 0;   // the voltage the authority wants HELD right now (0 = none)
 static pthread_t uv_thread;
 static pthread_mutex_t uv_lock = PTHREAD_MUTEX_INITIALIZER;
-static volatile int uv_thread_run = 0;
+static pthread_cond_t uv_cv = PTHREAD_COND_INITIALIZER;
+static int uv_thread_run = 0;
+static int uv_thread_started = 0;
 
 static int uv_reg_read(int reg) {
 	unsigned char r = (unsigned char)reg, v;
@@ -754,9 +829,8 @@ static int uv_init(void) {
 	uv_fd = -2; // assume failure; prove otherwise
 	char* e = getenv("ZERO_NO_UV");
 	if (e && e[0] && e[0] != '0') { pthread_mutex_unlock(&uv_init_lock); return 0; }
-	// CARD-SWAP GUARD: the table describes ONE chip. Primary check = the eFUSE chip serial
-	// (sunxi_serial — globally unique per die), so even two same-model devices never apply
-	// each other's tables. Fallback = model string (older calibrations without table.chip).
+	// CARD-SWAP GUARD: the table describes ONE chip. Require the eFUSE chip serial
+	// (sunxi_serial — globally unique per die); an unbound legacy table stays stock.
 	{
 		char dev_chip[64] = {0};
 		FILE* sf = fopen("/sys/class/sunxi_info/sys_info", "r");
@@ -777,47 +851,46 @@ static int uv_init(void) {
 		FILE* cf = fopen(SHARED_UV_DIR "/table.chip", "r");
 		if (cf) { if (fgets(tab_chip, sizeof tab_chip, cf)) { char* nl = strchr(tab_chip, '\n'); if (nl) *nl = 0; } fclose(cf); }
 
-		if (dev_chip[0] && tab_chip[0]) {
-			if (strcmp(dev_chip, tab_chip) != 0) {
-				LOG_info("uv: table was calibrated for a different chip — staying stock\n");
-				pthread_mutex_unlock(&uv_init_lock);
-				return 0;
-			}
-		}
-		else { // no chip identity available: fall back to model matching
-			char want[64] = {0}, have[64] = {0};
-			char* m = getenv("TRIMUI_MODEL");
-			if (m) snprintf(want, sizeof want, "%s", m);
-			FILE* mf = fopen(SHARED_UV_DIR "/table.model", "r");
-			if (mf) { if (fgets(have, sizeof have, mf)) { char* nl = strchr(have, '\n'); if (nl) *nl = 0; } fclose(mf); }
-			if (!want[0] || !have[0] || strcmp(want, have) != 0) {
-				if (have[0]) LOG_info("uv: table is for '%s' but device is '%s' — staying stock\n", have, want);
-				pthread_mutex_unlock(&uv_init_lock);
-				return 0;
-			}
+		if (!dev_chip[0] || !tab_chip[0] || strcmp(dev_chip, tab_chip) != 0) {
+			LOG_info("uv: table chip identity missing or mismatched — staying stock\n");
+			pthread_mutex_unlock(&uv_init_lock);
+			return 0;
 		}
 	}
-	FILE* f = fopen(UV_TABLE_PATH, "r");
-	if (!f) { pthread_mutex_unlock(&uv_init_lock); return 0; } // no calibration -> stock, silently
+	FILE* sf = fopen(UV_STOCK_PATH, "r");
+	if (!sf) { pthread_mutex_unlock(&uv_init_lock); return 0; }
+	int khz, uv, valid = 1, stock_n = 0;
+	char line[128], extra;
+	while (fgets(line, sizeof line, sf)) {
+		if (stock_n >= UV_TABLE_ROWS || sscanf(line, "%d %d %c", &khz, &uv, &extra) != 2 ||
+		    khz != uv_expected_khz[stock_n] || uv < UV_BASE_UV || uv > UV_STOCK_MAX ||
+		    (uv - UV_BASE_UV) % UV_STEP_UV || (stock_n > 0 && uv < uv_stock[stock_n-1])) {
+			valid = 0;
+			break;
+		}
+		uv_stock[stock_n++] = uv;
+	}
+	if (ferror(sf) || stock_n != UV_TABLE_ROWS) valid = 0;
+	fclose(sf);
+	FILE* f = valid ? fopen(UV_TABLE_PATH, "r") : NULL;
+	if (!f) { pthread_mutex_unlock(&uv_init_lock); return 0; } // no complete calibration -> stock
 	uv_n = 0;
-	int khz, uv, prev_khz = 0;
-	while (uv_n < 16 && fscanf(f, "%d %d", &khz, &uv) == 2) {
-		if (uv < UV_BASE_UV || uv > UV_STOCK_MAX || (uv - UV_BASE_UV) % UV_STEP_UV) { uv_n = 0; break; }
-		if (khz <= prev_khz) { uv_n = 0; break; } // must be strictly ascending: the lookup depends on it
-		prev_khz = khz;
-		uv_table[uv_n].khz = khz; uv_table[uv_n].uv = uv; uv_n++;
+	while (fgets(line, sizeof line, f)) {
+		if (uv_n >= UV_TABLE_ROWS || sscanf(line, "%d %d %c", &khz, &uv, &extra) != 2 ||
+		    khz != uv_expected_khz[uv_n] || uv < UV_CAL_FLOOR || uv > UV_STOCK_MAX ||
+		    (uv - UV_BASE_UV) % UV_STEP_UV || uv > uv_stock[uv_n] ||
+		    (uv_n < 3 && uv != uv_stock[uv_n]) ||
+		    (uv_n > 0 && uv < uv_table[uv_n-1].uv)) {
+			valid = 0;
+			break;
+		}
+		uv_table[uv_n].khz = khz;
+		uv_table[uv_n].uv = uv;
+		uv_n++;
 	}
+	if (ferror(f) || uv_n != UV_TABLE_ROWS) valid = 0;
 	fclose(f);
-	// ENVELOPE NORMALIZATION: the voltage held for a ceiling must cover EVERY OPP the
-	// kernel can pick beneath it, so rows must be non-decreasing. Real tables can measure
-	// non-monotonic (this Brick: 1800 cliffed below 1608); raise such rows to the running
-	// max — still >= their own measured-safe value, and the by-ceiling lookup then covers
-	// all lower OPPs by construction.
-	for (int i = 1; i < uv_n; i++) if (uv_table[i].uv < uv_table[i-1].uv) {
-		LOG_info("uv: normalizing non-monotonic row %dkHz %duV -> %duV\n",
-			uv_table[i].khz, uv_table[i].uv, uv_table[i-1].uv);
-		uv_table[i].uv = uv_table[i-1].uv;
-	}
+	if (!valid) uv_n = 0;
 	if (!uv_n) { LOG_info("uv: table invalid, staying stock\n"); pthread_mutex_unlock(&uv_init_lock); return 0; }
 	int fd = open(UV_I2C_DEV, O_RDWR);
 	if (fd < 0) { pthread_mutex_unlock(&uv_init_lock); return 0; }
@@ -856,28 +929,31 @@ static int uv_init(void) {
 	pthread_mutex_unlock(&uv_init_lock);
 	return 1;
 }
-static void uv_write(int uv) {
-	if (uv < UV_BASE_UV || uv > UV_STOCK_MAX) return;
+static int uv_write(int uv) {
+	if (uv < UV_BASE_UV || uv > UV_STOCK_MAX || (uv - UV_BASE_UV) % UV_STEP_UV) return 0;
 	int vsel = (uv - UV_BASE_UV) / UV_STEP_UV;
 	int v0 = uv_reg_read(0x00), v1 = uv_reg_read(0x01);
-	if (v0 < 0 || v1 < 0) return;
+	if (v0 < 0 || v1 < 0) return 0;
 	unsigned char b0[2] = { 0x00, (unsigned char)((v0 & 0xC0) | vsel) };
 	unsigned char b1[2] = { 0x01, (unsigned char)((v1 & 0xC0) | vsel) };
-	if (write(uv_fd, b0, 2) != 2) return;
-	write(uv_fd, b1, 2);
+	if (write(uv_fd, b0, 2) != 2 || write(uv_fd, b1, 2) != 2) return 0;
+	v0 = uv_reg_read(0x00);
+	v1 = uv_reg_read(0x01);
+	if (v0 < 0 || v1 < 0 || (v0 & 0x3F) != vsel || (v1 & 0x3F) != vsel) return 0;
 	uv_applied = uv;
+	return 1;
 }
 int PLAT_supportsUndervolt(void) { return uv_init(); }
-void PLAT_setCPUVoltForCeil(int khz) {
+static int uv_set_for_ceil(int khz) {
 	// voltage that covers the highest OPP the kernel may round the ceiling UP to:
 	// smallest table entry >= khz (table sorted ascending); above the table -> stock.
-	if (!uv_init()) return;
+	if (!uv_init()) return 1; // stock regulator path remains authoritative
 	int uv = 0;
-	// LIGHT-LOAD FLOOR GUARD (2026-07-09, measured): undervolt holds at a <=600MHz
+	// LIGHT-LOAD FLOOR GUARD (2026-07-09, measured): undervolt holds at a <=816MHz
 	// ceiling brownout-reboot the device within minutes (DK parked at the 408 floor died
 	// twice with UV on, ran 12 min clean with UV off). The calibration proved the floor
 	// voltage under STRESS; a game idling at the floor puts the buck in light-load mode
-	// where the same rail is not stable — so run STOCK voltage below an 816MHz ceiling.
+	// where the same rail is not stable — so run STOCK voltage at or below an 816MHz ceiling.
 	// "Stock" means STAND DOWN (uv_target=0: the hold thread stops writing). The kernel
 	// re-asserts its per-OPP stock voltage on the next DVFS transition; at a PINNED floor
 	// (no transitions) the register simply retains the last held table voltage — which is
@@ -885,23 +961,32 @@ void PLAT_setCPUVoltForCeil(int khz) {
 	// (gate-verified 2026-07-11: 812.5mV retained at 408MHz vs 762.5 stock). The previous
 	// code actively held UV_STOCK_MAX here — the TOP OPP's 1187.5mV against a 408MHz clock,
 	// overvolting exactly the light loads this guard exists to protect (audit 2026-07-11).
-	if (khz >= 816000)
+	if (khz > 816000)
 		for (int i = 0; i < uv_n; i++) if (uv_table[i].khz >= khz) { uv = uv_table[i].uv; break; }
 	if (!uv) { // low ceiling, or ceiling above the table: stock rules, stop holding
 		pthread_mutex_lock(&uv_lock);
 		uv_target = 0;
 		pthread_mutex_unlock(&uv_lock);
-		return;
+		return 1;
 	}
 	// The kernel RE-ASSERTS its stock voltage on every DVFS transition, so the register is
 	// the only truth — read it and rewrite when it drifted (one i2c read per tick, ~2Hz).
 	pthread_mutex_lock(&uv_lock);
-	uv_target = uv;
 	int v0 = uv_reg_read(0x00);
-	if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv) uv_write(uv);
-	else if (v0 < 0 && uv != uv_applied) uv_write(uv);
+	int v1 = uv_reg_read(0x01);
+	int applied = v0 >= 0 && v1 >= 0 &&
+		UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV == uv &&
+		UV_BASE_UV + (v1 & 0x3F) * UV_STEP_UV == uv;
+	if (!applied && !uv_write(uv)) {
+		pthread_mutex_unlock(&uv_lock);
+		return 0;
+	}
+	uv_target = uv;
+	pthread_cond_signal(&uv_cv);
 	pthread_mutex_unlock(&uv_lock);
+	return 1;
 }
+void PLAT_setCPUVoltForCeil(int khz) { (void)uv_set_for_ceil(khz); }
 // The kernel re-stocks the rail on EVERY schedutil DVFS transition (many/sec), so a
 // per-frame (60Hz) reassert only wins ~50% of the time. A dedicated thread polls the
 // register at ~200Hz and rewrites the instant the kernel drifts us off target. Safe by
@@ -910,23 +995,37 @@ void PLAT_setCPUVoltForCeil(int khz) {
 // serialized with the governor's own writes by uv_lock.
 static void* uv_hold(void* arg) {
 	(void)arg;
-	while (uv_thread_run) {
-		if (uv_fd >= 0 && uv_target) {
-			pthread_mutex_lock(&uv_lock);
-			int v0 = uv_reg_read(0x00);
-			if (v0 >= 0 && UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target) uv_write(uv_target);
+	while (__atomic_load_n(&uv_thread_run, __ATOMIC_ACQUIRE)) {
+		pthread_mutex_lock(&uv_lock);
+		while (__atomic_load_n(&uv_thread_run, __ATOMIC_ACQUIRE) && !uv_target)
+			pthread_cond_wait(&uv_cv, &uv_lock);
+		if (!__atomic_load_n(&uv_thread_run, __ATOMIC_ACQUIRE)) {
 			pthread_mutex_unlock(&uv_lock);
+			break;
 		}
+		if (uv_fd >= 0 && uv_target) {
+			int v0 = uv_reg_read(0x00);
+			int v1 = uv_reg_read(0x01);
+			if (v0 < 0 || v1 < 0 || UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target ||
+			    UV_BASE_UV + (v1 & 0x3F) * UV_STEP_UV != uv_target) uv_write(uv_target);
+		}
+		pthread_mutex_unlock(&uv_lock);
 		usleep(5000); // ~200Hz
 	}
 	return NULL;
 }
 void PLAT_uvReassert(void) {
 	// Lazily start the hold thread on first armed frame (no-op unless the authority armed).
-	if (uv_fd < 0 || !uv_target || uv_thread_run) return;
-	uv_thread_run = 1;
-	if (pthread_create(&uv_thread, NULL, uv_hold, NULL) != 0) uv_thread_run = 0;
-	else LOG_info("uv: hold thread started (~200Hz, holding %duV)\n", uv_target);
+	pthread_mutex_lock(&uv_lock);
+	if (uv_fd < 0 || !uv_target || uv_thread_started) { pthread_mutex_unlock(&uv_lock); return; }
+	__atomic_store_n(&uv_thread_run, 1, __ATOMIC_RELEASE);
+	if (pthread_create(&uv_thread, NULL, uv_hold, NULL) != 0)
+		__atomic_store_n(&uv_thread_run, 0, __ATOMIC_RELEASE);
+	else {
+		uv_thread_started = 1;
+		LOG_info("uv: hold thread started (~200Hz, holding %duV)\n", uv_target);
+	}
+	pthread_mutex_unlock(&uv_lock);
 }
 void PLAT_emergencyRestoreCPUVolt(void) {
 	// SIGNAL-HANDLER-SAFE restore: NO mutex (the hold thread holds uv_lock ~20% of the
@@ -934,7 +1033,7 @@ void PLAT_emergencyRestoreCPUVolt(void) {
 	// clear the target first so the hold thread stops re-asserting, then one best-effort
 	// raw write of stock-max. Post-crash, the kernel re-stocks on the next DVFS transition
 	// anyway (and sequences volts-before-freq), so this is belt on top of kernel braces.
-	uv_thread_run = 0;
+	__atomic_store_n(&uv_thread_run, 0, __ATOMIC_RELEASE);
 	uv_target = 0;
 	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);
 	uv_applied = 0;
@@ -942,7 +1041,14 @@ void PLAT_emergencyRestoreCPUVolt(void) {
 void PLAT_restoreCPUVolt(void) {
 	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the
 	// next OPP transition. Called on quit and from the crash handler.
-	uv_thread_run = 0; // stop the hold thread first
+	__atomic_store_n(&uv_thread_run, 0, __ATOMIC_RELEASE); // stop the hold thread first
+	if (uv_thread_started) {
+		pthread_mutex_lock(&uv_lock);
+		pthread_cond_broadcast(&uv_cv);
+		pthread_mutex_unlock(&uv_lock);
+		pthread_join(uv_thread, NULL);
+		uv_thread_started = 0;
+	}
 	pthread_mutex_lock(&uv_lock);
 	uv_target = 0;
 	if (uv_fd >= 0 && uv_applied) uv_write(UV_STOCK_MAX);

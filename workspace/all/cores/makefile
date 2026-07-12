@@ -19,14 +19,14 @@ endif
 
 # this logic was broken out from picoarch's all-in-one makefile
 
-PATCH = git apply
+PATCH = git apply --unidiff-zero
 PROCS = -j4
 
 ###############################
 
 BUILD_ROOT=../../$(PLATFORM)/cores
 
-define TEMPLATE=
+define TEMPLATE
 
 $1_REPO ?= https://github.com/libretro/$(1)
 $1_MAKE ?= make $(and $($1_MAKEFILE),-f $($1_MAKEFILE)) platform=$(PLATFORM) $($(1)_FLAGS)
@@ -44,7 +44,12 @@ src/$(1)/.patched-all:
 	(test ! -d ../../all/cores/patches/$(1)) || (test -f src/$(1)/.patched-all) || (cd src/$(1) && $(foreach patch, $(sort $(wildcard ../../all/cores/patches/$(1)/*.patch)), $(PATCH) -p1 < ../../$(patch) &&) touch .patched-all && true)
 	
 
-output/$(1)_libretro.so: src/$(1)/.patched src/$(1)/.patched-all
+.PHONY: verify-$(1)
+verify-$(1): src/$(1)/.patched src/$(1)/.patched-all
+	sh ../../all/cores/verify-source.sh src/$(1) "$(if $($1_HASH),$($1_HASH),HEAD)" $(if $(wildcard patches/$(1).patch),patches/$(1).patch) $(sort $(wildcard ../../all/cores/patches/$(1)/*.patch)) $(addprefix --ignore=,$($(1)_VERIFY_IGNORE))
+
+
+output/$(1)_libretro.so: src/$(1)/.patched src/$(1)/.patched-all | verify-$(1)
 	mkdir -p output
 	cd src/$$($1_BUILD_PATH) && $$($1_MAKE) $(PROCS)
 	mv src/$$($1_BUILD_PATH)/$(if $($(1)_CORE),$($(1)_CORE),$(1)_libretro.so) ./output
@@ -73,6 +78,8 @@ $(foreach CORE,$(CORES),$(eval $(call TEMPLATE,$(CORE))))
 cores: $(foreach CORE,$(CORES),$(CORE))
 	
 clean: $(foreach CORE,$(CORES),clean-$(CORE))
+
+verify: $(foreach CORE,$(CORES),verify-$(CORE))
 	
 nuke:
 	rm -rf ./output

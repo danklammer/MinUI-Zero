@@ -1088,23 +1088,25 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 	}
 }
 static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
-	snd.frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
-	if (snd.frame_count==0) return;
+	size_t old_frame_count = snd.frame_count;
+	size_t new_frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
+	if (new_frame_count==0) return;
 	
 	// LOG_info("frame_count: %i (%i * %i / %f)\n", snd.frame_count, snd.buffer_seconds, snd.sample_rate_in, snd.frame_rate);
 	// snd.frame_count *= 2; // no help
 	
 	SDL_LockAudio();
 	
-	int buffer_bytes = snd.frame_count * sizeof(SND_Frame);
+	int buffer_bytes = new_frame_count * sizeof(SND_Frame);
 	void* grown = realloc(snd.buffer, buffer_bytes);
 	if (!grown) { // OOM: keep the old ring (and its old frame_count) rather than crash
-		snd.frame_count = snd.buffer ? snd.frame_count : 0;
+		snd.frame_count = snd.buffer ? old_frame_count : 0;
 		SDL_UnlockAudio();
 		LOG_info("SND_resizeBuffer: realloc(%i) failed, keeping previous ring\n", buffer_bytes);
 		return;
 	}
 	snd.buffer = grown;
+	snd.frame_count = new_frame_count;
 	memset(snd.buffer, 0, buffer_bytes);
 	
 	snd.frame_in = 0;
@@ -1189,6 +1191,9 @@ static int SND_ringLow(void) {
 	return queued < snd.frame_count / 4;
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
+	// Libretro expects the number accepted. With no live device/consumer, discard audio
+	// rather than filling a preserved ring and blocking the emulation thread forever.
+	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
 	if (snd.prefilling) {
 		int queued = snd.frame_in - snd.frame_out;
 		if (queued < 0) queued += snd.frame_count;
@@ -1199,8 +1204,6 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	}
 	
 	// return frame_count; // TODO: tmp, silent
-	
-	if (snd.frame_count==0) return 0;
 	
 	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
 	
@@ -1321,15 +1324,18 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
-	if (!snd.initialized) return;
-
-	SDL_PauseAudio(1);
-	SDL_CloseAudio();
+	if (snd.initialized) {
+		SDL_PauseAudio(1);
+		SDL_CloseAudio();
+	}
 
 	if (snd.buffer) {
 		free(snd.buffer);
 		snd.buffer = NULL;
 	}
+	snd.frame_count = 0;
+	snd.frame_in = snd.frame_out = snd.frame_filled = 0;
+	snd.initialized = 0;
 }
 
 ///////////////////////////////

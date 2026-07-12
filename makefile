@@ -25,6 +25,7 @@ RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
 RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | wc -l | sed 's/ //g')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
+LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba
 
 ###########################################################
 
@@ -41,11 +42,15 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry
+.PHONY: test-governor test-telemetry test-undervolt test-reproducibility
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
+test-undervolt:
+	sh ./workspace/tg5040/undervolt/run-tests.sh
+test-reproducibility:
+	sh ./workspace/all/cores/run-source-verifier-tests.sh
 
 build:
 	# ----------------------------------------------------
@@ -168,14 +173,16 @@ package: tidy
 	mkdir -p ./build/BASE/LICENSES
 	cp LICENSE.md THIRD_PARTY_NOTICES.md ./build/BASE/LICENSES/
 	for plat in $(PLATFORMS); do \
-		for d in ./workspace/$$plat/cores/src/*/; do \
-			n=$$(basename $$d); \
-			for f in COPYING COPYING.LIB LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
+		for n in $(LICENSE_CORES); do \
+			d=./workspace/$$plat/cores/src/$$n/; \
+			for f in COPYING Copying COPYING.LIB copyright COPYRIGHT LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
 				if [ -f "$$d$$f" ]; then mkdir -p ./build/BASE/LICENSES/$$n && cp "$$d$$f" ./build/BASE/LICENSES/$$n/; fi; \
 			done; \
 		done; \
 	done; true
-	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI (tag matching version.txt inside MinUI.zip/.system).\nEmulator cores are built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that tag; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
+	mkdir -p ./build/BASE/LICENSES/unzip60
+	cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/
+	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
 	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	

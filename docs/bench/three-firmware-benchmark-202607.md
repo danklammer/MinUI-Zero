@@ -76,7 +76,7 @@ Captured logs cover the final ~3.3 minutes of each 8-minute cell (40 samples at 
 | NextUI Powersave (816) | drop counter +2,886 in the logged window (**~15/s**) |
 | NextUI auto (1800, default) | drop counter +2,340 in the logged window (**~12/s**); fps dipped to 53.4 |
 | NextUI Performance (2000) | drop counter **+5** in the logged window — holds |
-| Zero default (modal 1008) | holds 60/60 (Zero's own frame telemetry; also verified during the v1.3 campaign with on-screen HUD) |
+| Zero default (modal 1008) | holds 60/60 (on-screen HUD observation; [narrative receipt](receipts/br2-zero-hud-20260709.md), no raw fight log retained) |
 | NextUI Powersave, THPS2 | drop counter **+1** — holds |
 
 Caveats: the semantics of NextUI's `frame_drops` counter are theirs (it is the "D:"
@@ -104,9 +104,9 @@ point the same direction as the load-average and clock data, which is why they a
 reported at all.
 
 Undervolt A/B (Zero, UV on vs off, back-to-back): the difference is **below the gauge's
-30 mAh resolution** in 8-minute cells. The supportable statement is the rail arithmetic
-from the measured margin (~10% of CPU-rail power at the top clock from 75 mV), not a
-gauge figure.
+30 mAh resolution** in 8-minute cells. The supportable statement is rail arithmetic, not
+a gauge figure: the corrected production envelope uses 1075 mV at the 1187.5 mV top OPP,
+about 18% less CPU-rail dynamic power at that clock.
 
 ## What explains the differences
 
@@ -127,9 +127,11 @@ The mechanisms are separable, and were measured separately:
 - **Stack weight**: NextUI runs a GL render pipeline plus batmon/audiomon/gametimectl
   daemons — features with real costs that its users may value; the THPS2 energy row
   quantifies the cost side only.
-- **Undervolt**: Zero applies a per-chip calibrated voltage table (this device: 75 mV
-  minimum margin; every OPP at or below 1008 MHz ran to the calibration floor without
-  failure). Contribution to these short cells is below gauge resolution.
+- **Undervolt**: Zero applies a per-chip calibrated voltage table. This device's smallest
+  raw cliff headroom was 75 mV; after the 50 mV guard, the smallest applied high-OPP
+  reduction is 25 mV. Every OPP at or below 1008 MHz reached the calibration floor without
+  failure, but runtime stands down at or below 816 MHz after light-load testing. Contribution
+  to these short cells is below gauge resolution.
 - **NextUI history note**: NextUI's Performance mode originally ran schedutil with a
   2000 MHz ceiling; commit afb3783d (#727) changed it to the pinned `performance`
   governor after users reported slowdowns. Its author reports extensive testing behind
@@ -150,9 +152,9 @@ The mechanisms are separable, and were measured separately:
 
 ## Raw data
 
-Everything above traces to bench3-real-raw/ (CSVs, *.fpslog, charts) and
-bench3-raw/ (the emulated three-policy pass). Instrumentation patches:
-docs/bench/receipts/.
+Logged cells trace to bench3-real-raw/ (CSVs, *.fpslog, charts) and bench3-raw/ (the
+emulated three-policy pass). Instrumentation patches are in docs/bench/receipts/. The
+Zero BR2 fight result is a labeled HUD observation with a narrative receipt, not a raw log.
 
 ## Corrections (2026-07-11 re-verification)
 
