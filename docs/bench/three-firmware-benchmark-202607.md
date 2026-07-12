@@ -174,6 +174,14 @@ range to 600–1800: the two archived cells now bracket both extremes of the mix
 
 ## Caveats
 
+- **Attract clocks understate gameplay clocks on light systems** (measured 2026-07-12,
+  receipts zero-v130-contra-gameplay-bot.csv / zero-v130-zeldadx-liveplay.csv): real
+  GBC/NES play provisions to 1008 MHz in action scenes (Zelda DX quiet stretches rest at
+  408–600; gen-collapse at lower ceilings is measured, play feels smooth, ~33–36°C —
+  still well under stock's fixed 1608 for the same content). The 7.5h GB/GBC battery
+  figure is attract-based; expect real-play battery below it. Why these cores cost 1008
+  in action at all is an open v1.4 investigation (frame-present path / accounting, not
+  emulation cost).
 - Attract mode, not gameplay input. Single device, single run per cell (except Zelda,
   which repeated across boots within 0.5°C, and THPS2, which the emulated bench
   independently reproduced within 0.5°C).
