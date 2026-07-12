@@ -37,3 +37,20 @@ index 3be314b..fbae940 100644
  endif
  
  ifneq ($(SANITIZER),)
+diff --git a/src/drivers/libretro/libretro.c b/src/drivers/libretro/libretro.c
+index 96ea7dd..1753ffc 100644
+--- a/src/drivers/libretro/libretro.c
++++ b/src/drivers/libretro/libretro.c
+@@ -328,7 +328,11 @@ extern int zapper_sensor_invert_option;
+ const char *GetKeyboard(void); /* used by src/boards/transformer.c */
+ const char * GetKeyboard(void)
+ {
+-   return "";
++   /* transformer.c scans 256 bytes of keyboard state every IRQ tick; returning a
++      1-byte literal read 255 bytes out of bounds. No host keyboard on this platform,
++      so a persistent zeroed 256-byte state is the correct "no keys" answer. */
++   static const char keyboard_state[256];
++   return keyboard_state;
+ }
+ 
+ #define BUILD_PIXEL_RGB565(R,G,B) (((int) ((R)&0x1f) << RED_SHIFT) | ((int) ((G)&0x3f) << GREEN_SHIFT) | ((int) ((B)&0x1f) << BLUE_SHIFT))
