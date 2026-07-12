@@ -802,3 +802,21 @@ redesign, not denied. Re-enable only after that redesign. The legacy `minarch_th
 migration still parses safely; it now lands on the locked-Off option. Emulator cores'
 own internal worker threads are unaffected. Honest data does not care what the branch
 is called.
+
+## D53 — calibration freezes must self-recover (2026-07-12)
+Dan's verdict after three marginal-voltage freezes in one day each needed a manual
+POWER-hold: "It has to reboot on its own" — release blocker. The first deadman
+(`sleep && reboot -f`, normal priority) never woke in the frozen state even though the
+kernel reserves 5% CPU for non-RT tasks, which means those freezes were deeper than
+scheduler starvation (partial core wedge while procd's RT feeder kept the hardware
+watchdog fed). Redesign is layered, defense-in-depth: (1) a compiled deadman at
+SCHED_FIFO max + mlockall firing the raw reboot(2) syscall — no exec, no sync at
+trigger time (a wedged storage stack must not hang the reboot); (2) the kernel's
+panic_on_rcu_stall + panic_on_oops armed per stress round with kernel.panic=10
+auto-reboot (this BSP has no softlockup detector; RCU stalls are the kernel-visible
+signature of a partial wedge); (3) /dev/watchdog0 exists as a possible true hardware
+deadline but /sys/class/watchdog is absent on this BSP, so probing it blind (nowayout
+unknown) was deemed riskier than shipping layers 1+2 — deferred. Acceptance on
+hardware: SCHED_FIFO 99 verified, SIGTERM cancel clean, budget-expiry force-reboot
+confirmed by uptime reset. Residual honesty: a wedge deeper than both layers still
+needs POWER; the next real marginal-voltage freeze is the live-fire validation.

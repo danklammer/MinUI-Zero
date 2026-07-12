@@ -32,6 +32,14 @@ STRESS_SECS=75
 [ -f "$UV_DIR/ARMED" ] || exit 0
 mkdir -p "$UV_DIR"
 
+# kernel-panic net for wedged stress rounds (armed per round, disarmed on every
+# round-exit path; a trigger reboots, which resets them to defaults anyway)
+panic_net_off() {
+	[ -w /proc/sys/kernel/panic_on_rcu_stall ] && echo 0 > /proc/sys/kernel/panic_on_rcu_stall
+	[ -w /proc/sys/kernel/panic_on_oops ] && echo 0 > /proc/sys/kernel/panic_on_oops
+	[ -w /proc/sys/kernel/panic ] && echo 3 > /proc/sys/kernel/panic
+}
+
 # auto.sh and the tool can be entered close together. Only one process may own the
 # watchdog, cpufreq policy, or voltage rail; /tmp is cleared by every reboot.
 LOCK=/tmp/uvmap.lock
@@ -360,20 +368,33 @@ for OPP in $OPPS; do
 		fi
 		UV=$((UV - STEP))
 		echo "$OPP $UV" > "$STATE"; sync   # if we reboot past here, this point crashed
-		# userspace deadman: a SOFT wedge (CPU stuck but procd still feeding the hw dog)
-		# hangs the campaign forever — the procd-held-watchdog path can't catch it.
-		# If this round runs far past budget, force the reboot ourselves; the breadcrumb
-		# above then records this voltage as the cliff. (Live-fired 2026-07-11: chip
-		# wedged mid-campaign and needed a manual power cut.)
-		( sleep $((STRESS_SECS + 120)) && reboot -f ) &
+		# Layered self-reboot for wedged rounds (2026-07-12: three marginal-voltage
+		# freezes in one day needed manual power cuts — the old normal-priority
+		# `sleep && reboot -f` never woke in that state while procd kept the hw dog fed):
+		# 1) kernel net — a partial core wedge usually trips an RCU stall; with
+		#    panic_on_rcu_stall set the kernel panics and kernel.panic auto-reboots.
+		#    Armed per-round; restored after a surviving round, reset anyway by a reboot.
+		[ -w /proc/sys/kernel/panic ] && echo 10 > /proc/sys/kernel/panic
+		[ -w /proc/sys/kernel/panic_on_oops ] && echo 1 > /proc/sys/kernel/panic_on_oops
+		[ -w /proc/sys/kernel/panic_on_rcu_stall ] && echo 1 > /proc/sys/kernel/panic_on_rcu_stall
+		# 2) compiled deadman at SCHED_FIFO max + mlockall, raw reboot(2) at trigger
+		#    (no sync — a wedged storage stack must not hang the reboot). The breadcrumb
+		#    above then records this voltage as the cliff. Old shell form kept as fallback.
+		if [ -x "$BIN/deadman" ]; then
+			"$BIN/deadman" $((STRESS_SECS + 120)) &
+		else
+			( sleep $((STRESS_SECS + 120)) && reboot -f ) &
+		fi
 		DEADMAN=$!
-		"$BIN/uvtool" set "$UV" >> "$LOG" 2>&1 || { kill $DEADMAN 2>/dev/null; echo "$OPP uvtool-refused at $UV" >> "$LOG"; break; }
+		"$BIN/uvtool" set "$UV" >> "$LOG" 2>&1 || { kill $DEADMAN 2>/dev/null; panic_net_off; echo "$OPP uvtool-refused at $UV" >> "$LOG"; break; }
 		if ! "$BIN/stress" $STRESS_SECS >> "$LOG" 2>&1; then
 			kill $DEADMAN 2>/dev/null
+			panic_net_off
 			echo "$OPP CLIFF $UV (stress-fail)" >> "$LOG"; sync
 			break
 		fi
 		kill $DEADMAN 2>/dev/null
+		panic_net_off
 		echo "$(date +%T) opp $OPP: $UV uV survived" >> "$LOG"; sync
 		[ "$UV" -le "$FLOOR" ] && FLOOR_PROVEN=1
 	done

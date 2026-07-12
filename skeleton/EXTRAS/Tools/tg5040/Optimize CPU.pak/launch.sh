@@ -12,7 +12,7 @@ PAK_DIR="$(dirname "$0")"
 # Self-install the exact packaged harness into the persistent working dir. Timestamps on
 # FAT are not a reliable version check, and arming with a failed copy could resume old code.
 INSTALL_FAILED=0
-for f in uvtool stress uvmap.sh; do
+for f in uvtool stress deadman uvmap.sh; do
 	if [ ! -f "$PAK_DIR/bin/$f" ]; then
 		INSTALL_FAILED=1
 	elif [ ! -f "$UV_DIR/$f" ] || ! cmp -s "$PAK_DIR/bin/$f" "$UV_DIR/$f"; then

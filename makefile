@@ -77,6 +77,7 @@ system:
 		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
 		cp ./workspace/tg5040/undervolt/build/uvtool "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 		cp ./workspace/tg5040/undervolt/build/stress "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/build/deadman "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 		cp ./workspace/tg5040/undervolt/uvmap.sh "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 	fi
 
