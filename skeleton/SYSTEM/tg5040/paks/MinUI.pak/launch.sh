@@ -41,6 +41,39 @@ find "$SDCARD_PATH/.fseventsd" -type f ! -name no_log -delete 2>/dev/null
 rm -f "$SDCARD_PATH/.DS_Store" "$SDCARD_PATH"/._* 2>/dev/null
 ( find "$ROMS_PATH" "$BIOS_PATH" "$SAVES_PATH" \( -name "._*" -o -name ".DS_Store" \) -delete 2>/dev/null & )
 
+# v1.3 migration: saved PS cfgs snapshot ALL core options, so pre-v1.3 saves pin
+# pcsx_rearmed_gpu_thread_rendering=auto forever, silently overriding the new disabled
+# default (the async GPU thread serializes on the A133P; DECISIONS D48 — this trap bit
+# both dev devices within hours). Run once per card; do not keep rewriting user config
+# after the migration has completed successfully.
+_gpu_migration="$SHARED_USERDATA_PATH/.minui/migrated-v13-gpu-thread-disabled"
+if [ ! -f "$_gpu_migration" ]; then
+	_gpu_migration_failed=0
+	for _cfg in "$USERDATA_PATH/PS-pcsx_rearmed"/*.cfg; do
+		[ -f "$_cfg" ] || continue
+		if grep -q "pcsx_rearmed_gpu_thread_rendering = auto" "$_cfg"; then
+			sed -i "s/pcsx_rearmed_gpu_thread_rendering = auto/pcsx_rearmed_gpu_thread_rendering = disabled/" "$_cfg" || _gpu_migration_failed=1
+			grep -q "pcsx_rearmed_gpu_thread_rendering = auto" "$_cfg" && _gpu_migration_failed=1
+		fi
+	done 2>/dev/null
+	if [ "$_gpu_migration_failed" = "0" ]; then
+		: > "$_gpu_migration.tmp" && mv "$_gpu_migration.tmp" "$_gpu_migration"
+		sync
+	fi
+fi
+unset _cfg _gpu_migration _gpu_migration_failed
+
+# dev: Stay Awake tool persistence (workspace/tg5040/dev-tools/, never shipped) — the
+# /tmp flag resets each boot, so re-arm from the shared flag. Inert unless a dev armed it.
+if [ -f "$SHARED_USERDATA_PATH/dev-stay-awake" ]; then
+	touch /tmp/stay_awake
+	iw dev wlan0 set power_save off 2>/dev/null
+	iwconfig wlan0 power off 2>/dev/null
+	# net-keeper self-heals a wedged wifi driver (dev tool file; absent on shipped cards)
+	NK="$SDCARD_PATH/Tools/$PLATFORM/Stay Awake.pak/net-keeper.sh"
+	[ -f "$NK" ] && ( /bin/sh "$NK" </dev/null >/dev/null 2>&1 ) &
+fi
+
 # model detection: NO caching — the SD card can move between a Brick and a Smart Pro
 # (same tg5040 platform), and a cached model would misdetect after the swap (wrong pad
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
@@ -180,6 +213,30 @@ fi
 keymon.elf & # &> $SDCARD_PATH/keymon.txt &
 
 #######################################
+
+# An armed calibration resumes from auto.sh below. Refresh its persistent harness from
+# the just-installed pak first; otherwise an update can reboot into the older campaign
+# code before the user opens Optimize CPU. Copy failure disarms and marks the campaign
+# invalid rather than running mixed versions.
+_uv_dir="$USERDATA_PATH/undervolt"
+_uv_pak="$SDCARD_PATH/Tools/$PLATFORM/Optimize CPU.pak/bin"
+if [ -f "$_uv_dir/ARMED" ]; then
+	_uv_refresh_failed=0
+	for _uv_file in uvtool stress uvmap.sh; do
+		if [ ! -f "$_uv_pak/$_uv_file" ]; then
+			_uv_refresh_failed=1
+		elif [ ! -f "$_uv_dir/$_uv_file" ] || ! cmp -s "$_uv_pak/$_uv_file" "$_uv_dir/$_uv_file"; then
+			cp "$_uv_pak/$_uv_file" "$_uv_dir/$_uv_file" 2>/dev/null && chmod +x "$_uv_dir/$_uv_file" || _uv_refresh_failed=1
+		fi
+		[ -f "$_uv_dir/$_uv_file" ] && chmod +x "$_uv_dir/$_uv_file" 2>/dev/null || _uv_refresh_failed=1
+	done
+	if [ "$_uv_refresh_failed" != "0" ]; then
+		rm -f "$_uv_dir/ARMED" "$_uv_dir/state"
+		touch "$_uv_dir/INVALID"
+		sync
+	fi
+fi
+unset _uv_dir _uv_pak _uv_file _uv_refresh_failed
 
 AUTO_PATH=$USERDATA_PATH/auto.sh
 if [ -f "$AUTO_PATH" ]; then

@@ -32,9 +32,11 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Gameplay vs stock MinUI's default 1608 MHz clock | **2-3°C (4-5°F) cooler** |
 | Gameplay vs MinUI's 2.0GHz Performance mode | **4-5°C (7-9°F) cooler** |
 | Optimize CPU, identical pinned-clock stress test | **3°C (5°F) lower temperature rise** |
-| Optimize CPU power reduction | **Up to 20% less CPU power at the same clock** |
+| Optimize CPU power reduction | **Up to ~18% less CPU-rail dynamic power at the same clock** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
 | PlayStation battery life | **~6.5-7 hours** measured on tuned hardware |
+| Bloody Roar II, a game other firmwares handle with the 2.0GHz overclock | **Full speed at stock clocks**, 35-40°C |
+| Tony Hawk's Pro Skater 2, measured in-level | **60fps at 1008 MHz** — just over half the stock maximum clock |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
 | Boot to menu | **~10 seconds** (2.3s faster than v1.1, measured) — wake from sleep is instant |
 | Deep sleep | Near-zero active power, with instant resume |
@@ -52,7 +54,7 @@ The governor and Optimize CPU figures come from separate tests, so they are list
 | **Deep sleep by default** | Suspend-to-RAM keeps your place and wakes almost instantly |
 | **Stock bugs fixed** | Hot-running NES settings, crackling audio, hanging quit menus, and LEDs turning themselves back on |
 | **Smoother gameplay** | Panel-matched pacing, improved audio resampling, and roughly one frame less input latency |
-| **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware |
+| **Efficiency-tuned cores** | Emulator cores are built and configured specifically for the hardware, including NEON-accelerated PlayStation video decoding |
 | **Safer failure handling** | Bad ROMs exit cleanly, mid-game resolution changes are handled, and saves are written safely |
 | **Menu clock (opt-in)** | Time next to the battery, in the menu and pause screen — Tools -> Clock to enable |
 | **Charging screen** | Idle on the charger shows a dim battery display, then sleeps — cooler charging, honest percentages |
@@ -101,26 +103,24 @@ makes NES run hot on every MinUI device: a system that measures game speed notic
 
 ## Optimize CPU (the self-calibrating undervolt)
 
-Every chip is a little different. The factory voltage table is set for the worst chip ever
-made — which means your specific chip almost certainly runs stable well below it. That gap
-is free power. Enthusiast firmwares offer manual undervolting — you guess numbers and eat
-the crashes. As far as we know, none has ever shipped a device that measures its own chip
-and tunes itself. Flagship phone silicon does this with dedicated on-die hardware; Zero
-does it in firmware, for a $60 handheld.
+Every chip is a little different. Factory voltage tables include production and operating
+margin, and some individual chips can run reliably below them. Optimize CPU measures that
+device-specific margin instead of applying another device's numbers.
 
 Run **Tools → Optimize CPU**, leave the device on its charger, and for about 90 minutes it
-measures its own silicon: stepping the CPU voltage down under worst-case load, watchdog
+measures its own silicon: stepping the CPU voltage down under a high-load stressor, watchdog
 armed, until it finds each clock's real limit. It restarts itself several times — that is
 the measurement working. The result is a voltage table for YOUR exact chip, with a safety
-margin below every measured limit.
+guard above every measured failure threshold and a per-OPP cap at the recorded stock voltage.
 
-From then on the governor runs your chip at its measured minimum. Verified on hardware:
-**up to 20% less CPU power at identical clocks** and about **4°C cooler in heavy games** —
-same frame rates, nothing to configure afterward.
+From then on the governor uses the guarded table only where calibration is active. Verified
+on hardware: **up to ~18% less CPU-rail dynamic power at identical clocks** and a
+**3°C lower temperature rise in the matched pinned-clock stress test** — same workload,
+nothing to configure afterward.
 
-Built safe in every direction: voltages are applied at runtime only, so any reboot, crash,
-or update instantly returns to factory-safe values. There is no way to brick a device with
-it. Revert anytime from the same tool. Calibration survives updates — measure once.
+Voltages are applied at runtime only; rebooting returns control to the kernel's stock table.
+The tool verifies device identity and register readback, and refuses incomplete calibration
+data. Back up saves before calibration, and revert anytime from the same tool.
 
 ## Deep sleep
 
@@ -146,7 +146,17 @@ and the system appears, tuned core already installed.
 ## Install
 
 - **Fresh:** unzip `MinUI-Zero-*-base.zip` onto a blank FAT32 SD card.
-- **Update:** drop the new zip on the card root and reboot — it self-applies.
+- **Update:** extract `MinUI.zip` from the release archive, place it on the card root, and reboot.
+
+## Disclaimer
+
+MinUI Zero is unofficial personal firmware. Use it at your own risk.
+
+Installing or updating custom firmware can cause data loss, broken saves, failed boots, SD card corruption, unexpected crashes, or other device issues. Back up your SD card, saves, BIOS files, and ROMs before installing.
+
+MinUI Zero changes low-level behavior including CPU scaling, sleep, resume, power management, and optional per-device CPU optimization. These features are designed to fail safely, but no firmware can guarantee that every SD card, device revision, battery condition, or user setup will behave perfectly.
+
+This project is provided as-is, without warranty of any kind. The author and contributors are not responsible for lost data, damaged devices, bricked handhelds, corrupted SD cards, battery issues, overheating, failed updates, or any other problems resulting from use of this software.
 
 ## Credits
 
@@ -155,4 +165,6 @@ Built on [MinUI](https://github.com/shauninman/MinUI) by Shaun Inman. Deep sleep
 [MyMinUI](https://github.com/Turro75/MyMinUI) and [NextUI](https://github.com/LoveRetro/NextUI);
 the dynamic rate control idea comes from [RetroArch](https://github.com/libretro/RetroArch);
 the power-off haptic cue idea from [SpruceOS](https://github.com/spruceUI/spruceOS).
-An independent fork — not affiliated with any of them.
+An independent personal fork — not affiliated with, endorsed by, or supported by any of them.
+See [`LICENSE.md`](LICENSE.md) for license, provenance, and support notes, and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for detailed attribution.

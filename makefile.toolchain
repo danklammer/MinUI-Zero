@@ -10,17 +10,27 @@ HOST_WORKSPACE=$(shell pwd)/workspace
 GUEST_WORKSPACE=/root/workspace
 
 GIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain
+TOOLCHAIN_HASH=b2132906f5de206c80a2664580ef22bc3e80c543
+PIN_IF_NECESSARY=$(GIT_IF_NECESSARY)/.minui-zero-$(TOOLCHAIN_HASH)
 INIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain/.build
+
+.PHONY: $(PIN_IF_NECESSARY)
 
 all: $(INIT_IF_NECESSARY)
 	docker run -it --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(PLATFORM)-toolchain /bin/bash
 
-$(INIT_IF_NECESSARY): $(GIT_IF_NECESSARY)
+$(INIT_IF_NECESSARY): $(PIN_IF_NECESSARY)
 	cd toolchains/$(PLATFORM)-toolchain && make .build
 
 $(GIT_IF_NECESSARY):
 	mkdir -p toolchains
 	git clone https://github.com/shauninman/union-$(PLATFORM)-toolchain/ toolchains/$(PLATFORM)-toolchain
+
+$(PIN_IF_NECESSARY): $(GIT_IF_NECESSARY)
+	cd $(GIT_IF_NECESSARY) && (git cat-file -e $(TOOLCHAIN_HASH)^{commit} || git fetch origin $(TOOLCHAIN_HASH))
+	cd $(GIT_IF_NECESSARY) && git checkout --detach $(TOOLCHAIN_HASH)
+	cd $(GIT_IF_NECESSARY) && git diff --quiet && git diff --cached --quiet
+	touch $(PIN_IF_NECESSARY)
 
 clean:
 	cd toolchains/$(PLATFORM)-toolchain && make clean

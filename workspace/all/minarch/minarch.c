@@ -31,11 +31,52 @@ static int simple_mode = 0;
 static int thread_video = 0;
 static int was_threaded = 0;
 static int should_run_core = 1; // used by threaded video
+// thread-aware governor telemetry: ring of recent core.run() durations (us), written by
+// the core thread, read by the gov tick (p95, mirroring the single-thread sink gate).
+// Racy by design: a torn read misjudges one sample in one window, self-corrects next tick.
+#define CORE_WORK_RING 32
+static volatile uint32_t core_work_ring[CORE_WORK_RING];
+static volatile uint32_t core_work_n = 0;
+static volatile int core_pace_ppm = 0; // DRC rate adjustment, honored by the core pacer
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
 static pthread_cond_t	core_rq; // not sure this is required
 static SDL_Surface*	backbuffer = NULL;
+static SDL_Surface*	readybuffer = NULL;   // mailbox: latest complete frame from the core
+static SDL_Surface*	presentbuffer = NULL; // owned by the main thread while presenting
+static int frame_ready = 0;
+// threaded-DRC sensor: mailbox pressure. waits = main found no frame (core below panel
+// rate -> nudge ppm up); overwrites = core replaced an unconsumed frame (core above panel
+// rate -> nudge down). Plain ints, single-writer each, read at tick cadence.
+static volatile int mb_waits = 0;
+static volatile int mb_overwrites = 0;
+static volatile int mb_waits_total = 0;      // never reset: HUD/stats read deltas
+static volatile int mb_overwrites_total = 0;
+// REAL smoothness events (the waits counter reads ~1/frame in healthy operation — main
+// normally waits for each next frame — so it is NOT a dup signal; learned the hard way):
+static volatile int mb_dups = 0;        // flip interval spanned 2+ vsync periods
+static volatile int mb_dups_total = 0;
+static volatile int mb_flips_total = 0; // every threaded present (panel-lock rate sensor)
+static pthread_cond_t core_pause_cv = PTHREAD_COND_INITIALIZER; // pause/exit handshake (separate from the frame signal)
+static volatile int core_thread_exit = 0;
+static volatile int core_parked = 0; // set by the core thread while waiting in the pause cv
+static int core_thread_alive = 0;    // guards join: FF auto-disable already joined the thread
+
+// AUTO-THREADING: measure, decide, remember — same philosophy as the governor, no menu.
+// Launch single-threaded; if the settled ceiling shows the game fighting for headroom,
+// trial threading and keep it only if the ceiling verifiably sinks. Verdict persists in
+// a sidecar (game cfgs get rewritten by the options menu; a sidecar survives).
+static int thread_auto = 1;      // 0 when the user set minarch_thread_video explicitly (unlocked cfg line)
+static int game_running = 0;     // set after bootstrap: gates runtime thread toggles (config load must not arm them)
+static int ta_phase = 0;         // 0 observing single-thread, 1 trialing threaded, 2 decided
+static int ta_decided_by_user = 0;
+static uint32_t ta_phase_at = 0;
+static int ta_base_ceil = 0;
+#define TA_OBSERVE_MS 60000
+#define TA_TRIAL_MS 60000
+#define TA_TRIAL_THRESHOLD_KHZ 1008000
+
 static void* coreThread(void *arg);
 
 enum {
@@ -196,6 +237,36 @@ static struct Game {
 	size_t size;
 	int is_open;
 } game;
+
+// park the core thread before anything touches core state (savestates, SRAM, disc,
+// autosave). Bounded but generous; parking normally completes within one frame.
+static int park_core(const char* why) {
+	if (!thread_video) return 1;
+	pthread_mutex_lock(&core_mx);
+	should_run_core = 0;
+	pthread_mutex_unlock(&core_mx);
+	for (int w=0; w<500 && !core_parked; w++) usleep(1000);
+	if (!core_parked) LOG_info("park_core TIMEOUT (%s) — proceeding is unsafe\n", why);
+	return core_parked;
+}
+static void ta_sidecar_path(char* out) {
+	sprintf(out, "%s/%s.thread", core.config_dir, game.name);
+}
+static int ta_read_verdict(void) { // -1 none, 0 no-benefit, 1 threaded
+	char path[MAX_PATH];
+	ta_sidecar_path(path);
+	FILE* f = fopen(path, "r");
+	if (!f) return -1;
+	int v = fgetc(f) == '1' ? 1 : 0;
+	fclose(f);
+	return v;
+}
+static void ta_write_verdict(int v) {
+	char path[MAX_PATH];
+	ta_sidecar_path(path);
+	putFile(path, v ? "1" : "0");
+	LOG_info("auto-thread: verdict %s persisted\n", v ? "THREADED" : "single");
+}
 static void Game_open(char* path) {
 	LOG_info("Game_open\n");
 	memset(&game, 0, sizeof(game));
@@ -415,23 +486,33 @@ static void SRAM_write(void) {
 	SRAM_getPath(filename);
 	printf("sav path (write): %s\n", filename);
 		
-	FILE *sram_file = fopen(filename, "w");
+	void *sram = core.get_memory_data(RETRO_MEMORY_SAVE_RAM);
+	if (!sram) {
+		LOG_error("Error getting SRAM data\n");
+		return;
+	}
+
+	// write-to-tmp + fsync + rename so a mid-write death (power cut, crash) can never
+	// truncate the last good save — same pattern as the crash handler (audit 2026-07-12).
+	// flush just this file to disk (was a global sync() — flushed every filesystem and
+	// stalled menu-open/sleep while unrelated dirty data drained)
+	char tmp_path[MAX_PATH+8];
+	sprintf(tmp_path, "%s.tmp", filename);
+	FILE *sram_file = fopen(tmp_path, "w");
 	if (!sram_file) {
 		LOG_error("Error opening SRAM file: %s\n", strerror(errno));
 		return;
 	}
-
-	void *sram = core.get_memory_data(RETRO_MEMORY_SAVE_RAM);
-
-	if (!sram || sram_size != fwrite(sram, 1, sram_size, sram_file)) {
+	if (sram_size != fwrite(sram, 1, sram_size, sram_file)) {
 		LOG_error("Error writing SRAM data to file\n");
+		fclose(sram_file);
+		unlink(tmp_path);
+		return;
 	}
-
-	// flush just this file to disk (was a global sync() — flushed every filesystem and
-	// stalled menu-open/sleep while unrelated dirty data drained)
 	fflush(sram_file);
 	fsync(fileno(sram_file));
 	fclose(sram_file);
+	if (rename(tmp_path, filename)) LOG_error("Error renaming SRAM file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -466,21 +547,29 @@ static void RTC_write(void) {
 	RTC_getPath(filename);
 	printf("rtc path (write) size(%u): %s\n", rtc_size, filename);
 		
-	FILE *rtc_file = fopen(filename, "w");
+	void *rtc = core.get_memory_data(RETRO_MEMORY_RTC);
+	if (!rtc) {
+		LOG_error("Error getting RTC data\n");
+		return;
+	}
+
+	char tmp_path[MAX_PATH+8];
+	sprintf(tmp_path, "%s.tmp", filename);
+	FILE *rtc_file = fopen(tmp_path, "w");
 	if (!rtc_file) {
 		LOG_error("Error opening RTC file: %s\n", strerror(errno));
 		return;
 	}
-
-	void *rtc = core.get_memory_data(RETRO_MEMORY_RTC);
-
-	if (!rtc || rtc_size != fwrite(rtc, 1, rtc_size, rtc_file)) {
+	if (rtc_size != fwrite(rtc, 1, rtc_size, rtc_file)) {
 		LOG_error("Error writing RTC data to file\n");
+		fclose(rtc_file);
+		unlink(tmp_path);
+		return;
 	}
-
 	fflush(rtc_file);
 	fsync(fileno(rtc_file));
 	fclose(rtc_file);
+	if (rename(tmp_path, filename)) LOG_error("Error renaming RTC file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -551,6 +640,9 @@ static void State_read(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
+	// declared before the first goto — jumping over the initializer left it
+	// indeterminate at the error label (audit 2026-07-12)
+	FILE *state_file = NULL;
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
@@ -559,8 +651,8 @@ static void State_read(void) { // from picoarch
 
 	char filename[MAX_PATH];
 	State_getPath(filename);
-	
-	FILE *state_file = fopen(filename, "r");
+
+	state_file = fopen(filename, "r");
 	if (!state_file) {
 		if (state_slot!=8) { // st8 is a default state in MiniUI and may not exist, that's okay
 			LOG_error("Error opening state file: %s (%s)\n", filename, strerror(errno));
@@ -593,38 +685,50 @@ static void State_write(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
+	// serialize into memory BEFORE touching the file, then write-to-tmp + fsync + rename:
+	// the old code truncated the existing state first, so a failed serialize destroyed the
+	// last good save. state_file is declared before the first goto — jumping over the
+	// initializer left it indeterminate at the error label (audit 2026-07-12)
+	FILE *state_file = NULL;
+	char filename[MAX_PATH];
+	char tmp_path[MAX_PATH+8];
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
 		goto error;
 	}
 
-	char filename[MAX_PATH];
 	State_getPath(filename);
-	
-	FILE *state_file = fopen(filename, "w");
-	if (!state_file) {
-		LOG_error("Error opening state file: %s (%s)\n", filename, strerror(errno));
-		goto error;
-	}
 
 	if (!core.serialize(state, state_size)) {
 		LOG_error("Error creating save state: %s (%s)\n", filename, strerror(errno));
 		goto error;
 	}
 
-	if (state_size != fwrite(state, 1, state_size, state_file)) {
-		LOG_error("Error writing state data to file: %s (%s)\n", filename, strerror(errno));
+	sprintf(tmp_path, "%s.tmp", filename);
+	state_file = fopen(tmp_path, "w");
+	if (!state_file) {
+		LOG_error("Error opening state file: %s (%s)\n", tmp_path, strerror(errno));
 		goto error;
 	}
 
+	if (state_size != fwrite(state, 1, state_size, state_file)) {
+		LOG_error("Error writing state data to file: %s (%s)\n", tmp_path, strerror(errno));
+		fclose(state_file);
+		state_file = NULL;
+		unlink(tmp_path);
+		goto error;
+	}
+
+	fflush(state_file);
+	fsync(fileno(state_file));
+	fclose(state_file);
+	state_file = NULL;
+	if (rename(tmp_path, filename)) LOG_error("Error renaming state file: %s (%s)\n", filename, strerror(errno));
+
 error:
 	if (state) free(state);
-	if (state_file) {
-		fflush(state_file);
-		fsync(fileno(state_file));
-		fclose(state_file);
-	}
+	if (state_file) fclose(state_file);
 
 	fast_forward = was_ff;
 }
@@ -669,6 +773,12 @@ typedef struct OptionList {
 	// OptionList_callback_t on_set;
 } OptionList;
 
+static char* threading_labels[] = {
+	"Auto",
+	"On",
+	"Off",
+	NULL,
+};
 static char* onoff_labels[] = {
 	"Off",
 	"On",
@@ -951,14 +1061,20 @@ static struct Config {
 				.labels = overclock_labels,
 			},
 			[FE_OPT_THREAD] = {
-				.key	= "minarch_thread_video",
-				.name	= "Prioritize Audio",
-				.desc	= "Can eliminate crackle but\nmay cause dropped frames.\nOnly turn on if necessary.",
-				.default_value = 0,
+				.key	= "minarch_threading",
+				.name	= "Multithreading",
+				.desc	= "Auto measures the active game and threads it\nonly when that verifiably lowers the CPU clock.\nOn always threads it. Off never does.",
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+				.default_value = 2,
+				.value = 2,
+				.lock = 1,
+#else
+				.default_value = 0, // Auto
 				.value = 0,
-				.count = 2,
-				.values = onoff_labels,
-				.labels = onoff_labels,
+#endif
+				.count = 3,
+				.values = threading_labels,
+				.labels = threading_labels,
 			},
 			[FE_OPT_DEBUG] = {
 				.key	= "minarch_debug_hud",
@@ -1058,6 +1174,9 @@ static void Gov_start(void) {
 	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
+static int* g_drc_ppm_ptr = NULL;
+static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
+static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
 	int i = -1;
@@ -1090,8 +1209,39 @@ static void Config_syncFrontend(char* key, int value) {
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
-		int old_value = thread_video || was_threaded;
-		toggle_thread = old_value!=value;
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+		// The current mailbox path mutates renderer/scaler state from the core thread.
+		// Keep it unreachable on the release platform until ownership is redesigned.
+		thread_video = 0;
+		was_threaded = 0;
+		thread_auto = 0;
+		ta_phase = 2;
+		ta_decided_by_user = 1;
+		toggle_thread = 0;
+		config.frontend.options[FE_OPT_THREAD].value = 2;
+		config.frontend.options[FE_OPT_THREAD].lock = 1;
+#else
+		// 0=Auto (trial machinery owns it), 1=On, 2=Off (explicit user override).
+		// During config LOAD this only records the value — arming toggle_thread while
+		// thread_video is still false made a persisted On start threaded and then
+		// immediately tear itself down on the first main-loop pass (Codex finding #1).
+		thread_auto = (value == 0);
+		if (value != 0) {
+			ta_phase = 2; // decided by the user
+			ta_decided_by_user = 1;
+			if (game_running) {
+				int want = (value == 1);
+				int have = thread_video || was_threaded;
+				toggle_thread = have != want;
+			}
+		}
+		else {
+			toggle_thread = 0; // cancel any pending explicit toggle (On->Off->Auto cycling)
+			if (ta_phase == 2 && ta_decided_by_user) {
+				ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe
+			}
+		}
+#endif
 		i = FE_OPT_THREAD;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_OVERCLOCK].key)) {
@@ -1349,6 +1499,7 @@ static void Config_free(void) {
 	if (config.system_cfg) free(config.system_cfg);
 	if (config.default_cfg) free(config.default_cfg);
 	if (config.user_cfg) free(config.user_cfg);
+	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
 	Config_readOptionsString(config.system_cfg);
@@ -1726,6 +1877,12 @@ static void Menu_saveState(void);
 static void Menu_loadState(void);
 
 static int setFastForward(int enable) {
+	{ // ZERO_GOV_DEBUG: trace every FF transition + caller context (FF-busted hunt 2026-07-10)
+		static int zfd = -1;
+		if (zfd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd = (e && e[0] && e[0] != '0') ? 1 : 0; }
+		if (zfd && fast_forward != enable)
+			LOG_info("ff-trace: %d -> %d (thread_video=%d was_threaded=%d)\n", fast_forward, enable, thread_video, was_threaded);
+	}
 	if (!fast_forward && enable && thread_video) {
 		// LOG_info("entered fast forward with threaded core...\n");
 		was_threaded = 1;
@@ -1774,6 +1931,7 @@ static void input_poll_callback(void) {
 	static int toggled_ff_on = 0; // this logic only works because TOGGLE_FF is before HOLD_FF in the menu...
 	for (int i=0; i<SHORTCUT_COUNT; i++) {
 		ButtonMapping* mapping = &config.shortcuts[i];
+		if (mapping->local < 0) continue; // not bound (1 << -1 is UB)
 		int btn = 1 << mapping->local;
 		if (btn==BTN_NONE) continue; // not bound
 		if (!mapping->mod || PAD_isPressed(BTN_MENU)) {
@@ -1789,9 +1947,13 @@ static void input_poll_callback(void) {
 				}
 			}
 			else if (i==SHORTCUT_HOLD_FF) {
-				// don't allow turn off fast_forward with a release of the hold button 
+				// don't allow turn off fast_forward with a release of the hold button
 				// if it was initially turned on with the toggle button
 				if (PAD_justPressed(btn) || (!toggled_ff_on && PAD_justReleased(btn))) {
+					{ static int zfd2 = -1;
+					  if (zfd2 < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd2 = (e && e[0] && e[0] != '0') ? 1 : 0; }
+					  if (zfd2) LOG_info("ff-trace: HOLD branch fired (btn=0x%x jp=%d jr=%d ip=%d toggled=%d)\n",
+					      btn, PAD_justPressed(btn), PAD_justReleased(btn), PAD_isPressed(btn), toggled_ff_on); }
 					fast_forward = setFastForward(PAD_isPressed(btn));
 					if (mapping->mod) ignore_menu = 1; // very unlikely but just in case
 				}
@@ -1831,6 +1993,8 @@ static void input_poll_callback(void) {
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 0;
 			pthread_mutex_unlock(&core_mx);
+			// NOTE: no park-wait here — this code runs on the CORE thread (input_poll
+			// is called from core.run). The main thread waits before Menu_loop instead.
 		}
 	}
 	
@@ -2296,6 +2460,7 @@ static void hdmimon(void) {
 		had_hdmi = has_hdmi;
 
 		LOG_info("restarting after HDMI change...\n");
+		park_core("hdmi restart"); // autosave must not overlap a running core (Codex #2)
 		Menu_beforeSleep();
 		sleep(4);
 		show_menu = 0;
@@ -2421,6 +2586,26 @@ static const char* bitmap_font[] = {
 		"1    "
 		"1    "
 		"11111",
+	['T'] =
+		"11111"
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  "
+		"  1  ",
+	['R'] =
+		"1111 "
+		"1   1"
+		"1   1"
+		"1111 "
+		"1 1  "
+		"1  1 "
+		"1  1 "
+		"1   1"
+		"1   1",
 	['C'] =
 		" 111 "
 		"1   1"
@@ -2633,7 +2818,13 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 	
 	if (ox<0) ox = width-w+ox;
 	if (oy<0) oy = height-h+oy;
-	
+
+	// clip hard: the border writes reach one px left, one row above, and one row
+	// below the text. The core-owned frame buffers are over-allocated and forgave
+	// out-of-bounds writes for years; the threaded mailbox buffer is exact-size
+	// (malloc(h*pitch)) and segfaults on the same math during boot dims churn.
+	if (ox < 1 || oy < 1 || ox + w + 1 > width || oy + h + 1 > height) return;
+
 	data += oy * stride + ox;
 	uint16_t* row = data - stride; // TODO: this will crash and burn if ox,oy==0,0 but is fine as used currently :sweat_smile:
 	memset(row-1, 0, (w+2)*2);
@@ -2641,7 +2832,8 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 		row = data + y * stride;
 		memset(row-1, 0, (w+2)*2);
 		for (int i=0; i<len; i++) {
-			const char* c = bitmap_font[text[i]];
+			const char* c = bitmap_font[(unsigned char)text[i]];
+			if (!c) { row += CHAR_WIDTH + LETTERSPACING; continue; } // undefined glyph: blank, not a NULL deref
 			for (int x=0; x<CHAR_WIDTH; x++) {
 				int j = y * CHAR_WIDTH + x;
 				if (c[j]=='1') *row = 0xffff;
@@ -2834,8 +3026,12 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		if (r && r<8) scale_y -= 1;
 		
 		scale = MAX(scale_x, scale_y);
-		// if (scale>4) scale = 4;
-		// if (scale>2) scale = 4; // TODO: restore, requires sanity checking
+		// cap the supersample so the dst buffer never exceeds ~2x the panel area — the
+		// CPU scales into and uploads this buffer EVERY frame. Uncapped, PS1 480i content
+		// on the 1280x720 SP picked scale 3 (a 2048x1440 padded dst, ~3x the Brick's cost
+		// for the same screen = the SP VS-card slowdown, 2026-07-09). The cap leaves every
+		// pre-existing Brick/SP case unchanged; only the pathological combos shrink.
+		while (scale > 1 && (long)src_w*scale*src_h*scale > 2L*DEVICE_WIDTH*DEVICE_HEIGHT) scale--;
 		
 		int scaled_w = src_w * scale;
 		int scaled_h = src_h * scale;
@@ -2973,8 +3169,14 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// if source has changed size (or forced by dst_p==0)
 	// eg. true src + cropped src + fixed dst + cropped dst
 	if (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h) {
+		// burst only on a TRUE size change — same-size re-inits (SET_GEOMETRY aspect
+		// resyncs, menu returns) fire selectScaler too, and bursting on those pinned
+		// GBC at 1008 instead of its 408 floor (gambatte resyncs periodically; caught
+		// by the 2026-07-09 regression sweep). A real scene switch changes dimensions.
+		int size_changed = (width!=renderer.true_w || height!=renderer.true_h);
 		selectScaler(width, height, pitch);
 		GFX_clearAll();
+		if (size_changed) gov_burst(&gov_state, &gov_profile); // provision before the cost lands
 	}
 	
 	// debug
@@ -2996,7 +3198,27 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		static uint32_t hud_temp_at = 0;
 		uint32_t hud_now = SDL_GetTicks();
 		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
-		sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
+		if (thread_video && core.fps > 0) {
+			// threaded mode: core-thread utilization + LIVE smoothness counters —
+			// D = duplicated frames/s (present starved), S = skipped frames/s (core
+			// overran), U = audio underruns/s. All three should read 0 when smooth.
+			uint64_t thr_sum = 0;
+			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
+			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
+			int thr_util = thr_n > 0 ? (int)(100.0 * (double)thr_sum / (thr_n * (1000000.0 / core.fps))) : 0;
+			static uint32_t sm_at = 0; static int sm_w0 = 0, sm_o0 = 0; static long sm_u0 = 0;
+			static int sm_d = 0, sm_s = 0, sm_u = 0;
+			uint32_t sm_now = SDL_GetTicks();
+			if (sm_now - sm_at >= 1000) {
+				SND_Stats ss; SND_getStats(&ss);
+				sm_d = mb_dups_total - sm_w0;       sm_w0 = mb_dups_total;
+				sm_s = mb_overwrites_total - sm_o0; sm_o0 = mb_overwrites_total;
+				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
+				sm_at = sm_now;
+			}
+			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
+		}
+		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
 	
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
@@ -3022,8 +3244,7 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 	if (!data) return;
 	
 	if (thread_video) {
-		pthread_mutex_lock(&core_mx);
-		
+		// the write buffer is core-thread-exclusive: alloc + copy happen OUTSIDE the lock
 		if (backbuffer && (backbuffer->w!=width || backbuffer->h!=height || backbuffer->pitch!=pitch)) {
 			free(backbuffer->pixels);
 			SDL_FreeSurface(backbuffer);
@@ -3031,12 +3252,19 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 		}
 		if (!backbuffer) {
 			uint16_t* pixels = malloc(height*pitch);
-			// backbuffer = SDL_CreateRGBSurface(0,width,height,FIXED_DEPTH,RGBA_MASK_565);
-			backbuffer = SDL_CreateRGBSurfaceFrom(pixels, width, height, FIXED_DEPTH, pitch, RGBA_MASK_565);
+			if (pixels) backbuffer = SDL_CreateRGBSurfaceFrom(pixels, width, height, FIXED_DEPTH, pitch, RGBA_MASK_565);
+			if (!backbuffer) { free(pixels); return; } // OOM: drop this frame, latest-wins mailbox recovers on the next
 		}
 		
 		memcpy(backbuffer->pixels, data, backbuffer->h*backbuffer->pitch);
 		
+		// mailbox handoff: swap the fresh frame in under a brief lock. Latest wins; the
+		// core never blocks behind the present. (The old handoff held the lock through
+		// GFX_flip's vsync wait and relied on lossy cond signals — ~15fps presented.)
+		pthread_mutex_lock(&core_mx);
+		if (frame_ready) { mb_overwrites++; mb_overwrites_total++; } // main had not consumed the last frame
+		SDL_Surface* t = readybuffer; readybuffer = backbuffer; backbuffer = t;
+		frame_ready = 1;
 		pthread_cond_signal(&core_rq);
 		pthread_mutex_unlock(&core_mx);
 	}
@@ -3064,9 +3292,14 @@ void Core_getName(char* in_name, char* out_name) {
 void Core_open(const char* core_path, const char* tag_name) {
 	LOG_info("Core_open\n");
 	core.handle = dlopen(core_path, RTLD_LAZY);
-	
-	if (!core.handle) LOG_error("%s\n", dlerror());
-	
+
+	if (!core.handle) {
+		// a missing/corrupt core used to fall through into dlsym(NULL)+call = segfault;
+		// exit cleanly so the launcher returns to the menu (pillar 5, audit 2026-07-12)
+		LOG_error("dlopen %s failed: %s\n", core_path, dlerror());
+		exit(EXIT_FAILURE);
+	}
+
 	core.init = dlsym(core.handle, "retro_init");
 	core.deinit = dlsym(core.handle, "retro_deinit");
 	core.get_system_info = dlsym(core.handle, "retro_get_system_info");
@@ -3097,7 +3330,21 @@ void Core_open(const char* core_path, const char* tag_name) {
 	set_audio_sample_batch_callback = dlsym(core.handle, "retro_set_audio_sample_batch");
 	set_input_poll_callback = dlsym(core.handle, "retro_set_input_poll");
 	set_input_state_callback = dlsym(core.handle, "retro_set_input_state");
-	
+
+	// every libretro core exports all of these; any NULL means a truncated/corrupt build
+	// and the calls below would segfault (audit 2026-07-12)
+	if (!core.init || !core.deinit || !core.get_system_info || !core.get_system_av_info
+	 || !core.set_controller_port_device || !core.reset || !core.run
+	 || !core.serialize_size || !core.serialize || !core.unserialize
+	 || !core.load_game || !core.load_game_special || !core.unload_game
+	 || !core.get_region || !core.get_memory_data || !core.get_memory_size
+	 || !set_environment_callback || !set_video_refresh_callback
+	 || !set_audio_sample_callback || !set_audio_sample_batch_callback
+	 || !set_input_poll_callback || !set_input_state_callback) {
+		LOG_error("core %s is missing required libretro symbols\n", core_path);
+		exit(EXIT_FAILURE);
+	}
+
 	struct retro_system_info info = {};
 	core.get_system_info(&info);
 	
@@ -4738,8 +4985,15 @@ static void Menu_loop(void) {
 		if (!HAS_POWER_BUTTON) PWR_disableSleep();
 
 		if (thread_video) {
+			// reset the rate window while the core is still parked — it owns these
+			// counters in threaded mode (a reset after resume garbles one window)
+			sec_start = SDL_GetTicks();
+			cpu_ticks = 0;
+			fps_ticks = 0;
+			cpu_double = 0;
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
+			pthread_cond_signal(&core_pause_cv);
 			pthread_mutex_unlock(&core_mx);
 		}
 	}
@@ -4831,19 +5085,44 @@ static void limitFF(void) {
 }
 
 static void* coreThread(void *arg) {
-	// force a vsync immediately before loop
-	// for better frame pacing?
-	GFX_clearAll();
-	GFX_flip(screen);
+	// (stock cleared + flipped here "for better frame pacing" — that is GL from the
+	// wrong thread; EGL contexts are thread-affine and the mailbox paces us now)
 	
-	while (!quit) {
+	while (!quit && !core_thread_exit) {
 		int run = 0;
 		pthread_mutex_lock(&core_mx);
+		while (!should_run_core && !quit && !core_thread_exit) {
+			core_parked = 1;
+			pthread_cond_wait(&core_pause_cv, &core_mx); // no busy-spin while paused
+		}
+		core_parked = 0;
+		if (core_thread_exit) { pthread_mutex_unlock(&core_mx); break; }
 		run = should_run_core;
 		pthread_mutex_unlock(&core_mx);
 		
 		if (run) {
+			SND_Stats snd0; SND_getStats(&snd0);
+			uint64_t t0 = getMicroseconds();
 			core.run();
+			uint32_t w = (uint32_t)(getMicroseconds() - t0);
+			SND_Stats snd1; SND_getStats(&snd1);
+			long pace = (snd1.wait_ms - snd0.wait_ms) * 1000;
+			if (pace > 0 && (uint32_t)pace < w) w -= (uint32_t)pace; // pacing is not work
+			core_work_ring[core_work_n % CORE_WORK_RING] = w;
+			core_work_n++;
+			// drift-free cadence: unpaced bursts saturate the audio ring, and the long
+			// blocks inside core.run read as "behind schedule" to pcsx's auto-frameskip
+			// (measured: 15 real frames + 46 skips/sec). Feeding at consumption rate
+			// keeps the ring level and the core's wall-clock honest.
+			if (!fast_forward && core.fps > 0) {
+				static uint64_t next_us = 0;
+				uint64_t budget = (uint64_t)(1000000.0 / (core.fps * (1.0 + core_pace_ppm / 1000000.0)));
+				uint64_t now2 = getMicroseconds();
+				if (!next_us) next_us = now2;
+				next_us += budget;
+				if (now2 < next_us) usleep(next_us - now2);
+				else if (now2 - next_us > budget*4) next_us = now2; // hopelessly behind: reset, don't chase
+			}
 			limitFF();
 			trackFPS();
 		}
@@ -4911,14 +5190,24 @@ int main(int argc , char* argv[]) {
 	options_menu.items[1].desc = (char*)core.version;
 	
 	if (!Core_load()) {
-		// game failed to load — bail cleanly. The core is initialized but holds no game, so
-		// clear the flag to keep Core_quit from tearing down a game that isn't there.
+		// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
+		// run, but an initialized core still owes retro_deinit before dlclose: call it
+		// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
+		core.deinit();
 		core.initialized = 0;
 		goto finish;
 	}
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+#ifndef ZERO_DISABLE_FRONTEND_THREADING
+	int legacy_tv = 0; // pre-rename minarch_thread_video (v1.2 cfgs) — must read while user_cfg is alive
+	{
+		char lv[256]; int llock = 0; // Config_getValue writes up to 256 bytes, always
+		if (config.user_cfg && Config_getValue(config.user_cfg, "minarch_thread_video", lv, &llock) && !llock)
+			legacy_tv = (lv[0]=='O' && lv[1]=='n') ? 1 : 2;
+	}
+#endif
 	Config_free();
 		
 	SND_init(core.sample_rate, core.fps);
@@ -4927,11 +5216,43 @@ int main(int argc , char* argv[]) {
 	State_resume();
 	Menu_initState(); // make ready for state shortcuts
 	
+	{
+#ifdef ZERO_DISABLE_FRONTEND_THREADING
+		thread_video = 0;
+		was_threaded = 0;
+		thread_auto = 0;
+		ta_phase = 2;
+		ta_decided_by_user = 1;
+		config.frontend.options[FE_OPT_THREAD].value = 2;
+		config.frontend.options[FE_OPT_THREAD].lock = 1;
+#else
+		// auto-threading bootstrap. The Threading option value carries user intent
+		// directly: Auto -> honor a persisted verdict or run the trial; On/Off ->
+		// explicit, machinery stands down. (Replaces cfg-layer sniffing, which broke
+		// on device-tagged config filenames.)
+		int tv = config.frontend.options[FE_OPT_THREAD].value;
+		if (tv == 0) tv = legacy_tv; // legacy alias read above, before Config_free
+		if (tv == 1) { thread_video = 1; thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
+		else if (tv == 2) { thread_auto = 0; ta_phase = 2; ta_decided_by_user = 1; }
+		else {
+			int v = ta_read_verdict();
+			if (v == 1) { thread_video = 1; ta_phase = 2; }
+			else if (v == 0) ta_phase = 2; // decided: no benefit (re-decided only if sidecar removed)
+		}
+#endif
+	}
 	if (thread_video) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-		pthread_create(&core_pt, NULL, &coreThread, NULL);
+		if (pthread_create(&core_pt, NULL, &coreThread, NULL) == 0) {
+			core_thread_alive = 1; // without this the quit-join is skipped -> dlclose SIGSEGV
+		} else { // creation failed: fall back to single-threaded rather than deadlock waiting on a thread that never ran
+			LOG_info("thread_video: pthread_create failed, running single-threaded\n");
+			thread_video = 0; thread_auto = 0; ta_phase = 2;
+		}
 	}
+	toggle_thread = 0;  // config load must not leave a stale toggle armed (Codex #1)
+	game_running = 1;   // runtime toggles legal from here
 	
 	PWR_warn(1);
 	PWR_disableAutosleep();
@@ -4958,25 +5279,61 @@ int main(int argc , char* argv[]) {
 		}
 
 		if (thread_video && !quit) {
+			// take the newest frame from the mailbox; present OUTSIDE the lock so the
+			// core never stalls behind the vsync wait. The timed wait keeps this loop
+			// servicing the menu and quit even while the core is paused.
 			pthread_mutex_lock(&core_mx);
-			pthread_cond_wait(&core_rq,&core_mx);
-			
-			if (backbuffer) {
-				video_refresh_callback_main(backbuffer->pixels,backbuffer->w,backbuffer->h,backbuffer->pitch);
-				GFX_flip(screen);
+			if (!frame_ready) {
+				mb_waits++; mb_waits_total++;
+				struct timespec ts;
+				clock_gettime(CLOCK_REALTIME, &ts);
+				ts.tv_nsec += 20*1000000L;
+				if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+				pthread_cond_timedwait(&core_rq, &core_mx, &ts);
 			}
-			core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
+			SDL_Surface* frame = NULL;
+			if (frame_ready) {
+				SDL_Surface* t = presentbuffer; presentbuffer = readybuffer; readybuffer = t;
+				frame = presentbuffer;
+				frame_ready = 0;
+			}
 			pthread_mutex_unlock(&core_mx);
+			if (frame) {
+				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
+				GFX_flip(screen);
+				mb_flips_total++;
+				static uint64_t last_flip_us = 0;
+				uint64_t now_us = getMicroseconds();
+				// only 60fps-class content can meaningfully "dup" — internally-low-fps
+				// games (THPS demos run 15fps internally) have long intervals by design
+				if (last_flip_us && fps_double > 55.0 && now_us - last_flip_us > 24000) { mb_dups++; mb_dups_total++; }
+				last_flip_us = now_us;
+			}
 		}
 		
 		if (show_menu) {
+			park_core("menu"); // savestates must never overlap a running core.run
+			// a menu visit invalidates any in-flight auto-threading window HERE: the
+			// abort check in the tick path never observes show_menu because Menu_loop
+			// is synchronous and clears it before returning (audit 2026-07-11). Without
+			// this, menu wall-clock silently counted toward the timed comparison.
+			if (thread_auto && ta_phase == 1) {
+				ta_phase = 0; ta_phase_at = 0;
+				toggle_thread = 1; // abort the trial: back to single, re-observe later
+				LOG_info("auto-thread: trial aborted (menu opened mid-window)\n");
+			}
+			else if (thread_auto && ta_phase == 0) ta_phase_at = 0; // restart observation clock
 			Menu_loop();
 			// reset the rate window: a second that spans the menu would read as a false
-			// generation-rate drop and spuriously climb the governor on menu exit
-			sec_start = SDL_GetTicks();
-			cpu_ticks = 0;
-			fps_ticks = 0;
-			cpu_double = 0;
+			// generation-rate drop and spuriously climb the governor on menu exit.
+			// (threaded mode resets before the resume signal instead — the core owns
+			// these counters there and is already running again by this point)
+			if (!thread_video) {
+				sec_start = SDL_GetTicks();
+				cpu_ticks = 0;
+				fps_ticks = 0;
+				cpu_double = 0;
+			}
 		}
 
 		if (toggle_thread) {
@@ -4988,17 +5345,34 @@ int main(int argc , char* argv[]) {
 				thread_video = !thread_video;
 			}
 			// LOG_info("toggling thread from %i to %i\n", thread_video, !thread_video);
-			thread_video = !thread_video;
-			if (thread_video) {
+			LOG_info("thread toggle: %d -> %d (ff=%d was=%d auto_phase=%d)\n", thread_video, !thread_video, fast_forward, was_threaded, ta_phase);
+			if (!thread_video) {
 				// enable
+				thread_video = 1;
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-				pthread_create(&core_pt, NULL, &coreThread, NULL);
+				if (pthread_create(&core_pt, NULL, &coreThread, NULL) == 0) {
+					core_thread_alive = 1;
+				} else {
+					LOG_info("thread toggle: pthread_create failed, staying single-threaded\n");
+					thread_video = 0;
+				}
 			}
 			else {
-				// disable
-				pthread_cancel(core_pt);
+				// disable: thread_video stays 1 until the join returns — the thread's
+				// final in-flight frame must take the mailbox path, not GL from its
+				// thread. Liveness guard: FF entry may have already torn it down.
+				if (core_thread_alive) {
+				pthread_mutex_lock(&core_mx);
+				core_thread_exit = 1;
+				pthread_cond_signal(&core_pause_cv);
+				pthread_mutex_unlock(&core_mx);
 				pthread_join(core_pt,NULL);
+				core_thread_alive = 0;
+				core_thread_exit = 0;
+				frame_ready = 0;
+				}
+				thread_video = 0;
 				
 				// force a vsync immediately before loop
 				// for better frame pacing?
@@ -5041,9 +5415,40 @@ int main(int argc , char* argv[]) {
 					// with >=15% idle headroom (gov_sink_fits: the quantitative form of D14's
 					// race-to-idle rule; replaces the blunt busy-hold that kept NES/PS1 one OPP
 					// step above their proven minimums).
-					int fps_short = (cpu_double > 0 && core.fps > 0 && cpu_double < core.fps * 0.975);
+					// Fast-forward is just a different target: fps x the FF multiplier. The
+					// governor then finds the lowest clock that holds THAT — FF gets the
+					// clocks it needs (measured: 2.2x of a 4x cap when stuck at the floor)
+					// without pinning max for an hour of Pokemon grinding.
+					// Max FF Speed index 0 = "None" (uncapped): there is no finite target, so
+					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
+					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
+					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? (max_ff_speed + 1) : 1000) : 1);
+					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
+					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
+					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
-					if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
+					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
+					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
+					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
+					// the per-frame work measurement is unreliable while presentation is skipping,
+					// and the user is explicitly asking for speed. Sinking resumes when FF ends.
+					else if (thread_video) {
+						// the main thread's frame window includes WAITING on the core thread, so
+						// judge headroom by the core thread's own samples. Per-frame budgets
+						// misjudge internally-low-fps games (THPS: one ~25ms render frame + three
+						// ~2ms dupes still holds 60), so gate on WINDOW UTILIZATION instead:
+						// predicted busy fraction at the next clock must leave >=15% idle.
+						uint64_t sum = 0;
+						int n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
+						for (int a=0; a<n; a++) sum += core_work_ring[a];
+						int next = gov_sink_target(&gov_state, &gov_profile);
+						if (n > 2 && gov_target_fps > 0 && next < gov_state.ceil_khz) {
+							double window_us = n * (1000000.0 / gov_target_fps);
+							double util_next = ((double)sum / window_us) * ((double)gov_state.ceil_khz / (double)next);
+							frame_overrun = util_next <= 0.85 ? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						}
+						else frame_overrun = GOV_SIGNAL_BUSY;
+					}
 					else {
 						for (int a=1; a<GOV_TICK_FRAMES; a++) { // insertion sort (30 ints, once per 0.5s)
 							uint32_t v = gov_work[a]; int b = a-1;
@@ -5051,15 +5456,85 @@ int main(int argc , char* argv[]) {
 							gov_work[b+1] = v;
 						}
 						int p95 = (int)gov_work[GOV_TICK_FRAMES - 2]; // ~93rd percentile of 30
-						int budget_us = core.fps > 0 ? (int)(1000000.0 / core.fps) : 16667;
+						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
 						int next = gov_sink_target(&gov_state, &gov_profile);
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						{ // ZERO_GOV_DEBUG=1: periodic gate telemetry (why does/doesn't it sink?)
+							static int zgd = -1, zgd_n = 0;
+							if (zgd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zgd = (e && e[0] && e[0] != '0') ? 1 : 0; }
+							if (zgd && (++zgd_n % 10) == 0)
+								LOG_info("gov-gate: p95=%dus budget=%dus next=%d signal=%d ceil=%d gen=%.1f\n",
+									p95, budget_us, next, frame_overrun, gov_state.ceil_khz, cpu_double);
+						}
+					}
+					// auto-threading state machine (evaluated at tick cadence; cheap).
+					// A menu, sleep, or FF pause mid-window invalidates the comparison
+					// (wall-clock elapsed but no gameplay measured) -> restart observation.
+					if (thread_auto && ta_phase == 1 && (show_menu || fast_forward || was_threaded)) {
+						ta_phase = 0; ta_phase_at = 0;
+						toggle_thread = 1; // abort the trial: back to single, re-observe later
+						LOG_info("auto-thread: trial aborted (menu/FF interrupted the window)\n");
+					}
+					// FF during OBSERVATION poisons the baseline the same way: an FF-pinned
+					// ceiling makes FF-release look like a huge sink -> false "threaded"
+					// commit (reconstructed from Bomberman's bogus sidecar, 2026-07-10).
+					// Restart the observation clock whenever FF runs in phase 0.
+					if (thread_auto && ta_phase == 0 && fast_forward) {
+						ta_phase_at = 0;
+					}
+					if (thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
+						uint32_t ta_now = SDL_GetTicks();
+						if (!ta_phase_at) ta_phase_at = ta_now;
+						if (ta_phase == 0 && ta_now - ta_phase_at >= TA_OBSERVE_MS) {
+							if (!thread_video && gov_state.ceil_khz >= TA_TRIAL_THRESHOLD_KHZ) {
+								// fighting for headroom: trial threading
+								ta_base_ceil = gov_state.ceil_khz;
+								// the trial's verdict = "did the ceiling sink a full step?" —
+								// single-thread fail memory (holds up to 8 min) would block
+								// the very sink being tested and falsely persist a "0"
+								// verdict forever. Judge the trial from a clean slate
+								// (Codex audit 2026-07-09).
+								gov_state.fail_khz = 0;
+								gov_state.fail_hold = 0;
+								gov_state.fail_streak = 0;
+								toggle_thread = 1;
+								ta_phase = 1;
+								LOG_info("auto-thread: trial ON (ceil %d)\n", ta_base_ceil);
+							}
+							else ta_phase_at = ta_now; // floor-dweller: keep watching (heavy-later games re-arm)
+						}
+						else if (ta_phase == 1 && ta_now - ta_phase_at >= TA_OBSERVE_MS + TA_TRIAL_MS) {
+							// commit only if the ceiling verifiably sank a full step; any slip
+							// storm during the trial raises the ceiling and fails this test
+							if (gov_state.ceil_khz <= ta_base_ceil - 200000) {
+								ta_write_verdict(1);
+								ta_phase = 2;
+								LOG_info("auto-thread: COMMIT (ceil %d -> %d)\n", ta_base_ceil, gov_state.ceil_khz);
+							}
+							else {
+								toggle_thread = 1; // revert to single
+								ta_write_verdict(0);
+								ta_phase = 2;
+								LOG_info("auto-thread: revert (ceil %d -> %d)\n", ta_base_ceil, gov_state.ceil_khz);
+							}
+						}
+					}
+					if (thread_video) {
+						static uint32_t thr_log_at = 0;
+						static int tl_w = 0, tl_o = 0; static long tl_u = 0;
+						uint32_t tl_now = SDL_GetTicks();
+						if (!thr_log_at) { thr_log_at = tl_now; tl_w = mb_dups_total; tl_o = mb_overwrites_total; SND_Stats s0; SND_getStats(&s0); tl_u = s0.underruns; }
+						else if (tl_now - thr_log_at >= 60000) {
+							SND_Stats s1; SND_getStats(&s1);
+							LOG_info("thr-stats: dups/min=%d skips/min=%d underruns/min=%ld drc_ppm=%d\n", mb_dups_total - tl_w, mb_overwrites_total - tl_o, s1.underruns - tl_u, drc_ppm_now());
+							thr_log_at = tl_now; tl_w = mb_dups_total; tl_o = mb_overwrites_total; tl_u = s1.underruns;
+						}
 					}
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
-						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, core.fps);
+						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
 					gov_frames = 0;
 				}
 			}
@@ -5086,32 +5561,84 @@ int main(int argc , char* argv[]) {
 		// ratchets to 0 = stock). ~60fps cores under strict vsync only; ZERO_NO_DRC disables.
 		if (!show_menu) {
 			static int drc_ppm = 0;
+			drc_ppm_expose(&drc_ppm);
 			static int drc_frames = 0;
 			static long drc_prev_wait = 0;
 			static int drc_disabled = -1;
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_eligible = (!drc_disabled && !fast_forward
 				&& core.fps >= 58.0 && core.fps <= 61.0
+				// a ceiling-saturated game has no headroom to run +ppm faster — asking
+				// starves the audio ring on schedule (BR2 chop, ear-found 2026-07-08)
+				&& gov_state.ceil_khz < gov_profile.f_max
+				// DORMANT BY DECISION (2026-07-08): a one-line Lenient-revival woke DRC
+				// platform-wide and audibly chopped PS1 audio the same night (BR2 + THPS
+				// titles, ear-verified) — the v1.1 design was only ever validated on
+				// synth-audio handheld cores. Until a per-content-class revalidation,
+				// STRICT-only keeps it dormant = the exact behavior of every release.
 				&& GFX_getVsync()==VSYNC_STRICT);
 			if (!drc_eligible) {
 				if (drc_ppm) { // revert cleanly (vsync toggled off / fast-forward)
 					drc_ppm = 0;
 					SND_setRateAdjustPPM(0);
 					GFX_setPacePeriodUs(0);
+					core_pace_ppm = 0;
 				}
 			}
 			else if (++drc_frames >= 30) { // ~2Hz
 				drc_frames = 0;
-				SND_Stats das; SND_getStats(&das);
-				long dwait = das.wait_ms - drc_prev_wait;
-				drc_prev_wait = das.wait_ms;
 				int prev = drc_ppm;
-				if (dwait > 1) drc_ppm += 150; // audio-bound: still below the panel rate
-				else           drc_ppm -= 150; // vsync-bound (or struggling): back off
+				if (thread_video) {
+					// threaded mode panel-lock: audio never blocks (core pacer) and queued
+					// swapchains always block flips, so neither classic signal works. The
+					// robust signal is the LONG-WINDOW FLIP RATE: measure flips over ~10s
+					// (60.0 vs 60.8 differ by 6 flips per 10s — cleanly resolvable) and
+					// hill-climb ppm until the rate stops rising: the plateau IS the panel
+					// ceiling (vsync backpressure caps delivery there). Overwrites mean we
+					// pushed past it — back off.
+					static uint32_t pl_win_at = 0; static int pl_flips0 = 0;
+					static double pl_prev_rate = 0; static int pl_locked = 0;
+					uint32_t pl_now = SDL_GetTicks();
+					if (!pl_win_at) { pl_win_at = pl_now; pl_flips0 = mb_flips_total; }
+					else if (pl_now - pl_win_at >= 10000 && fps_double > 55.0) {
+						double rate = (mb_flips_total - pl_flips0) * 1000.0 / (pl_now - pl_win_at);
+						if (mb_overwrites > 0) { drc_ppm -= 150; pl_locked = 1; } // past the ceiling
+						else if (!pl_locked)   drc_ppm += 1000;                    // climbing toward it (~80s to lock)
+						else if (rate > pl_prev_rate + 0.15) pl_locked = 0;        // ceiling moved (mode change)
+						if (pl_locked == 0 && pl_prev_rate > 1 && rate < pl_prev_rate + 0.15 && drc_ppm > 600) {
+							pl_locked = 1; // rate stopped rising: plateau = panel-locked
+							LOG_info("drc: threaded panel-lock at %.2f flips/s (+%dppm)\n", rate, drc_ppm);
+						}
+						pl_prev_rate = rate;
+						pl_win_at = pl_now; pl_flips0 = mb_flips_total;
+						mb_overwrites = 0;
+					}
+					mb_dups = 0; mb_waits = 0;
+				}
+				else {
+					SND_Stats das; SND_getStats(&das);
+					long dwait = das.wait_ms - drc_prev_wait;
+					drc_prev_wait = das.wait_ms;
+					if (dwait > 1) drc_ppm += 150; // audio-bound: still below the panel rate
+					else           drc_ppm -= 150; // vsync-bound (or struggling): back off
+				}
 				if (drc_ppm < 0) drc_ppm = 0;
 				if (drc_ppm > 25000) drc_ppm = 25000;
+				{
+					static uint32_t drc_log_at = 0;
+					uint32_t dl_now = SDL_GetTicks();
+					if (!drc_log_at) drc_log_at = dl_now;
+					else if (dl_now - drc_log_at >= 60000) {
+						LOG_info("drc-stats: ppm=%d mode=%s\n", drc_ppm, thread_video ? "threaded" : "single");
+						drc_log_at = dl_now;
+					}
+				}
+				if (thread_video) { drc_ppm = prev; } // threaded: telemetry-only for now —
+				// applying ppm chopped audio (ear-verified A/B 2026-07-08); the panel-beat
+				// question returns with an eyes-on session
 				if (drc_ppm != prev) {
 					SND_setRateAdjustPPM(drc_ppm);
+					core_pace_ppm = drc_ppm;
 					// pace the drift-free pacer slightly above any 60-class panel so it only
 					// backstops; vsync + audio are the fine clocks while DRC is active
 					GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
@@ -5127,11 +5654,36 @@ int main(int argc , char* argv[]) {
 		hdmimon();
 	}
 	
-	PLAT_restoreCPUVolt(); // before the launcher touches max_freq (always-safe stock write)
+	// threaded video: the core thread executes core code — it MUST be joined before
+	// Core_unload/dlclose rips that code out from under it. Audio is still running here,
+	// so a core blocked in SND_batchSamples drains and exits cleanly.
+	if (core_thread_alive) {
+		pthread_mutex_lock(&core_mx);
+		core_thread_exit = 1;
+		pthread_cond_broadcast(&core_pause_cv);
+		pthread_mutex_unlock(&core_mx);
+		pthread_join(core_pt, NULL);
+		core_thread_alive = 0;
+		core_thread_exit = 0;
+		SDL_Surface** mbx[3] = { &backbuffer, &readybuffer, &presentbuffer };
+		for (int b=0; b<3; b++) {
+			if (*mbx[b]) {
+				free((*mbx[b])->pixels);
+				SDL_FreeSurface(*mbx[b]);
+				*mbx[b] = NULL;
+			}
+		}
+	}
+
 	Menu_quit();
 	QuitSettings();
-	
+
 finish:
+
+	// Always-safe stock voltage restore — MUST sit below the finish label so early-exit
+	// paths (failed core.load_game etc.) restore too, not just the clean-quit path
+	// (Codex audit 2026-07-09). Harmless when the uv engine never armed.
+	PLAT_restoreCPUVolt();
 
 	tlm_quit(); // benchmark: flush + close the CSV (no-op unless enabled)
 

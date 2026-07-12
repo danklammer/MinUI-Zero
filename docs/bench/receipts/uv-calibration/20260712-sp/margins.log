@@ -1,0 +1,170 @@
+=== uvmap campaign start 13:20:32 ===
+13:20:33 opp 1800000: stock 1187500 uV, stepping down
+set 1175000uV: VSEL0=0xe5 VSEL1=0xe5 (readback 1175000/1175000)
+stress: 75s OK (sink inf)
+13:21:48 opp 1800000: 1175000 uV survived
+set 1162500uV: VSEL0=0xe4 VSEL1=0xe4 (readback 1162500/1162500)
+stress: 75s OK (sink inf)
+13:23:03 opp 1800000: 1162500 uV survived
+set 1150000uV: VSEL0=0xe3 VSEL1=0xe3 (readback 1150000/1150000)
+stress: 75s OK (sink inf)
+13:24:18 opp 1800000: 1150000 uV survived
+set 1137500uV: VSEL0=0xe2 VSEL1=0xe2 (readback 1137500/1137500)
+stress: 75s OK (sink inf)
+13:25:33 opp 1800000: 1137500 uV survived
+set 1125000uV: VSEL0=0xe1 VSEL1=0xe1 (readback 1125000/1125000)
+stress: 75s OK (sink inf)
+13:26:48 opp 1800000: 1125000 uV survived
+set 1112500uV: VSEL0=0xe0 VSEL1=0xe0 (readback 1112500/1112500)
+stress: 75s OK (sink inf)
+13:28:03 opp 1800000: 1112500 uV survived
+set 1100000uV: VSEL0=0xdf VSEL1=0xdf (readback 1100000/1100000)
+stress: 75s OK (sink inf)
+13:29:19 opp 1800000: 1100000 uV survived
+set 1087500uV: VSEL0=0xde VSEL1=0xde (readback 1087500/1087500)
+stress: 75s OK (sink inf)
+13:30:34 opp 1800000: 1087500 uV survived
+set 1075000uV: VSEL0=0xdd VSEL1=0xdd (readback 1075000/1075000)
+stress: 75s OK (sink inf)
+13:31:49 opp 1800000: 1075000 uV survived
+set 1062500uV: VSEL0=0xdc VSEL1=0xdc (readback 1062500/1062500)
+stress: 75s OK (sink inf)
+13:33:04 opp 1800000: 1062500 uV survived
+set 1050000uV: VSEL0=0xdb VSEL1=0xdb (readback 1050000/1050000)
+stress: 75s OK (sink inf)
+13:34:19 opp 1800000: 1050000 uV survived
+set 1037500uV: VSEL0=0xda VSEL1=0xda (readback 1037500/1037500)
+stress: 75s OK (sink inf)
+13:35:34 opp 1800000: 1037500 uV survived
+set 1025000uV: VSEL0=0xd9 VSEL1=0xd9 (readback 1025000/1025000)
+stress: 75s OK (sink inf)
+13:36:49 opp 1800000: 1025000 uV survived
+1800000 CLIFF 1012500 (crashed)
+13:37:16 opp 1800000: cliff at 1012500 uV
+13:37:17 opp 1608000: stock 1100000 uV, stepping down
+set 1087500uV: VSEL0=0xde VSEL1=0xde (readback 1087500/1087500)
+stress: 75s OK (sink inf)
+13:38:32 opp 1608000: 1087500 uV survived
+set 1075000uV: VSEL0=0xdd VSEL1=0xdd (readback 1075000/1075000)
+stress: 75s OK (sink inf)
+13:39:48 opp 1608000: 1075000 uV survived
+set 1062500uV: VSEL0=0xdc VSEL1=0xdc (readback 1062500/1062500)
+stress: 75s OK (sink inf)
+13:41:03 opp 1608000: 1062500 uV survived
+set 1050000uV: VSEL0=0xdb VSEL1=0xdb (readback 1050000/1050000)
+stress: 75s OK (sink inf)
+13:42:18 opp 1608000: 1050000 uV survived
+set 1037500uV: VSEL0=0xda VSEL1=0xda (readback 1037500/1037500)
+stress: 75s OK (sink inf)
+13:43:33 opp 1608000: 1037500 uV survived
+set 1025000uV: VSEL0=0xd9 VSEL1=0xd9 (readback 1025000/1025000)
+stress: 75s OK (sink inf)
+13:44:48 opp 1608000: 1025000 uV survived
+set 1012500uV: VSEL0=0xd8 VSEL1=0xd8 (readback 1012500/1012500)
+stress: 75s OK (sink inf)
+13:46:03 opp 1608000: 1012500 uV survived
+set 1000000uV: VSEL0=0xd7 VSEL1=0xd7 (readback 1000000/1000000)
+stress: 75s OK (sink inf)
+13:47:18 opp 1608000: 1000000 uV survived
+set 987500uV: VSEL0=0xd6 VSEL1=0xd6 (readback 987500/987500)
+stress: 75s OK (sink inf)
+13:48:33 opp 1608000: 987500 uV survived
+set 975000uV: VSEL0=0xd5 VSEL1=0xd5 (readback 975000/975000)
+stress: 75s OK (sink inf)
+13:49:48 opp 1608000: 975000 uV survived
+set 962500uV: VSEL0=0xd4 VSEL1=0xd4 (readback 962500/962500)
+stress: 75s OK (sink inf)
+13:51:03 opp 1608000: 962500 uV survived
+1608000 CLIFF 950000 (crashed)
+13:51:33 opp 1608000: cliff at 950000 uV
+13:51:34 opp 1416000: stock 1025000 uV, stepping down
+set 1012500uV: VSEL0=0xd8 VSEL1=0xd8 (readback 1012500/1012500)
+stress: 75s OK (sink inf)
+13:52:49 opp 1416000: 1012500 uV survived
+set 1000000uV: VSEL0=0xd7 VSEL1=0xd7 (readback 1000000/1000000)
+stress: 75s OK (sink inf)
+13:54:04 opp 1416000: 1000000 uV survived
+set 987500uV: VSEL0=0xd6 VSEL1=0xd6 (readback 987500/987500)
+stress: 75s OK (sink inf)
+13:55:19 opp 1416000: 987500 uV survived
+set 975000uV: VSEL0=0xd5 VSEL1=0xd5 (readback 975000/975000)
+stress: 75s OK (sink inf)
+13:56:34 opp 1416000: 975000 uV survived
+set 962500uV: VSEL0=0xd4 VSEL1=0xd4 (readback 962500/962500)
+stress: 75s OK (sink inf)
+13:57:49 opp 1416000: 962500 uV survived
+set 950000uV: VSEL0=0xd3 VSEL1=0xd3 (readback 950000/950000)
+stress: 75s OK (sink inf)
+13:59:04 opp 1416000: 950000 uV survived
+set 937500uV: VSEL0=0xd2 VSEL1=0xd2 (readback 937500/937500)
+stress: 75s OK (sink inf)
+14:00:20 opp 1416000: 937500 uV survived
+set 925000uV: VSEL0=0xd1 VSEL1=0xd1 (readback 925000/925000)
+stress: 75s OK (sink inf)
+14:01:35 opp 1416000: 925000 uV survived
+set 912500uV: VSEL0=0xd0 VSEL1=0xd0 (readback 912500/912500)
+stress: 75s OK (sink inf)
+14:02:50 opp 1416000: 912500 uV survived
+set 900000uV: VSEL0=0xcf VSEL1=0xcf (readback 900000/900000)
+stress: 75s OK (sink inf)
+14:04:05 opp 1416000: 900000 uV survived
+set 887500uV: VSEL0=0xce VSEL1=0xce (readback 887500/887500)
+Segmentation fault
+1416000 CLIFF 887500 (stress-fail)
+14:04:36 opp 1200000: stock 937500 uV, stepping down
+set 925000uV: VSEL0=0xd1 VSEL1=0xd1 (readback 925000/925000)
+stress: 75s OK (sink inf)
+14:05:51 opp 1200000: 925000 uV survived
+set 912500uV: VSEL0=0xd0 VSEL1=0xd0 (readback 912500/912500)
+stress: 75s OK (sink inf)
+14:07:06 opp 1200000: 912500 uV survived
+set 900000uV: VSEL0=0xcf VSEL1=0xcf (readback 900000/900000)
+stress: 75s OK (sink inf)
+14:08:21 opp 1200000: 900000 uV survived
+set 887500uV: VSEL0=0xce VSEL1=0xce (readback 887500/887500)
+stress: 75s OK (sink inf)
+14:09:36 opp 1200000: 887500 uV survived
+1200000 CLIFF 887500 (crashed)
+14:32:40 opp 1200000: cliff at 887500 uV
+14:32:41 opp 1008000: stock 900000 uV, stepping down
+set 887500uV: VSEL0=0xce VSEL1=0xce (readback 887500/887500)
+stress: 75s OK (sink inf)
+14:33:56 opp 1008000: 887500 uV survived
+set 875000uV: VSEL0=0xcd VSEL1=0xcd (readback 875000/875000)
+stress: 75s OK (sink inf)
+14:35:12 opp 1008000: 875000 uV survived
+set 862500uV: VSEL0=0xcc VSEL1=0xcc (readback 862500/862500)
+stress: 75s OK (sink inf)
+14:36:27 opp 1008000: 862500 uV survived
+set 850000uV: VSEL0=0xcb VSEL1=0xcb (readback 850000/850000)
+stress: 75s OK (sink inf)
+14:37:42 opp 1008000: 850000 uV survived
+set 837500uV: VSEL0=0xca VSEL1=0xca (readback 837500/837500)
+stress: 75s OK (sink inf)
+14:38:57 opp 1008000: 837500 uV survived
+set 825000uV: VSEL0=0xc9 VSEL1=0xc9 (readback 825000/825000)
+stress: 75s OK (sink inf)
+14:40:12 opp 1008000: 825000 uV survived
+set 812500uV: VSEL0=0xc8 VSEL1=0xc8 (readback 812500/812500)
+stress: 75s OK (sink inf)
+14:41:27 opp 1008000: 812500 uV survived
+set 800000uV: VSEL0=0xc7 VSEL1=0xc7 (readback 800000/800000)
+stress: 75s OK (sink inf)
+14:42:42 opp 1008000: 800000 uV survived
+set 787500uV: VSEL0=0xc6 VSEL1=0xc6 (readback 787500/787500)
+stress: 75s OK (sink inf)
+14:43:57 opp 1008000: 787500 uV survived
+set 775000uV: VSEL0=0xc5 VSEL1=0xc5 (readback 775000/775000)
+stress: 75s OK (sink inf)
+14:45:12 opp 1008000: 775000 uV survived
+set 762500uV: VSEL0=0xc4 VSEL1=0xc4 (readback 762500/762500)
+stress: 75s OK (sink inf)
+14:46:27 opp 1008000: 762500 uV survived
+1008000 DONE floor 762500 reached, no cliff
+14:46:32 opp 816000: stock 762500 uV, stepping down
+816000 DONE floor 762500 reached, no cliff
+14:46:36 opp 600000: stock 762500 uV, stepping down
+600000 DONE floor 762500 reached, no cliff
+14:46:41 opp 408000: stock 762500 uV, stepping down
+408000 DONE floor 762500 reached, no cliff
+14:46:46 campaign COMPLETE — table.conf written, disarming

@@ -39,3 +39,5 @@ workspace/readmes
 FAKESD
 # scratch / triage / local-only notes
 .notes/
+workspace/core
+workspace/core2

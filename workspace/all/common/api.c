@@ -225,6 +225,9 @@ int GFX_didOverrun(void) {
 	return frame_overran;
 }
 
+static int SND_ringLow(void); // defined after the snd context (audio-priority catch-up)
+static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
+#define gfx_flip_wait_us gfx_flip_wait_us_store
 void GFX_flip(SDL_Surface* screen) {
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
@@ -233,8 +236,17 @@ void GFX_flip(SDL_Surface* screen) {
 	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
+	// AUDIO-PRIORITY CATCH-UP: when the ring runs low (MDEC/FMV frames stall production
+	// for 42-60ms and nothing in the old design ever refilled occupancy — capacity was
+	// never the problem), skip this vsync wait so the core immediately produces the next
+	// frame: a brief burst refills the ring. An occasional unpaced video frame during
+	// already-choppy FMV is imperceptible; an audio gap is not. (BR2 saga, 2026-07-08)
+	if (should_vsync && SND_ringLow()) should_vsync = 0; // ring below 25%: catch up
+	uint64_t flip_t0 = getMicroseconds();
 	PLAT_flip(screen, should_vsync);
+	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
 }
+uint32_t GFX_getFlipWaitUs(void) { return gfx_flip_wait_us; }
 static uint32_t gfx_pace_period_us = 0; // 0 = stock FRAME_BUDGET; set by DRC to the panel period
 void GFX_setPacePeriodUs(uint32_t us) { gfx_pace_period_us = us; }
 void GFX_sync(void) {
@@ -1023,6 +1035,9 @@ static struct SND_Context {
 	int rate_adjust_ppm;    // dynamic rate control: pace the core to the panel's true rate
 	
 	int buffer_seconds;     // current_audio_buffer_size
+	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
+	                        // on an empty ring guarantees startup underruns — the choppy
+	                        // logo/demo audio on PS1, ear-found 2026-07-08)
 	SND_Frame* buffer;		// buf
 	size_t frame_count; 	// buf_len
 	
@@ -1073,17 +1088,25 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 	}
 }
 static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
-	snd.frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
-	if (snd.frame_count==0) return;
+	size_t old_frame_count = snd.frame_count;
+	size_t new_frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
+	if (new_frame_count==0) return;
 	
 	// LOG_info("frame_count: %i (%i * %i / %f)\n", snd.frame_count, snd.buffer_seconds, snd.sample_rate_in, snd.frame_rate);
 	// snd.frame_count *= 2; // no help
 	
 	SDL_LockAudio();
 	
-	int buffer_bytes = snd.frame_count * sizeof(SND_Frame);
-	snd.buffer = realloc(snd.buffer, buffer_bytes);
-	
+	int buffer_bytes = new_frame_count * sizeof(SND_Frame);
+	void* grown = realloc(snd.buffer, buffer_bytes);
+	if (!grown) { // OOM: keep the old ring (and its old frame_count) rather than crash
+		snd.frame_count = snd.buffer ? old_frame_count : 0;
+		SDL_UnlockAudio();
+		LOG_info("SND_resizeBuffer: realloc(%i) failed, keeping previous ring\n", buffer_bytes);
+		return;
+	}
+	snd.buffer = grown;
+	snd.frame_count = new_frame_count;
 	memset(snd.buffer, 0, buffer_bytes);
 	
 	snd.frame_in = 0;
@@ -1157,11 +1180,30 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
 	SND_selectResampler();
 }
+static int SND_ringLow(void) {
+	// simple 25% threshold — measured 0 delivery underruns on the BR2 MDEC gauntlet.
+	// A hysteresis variant (burst to 66%) scored 32: when the game runs below realtime,
+	// an unreachable refill target locks burst mode on and collapses pacing entirely.
+	// The modest target works BECAUSE it is reachable. (2026-07-08, the long night)
+	if (!snd.initialized || snd.frame_count <= 0) return 0;
+	int queued = snd.frame_in - snd.frame_out;
+	if (queued < 0) queued += snd.frame_count;
+	return queued < snd.frame_count / 4;
+}
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
+	// Libretro expects the number accepted. With no live device/consumer, discard audio
+	// rather than filling a preserved ring and blocking the emulation thread forever.
+	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	if (snd.prefilling) {
+		int queued = snd.frame_in - snd.frame_out;
+		if (queued < 0) queued += snd.frame_count;
+		if (queued >= snd.frame_count * 2 / 5) { // ~40% full: start the DAC
+			snd.prefilling = 0;
+			SDL_PauseAudio(0);
+		}
+	}
 	
 	// return frame_count; // TODO: tmp, silent
-	
-	if (snd.frame_count==0) return 0;
 	
 	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
 	
@@ -1232,9 +1274,18 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 	
-	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error: %s\n", SDL_GetError());
+	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
+		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
+		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
+		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
+		snd.initialized = 0;
+		return;
+	}
 	
-	snd.buffer_seconds = 5;
+	snd.buffer_seconds = 12; // ring CAPACITY (~200ms), not latency — latency is occupancy,
+	                         // set by the production/consumption balance. 5 frames (83ms)
+	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
+	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
 	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000);
@@ -1242,7 +1293,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	SND_selectResampler();
 	SND_resizeBuffer();
 	
-	SDL_PauseAudio(0);
+	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
 
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
@@ -1263,19 +1314,28 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 
-	if (SDL_OpenAudio(&spec_in, &spec_out)<0) LOG_info("SDL_OpenAudio error (resume): %s\n", SDL_GetError());
-	SDL_PauseAudio(0);
+	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
+		// resume failed: without a consumer the producer would fill the ring and stall
+		// forever — drop to silent-but-safe instead (audit 2026-07-11)
+		LOG_info("SDL_OpenAudio error (resume): %s — audio disabled\n", SDL_GetError());
+		snd.initialized = 0;
+		return;
+	}
+	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
-	if (!snd.initialized) return;
-
-	SDL_PauseAudio(1);
-	SDL_CloseAudio();
+	if (snd.initialized) {
+		SDL_PauseAudio(1);
+		SDL_CloseAudio();
+	}
 
 	if (snd.buffer) {
 		free(snd.buffer);
 		snd.buffer = NULL;
 	}
+	snd.frame_count = 0;
+	snd.frame_in = snd.frame_out = snd.frame_filled = 0;
+	snd.initialized = 0;
 }
 
 ///////////////////////////////

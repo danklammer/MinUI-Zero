@@ -19,12 +19,15 @@ endif
 ###########################################################
 
 BUILD_HASH:=$(shell git rev-parse --short HEAD)
-ZERO_VERSION=v1.2.0
+ZERO_VERSION=v1.3.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
-RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | wc -l | sed 's/ //g')
+# highest existing suffix + 1 — counting files breaks after any deletion (a stale count
+# can re-issue an existing name and zip -r would append into the shipped artifact)
+RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | sed -E 's/.*-([0-9]+)-base\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
+LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba
 
 ###########################################################
 
@@ -41,11 +44,15 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry
+.PHONY: test-governor test-telemetry test-undervolt test-reproducibility
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
+test-undervolt:
+	sh ./workspace/tg5040/undervolt/run-tests.sh
+test-reproducibility:
+	sh ./workspace/all/cores/run-source-verifier-tests.sh
 
 build:
 	# ----------------------------------------------------
@@ -70,6 +77,7 @@ system:
 		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
 		cp ./workspace/tg5040/undervolt/build/uvtool "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 		cp ./workspace/tg5040/undervolt/build/stress "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
+		cp ./workspace/tg5040/undervolt/build/deadman "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 		cp ./workspace/tg5040/undervolt/uvmap.sh "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin/"; \
 	fi
 
@@ -152,14 +160,34 @@ package: tidy
 	mkdir -p ./build/PAYLOAD
 	mv ./build/SYSTEM ./build/PAYLOAD/.system
 	cp -R ./build/BOOT/.tmp_update ./build/PAYLOAD/
-	
-	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update
+	# Tools ship INSIDE the updater payload too: existing users update by dropping
+	# MinUI.zip alone (per README), and tool fixes must reach them (audit 2026-07-11 —
+	# v1.3's Optimize CPU fixes would otherwise never reach v1.2 cards).
+	cp -R ./build/EXTRAS/Tools ./build/PAYLOAD/Tools
+
+	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update Tools
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
 	# v1: ONE download. Base is the whole product — 6 systems shown, extra systems dormant in
 	# .system (add a Roms folder to unlock), and the 4 curated Tools. No extras zip to maintain.
 	cp -R ./build/EXTRAS/Tools ./build/BASE/Tools
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools trimui MinUI.zip README.txt .metadata_never_index .fseventsd
+	# license compliance (audit 2026-07-11): GPL'd cores ship as binaries, so their license
+	# texts, the fork's own terms, and a corresponding-source statement travel in the artifact.
+	mkdir -p ./build/BASE/LICENSES
+	cp LICENSE.md THIRD_PARTY_NOTICES.md ./build/BASE/LICENSES/
+	for plat in $(PLATFORMS); do \
+		for n in $(LICENSE_CORES); do \
+			d=./workspace/$$plat/cores/src/$$n/; \
+			for f in COPYING Copying COPYING.LIB copyright COPYRIGHT LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
+				if [ -f "$$d$$f" ]; then mkdir -p ./build/BASE/LICENSES/$$n && cp "$$d$$f" ./build/BASE/LICENSES/$$n/; fi; \
+			done; \
+		done; \
+	done; true
+	mkdir -p ./build/BASE/LICENSES/unzip60
+	cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/
+	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
+	@if [ -e ./releases/$(RELEASE_NAME)-base.zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME)-base.zip already exists — refusing to overwrite a release"; exit 1; fi
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################
@@ -167,5 +195,7 @@ package: tidy
 .DEFAULT:
 	# ----------------------------------------------------
 	# $@
-	@echo "$(PLATFORMS)" | grep -q "\b$@\b" && (make common PLATFORM=$@) || (exit 1)
+	# a bare platform target (eg. `make tg5040`) runs the full release chain — without
+	# setup/package it died at final packaging with nothing staged (Codex audit 2026-07-09)
+	@echo "$(PLATFORMS)" | grep -q "\b$@\b" && (make setup && make common PLATFORM=$@ && make special && make package && make done) || (exit 1)
 	

@@ -28,3 +28,89 @@ index 7b9618e1ccfc63982be50b82fda498d75e307fdc..f314adcbea17f05f473e1cbafc8711ab
  # Classic Platforms ####################
  # Platform affix = classic_<ISA>_<µARCH>
  # Help at https://modmyclassic.com/comp
+diff --git a/libpcsxcore/mdec.c b/libpcsxcore/mdec.c
+index 18b85666..9718a146 100644
+--- a/libpcsxcore/mdec.c
++++ b/libpcsxcore/mdec.c
+@@ -384,7 +384,7 @@ static inline void yuv2rgb15(int *blk, unsigned short *image) {
+ 				putquadrgb15(image, Yblk, *Crblk, *Cbblk);
+ 				putquadrgb15(image + 8, Yblk + DSIZE2, *(Crblk + 4), *(Cbblk + 4));
+ 			}
+-		} 
++		}
+ 	} else {
+ 		for (y = 0; y < 16; y++, Yblk += 8, image += 16) {
+ 			if (y == 8) Yblk += DSIZE2;
+@@ -430,6 +430,52 @@ static inline void putquadrgb24(u8 * image, int *Yblk, int Cr, int Cb) {
+ 	image[17 * 3 + 2] = CLAMP_SCALE8(Y + B);
+ }
+ 
++#if defined(__aarch64__)
++#include <arm_neon.h>
++/* ZERO: NEON yuv2rgb24 — vectorized RGB888 MDEC color conversion. BR2-class FMV
++ * uses this path exclusively (profiled blocks15=0, blocks24=9000/2s on A133P; scalar
++ * cost ~115ms per 2s window). Per row: SCALE8 = rounding shift >>20, +128, clamp 0..255
++ * via the saturating narrows (s32->u16 then u16->u8), then one vst3 interleaved store. */
++static inline void zn_row24(u8 *image, const int *Yrow, int32x4_t R4, int32x4_t G4, int32x4_t B4) {
++	int32x4x2_t Rz = vzipq_s32(R4, R4), Gz = vzipq_s32(G4, G4), Bz = vzipq_s32(B4, B4);
++	const int32x4_t off = vdupq_n_s32(128);
++	int32x4_t Y0 = vshlq_n_s32(vld1q_s32(Yrow), 10);
++	int32x4_t Y1 = vshlq_n_s32(vld1q_s32(Yrow + 4), 10);
++	int32x4_t r0 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y0, Rz.val[0]), 20));
++	int32x4_t r1 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y1, Rz.val[1]), 20));
++	int32x4_t g0 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y0, Gz.val[0]), 20));
++	int32x4_t g1 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y1, Gz.val[1]), 20));
++	int32x4_t b0 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y0, Bz.val[0]), 20));
++	int32x4_t b1 = vaddq_s32(off, vrshrq_n_s32(vaddq_s32(Y1, Bz.val[1]), 20));
++	uint8x8x3_t px;
++	px.val[0] = vqmovn_u16(vcombine_u16(vqmovun_s32(r0), vqmovun_s32(r1)));
++	px.val[1] = vqmovn_u16(vcombine_u16(vqmovun_s32(g0), vqmovun_s32(g1)));
++	px.val[2] = vqmovn_u16(vcombine_u16(vqmovun_s32(b0), vqmovun_s32(b1)));
++	vst3_u8(image, px);
++}
++static inline void zn_half24(u8 *image, const int *Yblk, const int *Crblk, const int *Cbblk) {
++	/* one 8x16 half: 8 y-steps, each covering 2 rows sharing one chroma row of 4 */
++	int ys;
++	for (ys = 0; ys < 8; ys++) {
++		if (ys == 4) Yblk += DSIZE2; /* rows 0-7 consumed the top Y block; skip the sibling */
++		int32x4_t Cr = vld1q_s32(Crblk), Cb = vld1q_s32(Cbblk);
++		int32x4_t R4 = vmulq_n_s32(Cr, 1434);
++		int32x4_t G4 = vmlaq_n_s32(vmulq_n_s32(Cb, -351), Cr, -728);
++		int32x4_t B4 = vmulq_n_s32(Cb, 1807);
++		zn_row24(image,      Yblk,     R4, G4, B4);
++		zn_row24(image + 48, Yblk + 8, R4, G4, B4); /* next row: 16 px * 3 bytes */
++		Crblk += 8; Cbblk += 8; Yblk += 16; image += 96; /* chroma rows are 8 wide (4 left + 4 right) */
++	}
++}
++static void yuv2rgb24_neon(int *blk, u8 *image) {
++	int *Yblk = blk + DSIZE2 * 2;
++	int *Crblk = blk;
++	int *Cbblk = blk + DSIZE2;
++	zn_half24(image,      Yblk,          Crblk,     Cbblk);
++	zn_half24(image + 24, Yblk + DSIZE2, Crblk + 4, Cbblk + 4); /* right half: 8 px * 3 bytes */
++}
++#endif
++
+ static void yuv2rgb24(int *blk, u8 *image) {
+ 	int x, y;
+ 	int *Yblk = blk + DSIZE2 * 2;
+@@ -437,6 +483,11 @@ static void yuv2rgb24(int *blk, u8 *image) {
+ 	int *Cbblk = blk + DSIZE2;
+ 
+ 	if (!Config.Mdec) {
++#if defined(__aarch64__)
++		yuv2rgb24_neon(blk, image);
++		(void)x; (void)Crblk; (void)Cbblk;
++		return;
++#else
+ 		for (y = 0; y < 16; y += 2, Crblk += 4, Cbblk += 4, Yblk += 8, image += 8 * 3 * 3) {
+ 			if (y == 8) Yblk += DSIZE2;
+ 			for (x = 0; x < 4; x++, image += 6, Crblk++, Cbblk++, Yblk += 2) {
+@@ -444,6 +495,7 @@ static void yuv2rgb24(int *blk, u8 *image) {
+ 				putquadrgb24(image + 8 * 3, Yblk + DSIZE2, *(Crblk + 4), *(Cbblk + 4));
+ 			}
+ 		}
++#endif
+ 	} else {
+ 		for (y = 0; y < 16; y++, Yblk += 8, image += 16 * 3) {
+ 			if (y == 8) Yblk += DSIZE2;

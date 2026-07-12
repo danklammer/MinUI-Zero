@@ -32,6 +32,9 @@ typedef struct {
 	int slack_run; // consecutive ticks of frame slack
 	int fail_khz;  // highest ceiling that recently slipped — don't sink back to it while fail_hold>0
 	int fail_hold; // ticks until we may re-probe at/below fail_khz (prevents 600<->816 limit cycling)
+	int fail_streak; // consecutive re-probes that slipped again — escalates fail_hold (repeat offender)
+	int presink_khz; // ceiling before the most recent sink — restored in one tick if the probe slips
+	int since_sink;  // ticks since the most recent sink (saturates; small = a probe just happened)
 } GovState;
 
 // Named brackets from docs/thermal-governor-design.md (ASSUMED — verify the OPP ladder and
@@ -51,6 +54,7 @@ void gov_init(GovState* st, const GovProfile* p);
 #define GOV_SIGNAL_SLACK 0 // holding frame rate with headroom -> may sink
 #define GOV_SIGNAL_SLIP  1 // NOT holding frame rate -> climb + remember the failed ceiling
 #define GOV_SIGNAL_BUSY  2 // holding, but saturated (no idle headroom) -> hold, don't probe lower
+#define GOV_SIGNAL_BIGSLIP 3 // >=10% under target -> jump straight to f_max (the audible case)
 
 // Pure controller step. No I/O.
 //   temp_c        : current temperature in Celsius, or <0 if unknown/unavailable.
@@ -71,6 +75,10 @@ int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us);
 // Device entry point: read temp, run gov_step(), and write the ceiling via
 // PLAT_setCPUMaxFreq(). Honors GOV_DISABLE=1 (no-op). Call once per GOV_TICK_FRAMES.
 void gov_tick(GovState* st, const GovProfile* p, int frame_overrun);
+
+// Scene-change burst: a video-mode/geometry switch announces new workload before its cost
+// arrives — jump the ceiling to f_max now, let the sink ladder re-find the floor after.
+void gov_burst(GovState* st, const GovProfile* p);
 
 // Read the CPU thermal zone in Celsius, or -1 if unavailable. Exposed for logging/tests.
 int gov_read_temp_c(void);

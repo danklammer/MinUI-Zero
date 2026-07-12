@@ -17,6 +17,7 @@ static void* worker(void* arg) {
 	float32x4_t a = vdupq_n_f32(1.0001f), b = vdupq_n_f32(0.9999f), c = vdupq_n_f32(0.5f);
 	unsigned long x = (unsigned long)arg | 1;
 	char* buf1 = malloc(65536), *buf2 = malloc(65536);
+	if (!buf1 || !buf2) { free(buf1); free(buf2); return (void*)1; }
 	memset(buf1, 0xA5, 65536);
 	while (run) {
 		for (int i = 0; i < 4096; i++) {
@@ -37,11 +38,27 @@ static void* worker(void* arg) {
 int main(int argc, char** argv) {
 	int secs = (argc > 1) ? atoi(argv[1]) : 60;
 	pthread_t t[4];
-	for (long i = 0; i < 4; i++) pthread_create(&t[i], NULL, worker, (void*)i);
+	int started[4] = {0}, failed = 0;
+	// an OK verdict must mean all 4 cores actually stressed: a silently failed spawn or
+	// allocation would validate a voltage under partial load (audit 2026-07-12). A nonzero
+	// exit is judged CLIFF by uvmap — conservative, never unsafe.
+	for (long i = 0; i < 4; i++) {
+		if (pthread_create(&t[i], NULL, worker, (void*)i) == 0) started[i] = 1;
+		else failed = 1;
+	}
 	struct timespec ts = { secs, 0 };
 	nanosleep(&ts, NULL);
 	run = 0;
-	for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+	for (int i = 0; i < 4; i++) {
+		if (!started[i]) continue;
+		void* ret = NULL;
+		pthread_join(t[i], &ret);
+		if (ret) failed = 1;
+	}
+	if (failed) {
+		printf("stress: %ds FAILED (worker spawn/alloc)\n", secs);
+		return 2;
+	}
 	printf("stress: %ds OK (sink %.1f)\n", secs, sink);
 	return 0;
 }

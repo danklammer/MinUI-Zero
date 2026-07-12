@@ -11,6 +11,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h>
 #include <linux/i2c.h>
@@ -22,7 +23,7 @@
 #define BASE_UV   712500
 #define STEP_UV   12500
 #define FLOOR_UV  762500  // campaign hard floor: never command below this
-#define CEIL_UV   1250000
+#define CEIL_UV   1187500
 #define KERNEL_UV "/sys/class/regulator/regulator.0/microvolts" // resolved at runtime instead
 
 static int i2c_open(void) {
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
 	int v0 = reg_read(fd, REG_VSEL0), v1 = reg_read(fd, REG_VSEL1);
 	long kuv = kernel_uv();
 	if (!strcmp(argv[1], "read")) {
-		printf("VSEL0=0x%02x (%ldnuV en=%d)\n", v0, decode(v0), (v0>>7)&1);
+		printf("VSEL0=0x%02x (%lduV en=%d)\n", v0, decode(v0), (v0>>7)&1);
 		printf("VSEL1=0x%02x (%lduV en=%d)\n", v1, decode(v1), (v1>>7)&1);
 		for (int r = 2; r <= 5; r++) printf("reg[0x%02x]=0x%02x\n", r, reg_read(fd, r));
 		printf("kernel says: %lduV\n", kuv);
@@ -77,7 +78,10 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 	if (!strcmp(argv[1], "set") && argc == 3) {
-		long uv = atol(argv[2]);
+		char* end = NULL;
+		errno = 0;
+		long uv = strtol(argv[2], &end, 10);
+		if (errno || !end || *end) { fprintf(stderr, "refuse: invalid voltage '%s'\n", argv[2]); return 2; }
 		if (uv < FLOOR_UV || uv > CEIL_UV) { fprintf(stderr, "refuse: %ld outside [%d..%d]\n", uv, FLOOR_UV, CEIL_UV); return 2; }
 		if ((uv - BASE_UV) % STEP_UV) { fprintf(stderr, "refuse: not a %duV step\n", STEP_UV); return 2; }
 		if (kuv != decode(v0) && kuv != decode(v1)) {
@@ -91,6 +95,10 @@ int main(int argc, char** argv) {
 		int n0 = reg_read(fd, REG_VSEL0), n1 = reg_read(fd, REG_VSEL1);
 		printf("set %lduV: VSEL0=0x%02x VSEL1=0x%02x (readback %ld/%ld)\n",
 			uv, n0, n1, decode(n0), decode(n1));
+		if (decode(n0) != uv || decode(n1) != uv) {
+			fprintf(stderr, "refuse: VSEL readback mismatch after write\n");
+			return 4;
+		}
 		return 0;
 	}
 	fprintf(stderr, "usage: uvtool read | set <uV>\n");

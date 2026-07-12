@@ -453,7 +453,8 @@ displayed "-138% less CPU power". Fixed + arithmetic hardened against non-numeri
 Validation methodology settled: pinned-clock A/B with PROOF-OF-HELD rail sampling (two earlier
 attempts invalidated themselves — kernel re-stock + thermal throttle at 1800); clean result
 @1416: stock +11C vs undervolt +8C for identical 60s stress = ~27% less heat, consistent with
-the V^2 prediction (~19%; "up to 20%" at the top OPP is honest: 1062.5^2/1187.5^2 = 0.8006).
+the V^2 prediction (~19% for that pre-envelope row). D51 supersedes this as a production
+claim: the corrected ceiling envelope uses 1075mV at 1800MHz, about 18%.
 WoWLAN probed: impossible (wlan0 has no wakeup attribute); dev answer = the disable-deep-sleep
 flag; "summonable sleep" (RTC-heartbeat wake windows) designed but unbuilt.
 
@@ -514,3 +515,308 @@ the PANEL dominates the power budget and PlayStation costs about a Game Boy. Pub
 ~7.5h -> PS1 ~6.5-7h (dim). The earlier single-window "~10h PS1" figure is retracted as
 top-region gauge flattery. Method note: attract/demo modes make honest unattended loads;
 drain scripts must quit the game at the end (an unattended THPS2 kept running 2.7h post-test).
+
+## D42 — Fast-forward retargets the governor (2026-07-07)
+A Reddit question ("how does auto clock work in FF?") exposed a real gap: the governor only
+raises on gen<target, and FF generates ABOVE target by definition — so FF ran clock-starved at
+the settled floor (measured: Zelda DX 2.2x of the 4x cap at 408). Fix is one idea: FF is not an
+exception, it is a different target — gov_target_fps = core.fps x (max_ff_speed+1); the loop
+then finds the lowest clock that holds THAT. No sinking while FF is held (work measurement is
+unreliable during skipped presentation). Measured: full 4x at 1008MHz/32C, clean return to the
+408 floor on release. Cool Pokemon grinding, no pinned max.
+
+## D43 — Thread-aware governor + mailbox threaded video (2026-07-07)
+Stock MinUI ships core/render threading hidden as "Prioritize Audio" (double-locked away on
+tg5040: system.cfg AND PS.pak). Its handoff was measured broken: main held core_mx through the
+vsync wait, signals were lossy, the condvar was re-initialized per frame. Rebuilt as a
+triple-buffer mailbox (core swaps under a brief lock, latest wins, main presents outside the
+lock) + drift-free core cadence (bursty core.run reads as "behind" to pcsx's auto-frameskip:
+15 real + 46 skipped frames/sec, in BOTH modes — that ratio is the game's internal render rate,
+not a bug) + the governor judges the CORE thread's window utilization (per-frame budgets
+misread internally-low-fps PSX games; util_next <= 0.85 gates the sink). DRC ppm is honored by
+the core pacer so the sync-stutter fix survives threading. Validated: ceiling breathes
+1008<->1440 with demo scenes at 32C, full gauntlet green (persisted-ON clean quit, FF round
+trip, menu park/resume, sleep/wake with zero gov moves during sleep).
+Audit trail: three passes + two independent reviewers = 15 findings, all fixed — headline
+catches: startup thread creation skipped the liveness flag (clean exit = dlclose SIGSEGV,
+caught only because the gauntlet tested the PERSISTED path, not just runtime toggling), and
+the debug HUD's new "THR" label indexed NULL font entries (T and R glyphs never existed —
+found by core-dump autopsy, fixed with pixel art). blitBitmapText also gained hard clipping:
+its unclipped border writes were absorbed for years by over-allocated core buffers and
+segfaulted on the exact-size mailbox buffer.
+Option renamed conceptually (still "Prioritize Audio" in UI pending rename decision), unhidden
+for PS1, still hidden for SUPA (supafaust pins its own threads). Default Off until hands-on +
+gameplay floor A/B decide promotion.
+
+## D44 — Auto-threading ships in v1.3 (2026-07-08; superseded by D51)
+Dan's call: no per-system threading list, no visible option ("I'd hate to give an option then
+take it away") — the machine decides, same charter as the clock. Implemented as measure/decide/
+remember: launch single-threaded (safe for any core incl. sideloaded), trial threading when the
+settled ceiling shows headroom pressure (>=1008 at a 60s check; floor-dwellers re-arm and never
+trial), commit only if the ceiling verifiably sinks a step (slips raise the ceiling, so
+instability self-fails the trial), persist the verdict in a per-game sidecar (game cfgs get
+rewritten by the options menu). Explicit user cfg wins and disables auto. Validated on-device,
+all five cells: BR2 honest-revert (its bottleneck needs 1800 regardless — also disproves the
+"v1.2 runs BR2 worse" report on stock volts: 60/60 at 1800/35C mid-fight), DKC commit
+(1200 -> 768 in trial, boots threaded at 600 thereafter), Zelda floor-dweller never trials,
+both verdict polarities honored on relaunch. Threshold 1008 provisional pending the full
+benchmark matrix.
+
+## D45 — The smoothness dig: DRC was dormant in production (2026-07-08)
+Dan's feel report ("threaded THPS not quite as smooth") triggered an instrumentation campaign
+that went through THREE wrong sensors (waits!=dups: main normally waits every frame; flip
+intervals: blind to internally-low-fps content AND to the panel beat; flip-block time: queued
+swapchains always block) before unearthing the real finding: **DRC — the v1.1 sync-stutter
+fix — has been ineligible in production the whole time.** Its gate required VSYNC_STRICT;
+the tg5040 system.cfg locks prevent_tearing=Lenient. Both threading modes had the ~1.3s
+panel-beat dup; threading was never a smoothness regression. Fix shipped: eligibility accepts
+any vsync!=OFF (Lenient vsyncs every frame while the game holds rate = DRC's regime).
+STILL OPEN: (1) on-device convergence verification of the revived single-thread DRC (needs a
+ppm telemetry line; the only current print fires once at +6000ppm); (2) threaded-mode panel
+lock — the correct sensor is a long-window precise flip-rate measurement (60.0 vs 60.8
+distinguishable over ~10s; push ppm up until the flip rate plateaus at the panel ceiling =
+locked). Both queued for a fresh session. New permanent instrumentation shipped along the
+way: HUD D/S/U smoothness counters + per-minute thr-stats log lines in threaded mode.
+Also today: live gameplay validation via forged-input navigation (Tony Hawk driven into a
+real Hangar run by synthetic button presses; true-60fps delivery measured 0 dups / 0 skips /
+0 underruns per minute — DELIVERY is clean; the panel beat is the remaining cosmetic item,
+now equally present-or-absent in both modes pending the revival verification).
+
+## D46 — Codex review round + panel-lock convergence (2026-07-08, late)
+Dan ran the branch through Codex: 7 findings, 6 real, all fixed same-night. Headline: config
+load was arming toggle_thread while thread_video was still false — persisted-On booted
+threaded then tore itself down on the first main-loop pass. THAT was the unsolved ON-path
+phantom (BR2 Threading=On death). Regression-proven: persisted-On now boots 11 threads and
+holds. Also fixed: park_core() mandatory before menu/hdmi core access (500ms, logged), FF
+None retargets to max (was floor-starved), trials abort on menu/FF interruption, On-Off-Auto
+cycling cancels stale toggles, legacy minarch_thread_video honored as alias. Codex's
+architecture note (replace thread_video/was_threaded/toggle_thread booleans with an explicit
+lifecycle state machine) = the v1.4 refactor.
+Panel-lock v2 (long-window flip-rate hill-climb, 1000ppm stride): converged in ~1 min and
+held (ppm=850, dups=0, skips=0, underruns=0 across 3 min of THPS). Caveat: locked below the
+panel's nominal 60.8 figure — either the swapchain drain differs from scanout or the beat is
+not fully closed; instruments cannot distinguish, human eyes next session.
+Bench honesty note: unattended benchmark arms ran with the 30s idle DIM active (both arms
+equally — comparisons stand; absolute cc figures are dim-screen values).
+Review roster for this feature, final: 3 self-audits, fork adversary, blind reviewer, a
+16-arm benchmark campaign, Dan's ears (3 real bugs), Codex (6 real bugs). Every reviewer
+found something all the others missed.
+
+## D47 — The BR2 audio-chop investigation: a hardware-class boundary (2026-07-08, late)
+Dan's ears reopened the case the counters had closed. Systematic exoneration ladder, each arm
+measured on the exact logo->demo sequence (underruns): governor (30 at PINNED 1800 — not
+clocks), revived DRC (chop survived the revert — not DRC; but the revival DID chop PS1
+separately and was reverted, see D46), ring capacity 5->12 frames (33 — not buffering),
+DAC prefill gate at 40% (23 — kept: right on principle, adapted from NextUI), pcsx Threaded
+SPU (25 — not SPU contention). Invariance across every lever = structural: telemetry shows
+42-60ms MDEC decode frames; during each, audio production halts beyond what any ring rides.
+CONCLUSION: BR2's non-interactive sections exceed the A133P's stock-clock realtime capability
+in pcsx. Gameplay is measured-flawless (60/60 fights, zero underruns). Others cover this class
+with the 2GHz overclock; we do not, by charter (reaffirmed by Dan mid-investigation). The
+original user report is hereby explained: their NextUI comparison ran Performance=2000.
+Fixes kept from the dig: audio prefill gate (real, principled), audio-ring capacity note,
+per-minute drc/thr telemetry. The reporter reply: gameplay receipts + the honest boundary.
+
+## D47 addendum — replication closes it (2026-07-08, later still)
+Dan rejected the first closure ("still sounds like shit") — correctly: the tuning sweep had
+not run. It ran: psxclock=50+lighting-off scored 11 (hope!), psxclock=45 scored 30, and the
+50-replicate scored 30. Full series: 30/23/33/25/11/30/30 = ~27±7, one lucky outlier, seven
+configurations. NOTHING moves it. The MDEC-section boundary is now REPLICATED, not asserted.
+Methodology lesson recorded: single short-sequence runs carry ±7 noise — the 11 fooled us for
+one arm; conclusions need replicates (the 8-min benchmark pairs are long enough to be stable;
+3-min sequence probes are not). BR2 final state: gameplay flawless (multi-day receipts),
+non-interactive MDEC sections chop ~10 gaps/min on ANY stock-clock configuration; the only
+cure is the 2GHz overclock, declined by charter, twice, with eyes open.
+
+## D48 — D47 overturned: the "hardware boundary" was four software layers (2026-07-09)
+Codex's profile-first roadmap cracked what seven invariant configurations couldn't: the MDEC
+profiler split the 42-60ms frames into rl2blk+idct (~80ms/2s) vs yuv2rgb (~115ms/2s) and the
+split counters caught BR2 decoding EXCLUSIVELY on the 24bpp path (blocks15=0) — the first
+NEON port (yuv2rgb15) was dead code and only the counters could have said so. Four fixes,
+each measured on-device, all at stock 1800:
+(1) NEON yuv2rgb24 — 115→50ms/2s window; attract underruns 27±7/run → ~0-1/11min (the D47
+    "boundary" itself). Ships in patches/pcsx_rearmed.patch, fresh-clone-proven.
+(2) Crisp scaler's fixed 4x NN prescale made 480i menus into 2048x1920 GPU render targets
+    (~1GB/s fill on the GE8300) — present blocked, machine slowed, CPU idle. Now: smallest
+    integer prescale that reaches the panel (2x for 480-line; 240p unchanged at 4x).
+(3) Governor limit-cycled on heavy screens (sink into a known-bad ceiling every FAIL_HOLD
+    expiry = audible collapse ~every 60s). Now: repeat-offender holds escalate 60s→2m→4m→8m
+    and a slip that survives one climb step bursts straight to f_max (race-to-idle: brief
+    over-provisioning is inaudible; a crawling climb is not). Harness green.
+(4) THE decisive layer: pcsx's async GPU thread (upstream default-on for multicore) —
+    gpu_async's scanout-sync handshake serialized emu<->gpu threads on 480i screens (both
+    half-idle, gen 41/60 at pinned max; raw work = 86% of ONE core). Config-only fix:
+    pcsx_rearmed_gpu_thread_rendering=disabled, now the PS.pak default on both devices.
+    Fights: HUD-verified 60/60 @1800/39C.
+The no-OC charter survives with arithmetic teeth: the 2GHz OC is +11% against a 46% deficit —
+NextUI/CrossMix users running this game overclocked are still degraded on these screens and
+NEITHER fork touches any of the four causes (both ship async-GPU-on + brute-force clock).
+Codex's speculative gpu_async scanout patch was reviewed and unwound (dormant once the thread
+is off; preserved in .notes/upstream/ as an upstream PR candidate). Threading verdicts learned
+under the old baseline are void — PS sidecars cleared, PS1 bench rows re-run before v1.3.
+Lesson for the record: D47's replication was sound but its conclusion over-reached — we
+replicated the SYMPTOM's invariance across knobs we had, not the absence of causes we hadn't
+found. "Hardware boundary" claims need a profile, not just an exoneration ladder.
+
+## D48 addendum — the fifth layer, and Dan's sign-off (2026-07-09, morning)
+Dan's fresh ears found the residue the fixed stack still carried: "improved, still crunchy" —
+and the HUD caught it live at 1008MHz/52-per-60 on character select. The crunch was the
+GOVERNOR'S PROBE COST: sink to a too-low ceiling, several audible ticks of stepwise recovery,
+repeat at every fail-hold expiry. Two refinements shipped (cbdec065, harness green):
+(1) a slip arriving within ~8 ticks of a sink is CAUSED by that sink — restore the pre-sink
+ceiling in one tick (thermal sinks deliberately excluded: temp always wins);
+(2) GOV_SIGNAL_BIGSLIP (gen >=10% under target) jumps straight to f_max on the first tick.
+Validation, 75s parked on char select: probe ladder 1584/1368/1152 all held 60/60 (the
+GPU-thread fix lowered this screen's true floor from ~1584 to ~1152), the 1008 probe slipped
+to 52.4, signal=3 recovered in ONE transition, ZERO ALSA underruns across the window
+including the collapse — the ring cushion rode the entire dip. Dan: "Sounds pretty good!"
+BR2 CLOSED at stock clocks, 35-40C. The Phase-3 480i render-skip was never needed.
+Watch what happened in that log: the governor learned the screen's floor by touching it
+once, briefly, inaudibly — the closed-loop thesis in one trace. Also caught during deploy:
+per-game cfgs snapshot ALL core options at save time, so any pre-v1.3 saved PS game cfg pins
+gpu_thread_rendering=auto forever — release notes must tell users to re-save or reset
+per-game settings on PS titles (or minarch grows a migration; lean answer TBD).
+
+## D48 second addendum — scene-change burst + Crisp restored (2026-07-09)
+The last residue, ear-caught: brief crunch at TRANSITIONS (title->demo, VS card). Cause:
+scene changes land on whatever clock the governor had settled for the previous scene; the
+climb happened after the slip. Fix (35d941c7): gov_burst() — a video-mode/geometry switch is
+an early-warning bell that fires BEFORE the new scene's cost, so the ceiling jumps to f_max
+at the announcement and the sink ladder re-finds the floor afterward. Event-driven, no
+polling. Hooked at the selectScaler trigger in minarch (fires only on real source-size change).
+Crisp A/B: PASSED both judges — with the minimal-prescale fix, Crisp == Soft on the worst
+480i screens (0 underruns/90s, same probe ladder, floor 1152) and the look was approved.
+Crisp stays the shipped default; the Soft diagnostic line removed from the device cfg.
+Ear-verified transitions clean. The v1.3 candidate stack is complete.
+
+## D48 third addendum — SP bring-up: two more layers, both devices certified (2026-07-09)
+The SP sounded "very crunchy" on the same screens the Brick had just passed. Two real causes:
+(1) THE CFG-SHADOW TRAP BIT AGAIN, second device in hours: the SP console minarch.cfg
+(written when sharpness was changed in its menu) snapshotted gpu_thread_rendering=auto,
+silently overriding the new pak default — the GPU thread measured 51% busy while "disabled".
+The v1.3 updater MUST ship a one-time cfg migration sweep (auto->disabled across saved PS
+cfgs); release-notes-only was proven insufficient by our own two devices.
+(2) SP-only supersample blowup: selectScaler oversized dst = MAX(ceil-cover) picked scale 3
+for 512x480 on the 1280x720 panel -> a 2048x1440 padded dst the CPU scales into and uploads
+EVERY frame (~3x the Brick cost for the same screen). Fix (045d04af): cap the supersample
+at 2x panel area — every pre-existing Brick/SP case unchanged, only pathological combos
+shrink (SP 480i: scale 3->2 = 1024x960). Upstream had this cap commented out as a TODO.
+Also fixed in the same commit: GOV_SIGNAL_BIGSLIP now outranks the probe-undo restore (a
+deep deficit restored to a too-low pre-sink ceiling paid two ticks; SP log caught it).
+Auto-threading sidecars written under the broken baseline were cleared again — trials only
+count when the environment they judged is the environment that ships.
+Result: GPU thread verified dead on SP (0 jiffies), ear verdict "sounds way better."
+BOTH devices now run the identical ear-certified v1.3 candidate.
+
+## D49 — The hardcore regression campaign: five governor bugs, one myth, all floors (2026-07-09)
+Dan called for hardcore testing after the BR2 stack landed; the grinder paid for itself.
+GOVERNOR (all fixed same-day, each with a synthetic-harness regression test):
+(1) escalating fail-hold; (2) burst-to-max on persistent slip; (3) fail memory must only
+arm BELOW f_max (boot slips at max banned all sinking — the GBC 1008-pin, found by gate
+telemetry showing signal=SLACK/p95 7.7ms with a frozen ceiling); (4) bursts only on TRUE
+size changes (same-size SET_GEOMETRY resyncs re-fired selectScaler); (5) BUSY no longer
+erases slack progress (sporadic ~20ms stall windows starved the 4-consecutive-slack rule).
+Verdict after fixes, cross-device: GBA/FC/SUPA/MD at-or-below historic floors, PS1 cruising
+1008 with correct scene bursts, GBC honestly holding ~1008 (gen craters to 20.7 at 408 —
+the +2ms-vs-07-03 scene-cost audit is filed, it is NOT a governor defect).
+THE SLEEP "CRASHES" WERE A MYTH: every mid-campaign reboot traced to api.c's designed
+fallback (idle 2min -> deep sleep; 3 failed suspends OR the disable-deep-sleep flag ->
+clean PWR_powerOff). The flag literally guarantees poweroff-after-idle — the Deep Sleep
+tool should say so (task filed). Unattended harnesses need input pokes (L3; NOT L2 — L2
+toggles FF and poisoned one run's floors).
+THPS2 IN-LEVEL A/B (automated level-runner, recorded input sequence): threading Off vs On
+both settle at the 1008 bracket floor, 60/60, 0 underruns. The GPU-thread-off baseline
+moved the single-thread gameplay floor from ~1584 (thread-campaign estimate) to 1008 —
+PS1 frontend threading is now moot for this class; its value concentrates on SuperFX SNES.
+15BPP MDEC HUNT: probe core over the full 44-game PS library — every FMV that decoded
+(BR2, Blood Omen, SotN, Wipeout XL at 14k blocks/2s) is 24bpp; zero 15bpp users found.
+Ship decision: yuv2rgb15 routed back to upstream scalar (d7332124) — unverified vector
+code does not ship hot; NEON15 returns if a verified specimen appears.
+Reusable harness artifacts from the campaign: single-arm floor runner, keep-awake poker
+daemon, and the visually-verified level-runner (press -> fb-capture -> confirm -> record).
+
+## D50 — The floor brownout: undervolt vs light load, caught by variety testing (2026-07-09)
+Every "GBC crash" in the campaign was one bug: a calibrated-undervolt device REBOOTS within
+minutes when a light game dwells at the 408 floor. Dr. Mario never triggered it (its attract
+scene pins ~1008); Donkey Kong sinks to 408 and died twice, heartbeat-documented (final
+words: game=1 cur=408000, then power loss). Controlled A/B/A on the same scene:
+UV on -> dead in ~2.5 min; ZERO_NO_UV=1 -> 12 min clean; UV on + floor guard -> 12 min clean.
+ROOT CAUSE (physics, consistent with all data): the P2 calibration proved 762.5mV under
+STRESS; a game idling at the floor puts the TCS4838 buck into light-load/PFM mode where the
+same undervolted rail is not stable. Stress-proof != idle-proof — a calibration-methodology
+gap, now recorded.
+FIX (8c02bd31): PLAT_setCPUVoltForCeil stands down at or below an 816MHz ceiling. Idle
+current at the floor is tiny (the delta saved uW), the measured UV wins live at the high
+OPPs, so the guard costs ~nothing. Future calibrations must add idle-dwell arms per OPP.
+Exposure: opt-in feature (calibrated devices only) — but OUR two devices are exactly that,
+and any Tune Voltage user would have hit it. Ship-blocker caught before ship.
+Credit where due: Dan's "test different games" call found in one afternoon what the
+first-rom sweep design would never have hit.
+Also shipped same evening: Stay Awake dev tool (workspace/tg5040/dev-tools/, never
+packaged) — blocks all autosleep + WiFi power-save via the existing /tmp/stay_awake flag,
+reboot-persistent; ends the harness sleep-roulette documented in D49. Codex audit round 2
+verified NEON MDEC scalar-equivalence independently and yielded 5 fixes (0b0c76a5): hard
+1.8GHz choke clamp, unconditional uv restore, clean-slate auto-thread trials, watchdog-gated
+calibration, full-chain make targets; C11-atomics telemetry hardening deferred to v1.4
+deliberately (post-soak sync rewrites invalidate certification).
+
+## D51 — v1.3 release audit: frontend threading deferred; UV publication hardened (2026-07-11)
+The final whole-branch audit supersedes D44's ship decision. The frontend thread invokes
+scaler/SDL renderer mutation and governor bursts from the core callback while the main thread
+presents and ticks the same state. Those are real ownership/data races, and no tested library
+title needs the path after the PS1 GPU-thread fix (THPS2 was 1008 MHz either way, with the
+threaded arm slightly warmer). v1.3 compiles frontend threading unavailable on tg5040, forces
+legacy On/Auto configs to Off, and hides the option. The dormant implementation remains for a
+future ownership redesign; core-internal worker threads are unaffected.
+
+The same audit made calibration data fail closed: campaigns bind chip+model before the first
+test and verify them on every resume; OPP pinning is ordered and read back; crash breadcrumbs,
+stock rows, and exactly one numeric verdict per OPP are required; both VSEL writes require
+readback; and table.conf publishes last only after eight validated rows. The generator now caps
+each row at measured stock and emits the non-decreasing ceiling envelope. From the preserved
+2026-07-11 log this means a 25 mV minimum applied high-OPP reduction and 112.5 mV at 1800 MHz
+(about 18% CPU-rail dynamic power), distinct from the 75 mV minimum raw cliff headroom.
+
+The post-audit verification pass found two more fail-closed requirements. Calibration now has
+an atomic single-instance lock, and `DONE floor` requires either stock already at the floor or
+a successful stress round there; a refused uvtool write or floor stress failure cannot become
+a publishable success. Release builds also re-check every non-core pin, verify each core's
+tracked source delta exactly equals its declared patches, and clean-rebuild all core outputs.
+This prevents stale marker files or stale `.so` files from disagreeing with `commits.txt`.
+
+## D52 — v1.3 disables the feature it was named after (2026-07-11)
+The branch was born `feat/thread-aware-governor`; frontend multithreading was the
+original thesis. The trial machinery built to prove it instead proved the workload was
+the problem: once the FMV decoder went NEON and the serializing async-GPU thread was
+turned off, one core covers the tested library at stock clocks (THPS2 threaded-vs-single
+A/B: tie at 1008 MHz). The release audit then found the mailbox implementation mutates
+renderer state across threads under `-O3 -flto` without a sound memory model. Decision:
+ship v1.3 with `ZERO_DISABLE_FRONTEND_THREADING` (option locked Off, machinery
+unreachable) — a whole class of latent races removed at no measured cost *on the PS1
+titles that motivated the branch* (THPS2 tie; a matched BR2 A/B on the release binary:
+both arms ~1800, threaded ran 3°C warmer). The honest cost is on SNES/supafaust, where
+the receipts show threading was a real efficiency win: DKC mean 747→600 MHz with coulomb
+delta 90→30, Yoshi (SP) mean 1212→741 MHz (docs/bench/2026-07-08-snes-*). That measured
+opportunity is deferred to — and is the primary motivation for — the v1.4 thread-ownership
+redesign, not denied. Re-enable only after that redesign. The legacy `minarch_thread_video`
+migration still parses safely; it now lands on the locked-Off option. Emulator cores'
+own internal worker threads are unaffected. Honest data does not care what the branch
+is called.
+
+## D53 — calibration freezes must self-recover (2026-07-12)
+Dan's verdict after repeated marginal-voltage freezes (one 2026-07-11, two today) each
+needing a manual POWER-hold: "It has to reboot on its own" — release blocker. The first deadman
+(`sleep && reboot -f`, normal priority) never woke in the frozen state even though the
+kernel reserves 5% CPU for non-RT tasks, which means those freezes were deeper than
+scheduler starvation (partial core wedge while procd's RT feeder kept the hardware
+watchdog fed). Redesign is layered, defense-in-depth: (1) a compiled deadman at
+SCHED_FIFO max + mlockall firing the raw reboot(2) syscall — no exec, no sync at
+trigger time (a wedged storage stack must not hang the reboot); (2) the kernel's
+panic_on_rcu_stall + panic_on_oops armed per stress round with kernel.panic=10
+auto-reboot (this BSP has no softlockup detector; RCU stalls are the kernel-visible
+signature of a partial wedge); (3) /dev/watchdog0 exists as a possible true hardware
+deadline but /sys/class/watchdog is absent on this BSP, so probing it blind (nowayout
+unknown) was deemed riskier than shipping layers 1+2 — deferred. Acceptance on
+hardware: SCHED_FIFO 99 verified, SIGTERM cancel clean, budget-expiry force-reboot
+confirmed by uptime reset. Residual honesty: a wedge deeper than both layers still
+needs POWER; the next real marginal-voltage freeze is the live-fire validation.

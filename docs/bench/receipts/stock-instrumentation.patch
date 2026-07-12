@@ -1,0 +1,35 @@
+diff --git a/workspace/all/common/api.c b/workspace/all/common/api.c
+index ff8767f6..4b07ca12 100644
+--- a/workspace/all/common/api.c
++++ b/workspace/all/common/api.c
+@@ -950,7 +950,7 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
+ 	
+ 	int16_t *out = (int16_t *)stream;
+ 	len /= (sizeof(int16_t) * 2);
+-	// int full_len = len;
++	int full_len = len;
+ 	
+ 	// if (snd.frame_out!=snd.frame_in) LOG_info("%8i consuming samples (%i frames)\n", ms(), len);
+ 	
+@@ -968,7 +968,7 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
+ 	
+ 	int zero = len>0 && len==SAMPLES;
+ 	if (zero) return (void)memset(out,0,len*(sizeof(int16_t) * 2));
+-	// else if (len>=5) LOG_info("%8i BUFFER UNDERRUN (%i/%i frames)\n", ms(), len,full_len);
++	else if (len>=5) LOG_info("%8i BUFFER UNDERRUN (%i/%i frames)\n", ms(), len,full_len);
+ 
+ 	int16_t *in = out-1;
+ 	while (len>0) {
+diff --git a/workspace/all/minarch/minarch.c b/workspace/all/minarch/minarch.c
+index 071ee0bd..dadbd24b 100644
+--- a/workspace/all/minarch/minarch.c
++++ b/workspace/all/minarch/minarch.c
+@@ -4613,7 +4613,7 @@ static void trackFPS(void) {
+ 		cpu_ticks = 0;
+ 		fps_ticks = 0;
+ 		
+-		// LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
++		LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
+ 	}
+ }
+ 

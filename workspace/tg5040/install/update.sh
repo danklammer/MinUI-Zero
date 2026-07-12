@@ -9,8 +9,9 @@ NEW_PATH=${SDCARD_PATH}/.system/tg5040/dat/runtrimui.sh
 echo "check for outdated $OLD_PATH"
 if [ -f $NEW_PATH ] && ! grep -q exec $OLD_PATH; then
 	echo "replacing with updated version"
-	rm -f $OLD_PATH
-	cp $NEW_PATH $OLD_PATH
+	# never rm-then-cp a boot-critical file: a failed cp would leave the device unbootable.
+	# stage on the same filesystem, then swap (audit 2026-07-12)
+	cp $NEW_PATH $OLD_PATH.new && mv -f $OLD_PATH.new $OLD_PATH
 fi
 
 # --------------------------------------
@@ -42,13 +43,18 @@ if [ -d $BRICK_PATH ]; then
 					if [ -f $CFG_PATH ]; then
 						CFG_NAME=$(basename $CFG_PATH .cfg)
 						echo "copying $CFG_PATH to $NEW_PATH/$CFG_NAME-brick.cfg"
-						cp $CFG_PATH $NEW_PATH/$CFG_NAME-brick.cfg
+						cp $CFG_PATH $NEW_PATH/$CFG_NAME-brick.cfg || MIGRATE_FAILED=1
 					fi
 				done
 			fi
 		done
-		echo "deleting brick userdata $SRC_PATH"
-		rm -rf $SRC_PATH
+		# only delete the originals if every copy landed (audit 2026-07-12)
+		if [ "$MIGRATE_FAILED" = "1" ]; then
+			echo "config migration incomplete — keeping $SRC_PATH"
+		else
+			echo "deleting brick userdata $SRC_PATH"
+			rm -rf $SRC_PATH
+		fi
 		
 		UPDATE_PATH=${SDCARD_PATH}/.tmp_update/tg3040
 		rm -rf $UPDATE_PATH.sh

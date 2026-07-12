@@ -43,6 +43,19 @@ baselines our tree doesn't share. Not porting them **is** the thesis working.
 - **`CLOCK_MONOTONIC` timing** (MyMinUI) — complements our absolute-schedule pacer.
 - **Per-game config re-read on option republish** (NextUI) — cheap correctness.
 - **Wake-from-sleep shutdown fix** (MyMinUI) — reference for `feat/deep-sleep`.
+- **No Sleep tool — DEV-ONLY** (Dan, final call 2026-07-11: not user-facing; users don't
+  need it and the Tools menu stays minimal). One dev pak (successor of/same as "Stay Awake",
+  they were always meant to be the same tool): blocks idle autosleep, handles vendor dimtime,
+  keeps WiFi awake + net-keeper self-heal, persists via boot re-arm. Stays in
+  workspace/tg5040/dev-tools/, never packaged. Optional nicety if ever cheap: coffee-cup
+  status icon while active (dev-visible only — flag never set on user installs). Decision
+  kept for the record: NO icon for deep-sleep-disabled regardless.
+- **Zero-native HUD diagnostics** (idea from NextUI's debug HUD, `ma_video.c:689-722`; decided
+  2026-07-10) — extend OUR existing HUD toggle with the fields that serve the closed-loop story:
+  governor state (ceiling / last signal / sink+burst events), audio buffer fill vs target +
+  underrun counter, frame pacing (avg/max ms, drops), CPU usage%/clock/temp. Not a port — our
+  fields, our layout. Build alongside the FF-Audio work (it reopens the buffer machinery anyway).
+  Rationale: would have cut days off the BR2 saga; turns "sounds choppy" reports into two numbers.
 
 ## Sources exhausted
 - **upstream/main** — frozen at our exact sync point (`dbf89435`); we're a 100% superset.
@@ -52,7 +65,8 @@ baselines our tree doesn't share. Not porting them **is** the thesis working.
 ## 🚫 Consciously NOT adopting (bloat — out of scope by design)
 Box art / art scraping · WiFi / NTP / networking · Pak Store · RetroAchievements · ambient/LED ·
 shaders / overlays · cheat browsers · theme engines · added emulators (NDS, DOSBox, MAME, …) ·
-rewind · debug HUD · extra aspect ratios · multiplayer.
+rewind · extra aspect ratios · multiplayer. (debug HUD moved to backlog 2026-07-10 —
+Zero-native diagnostics version, see above.)
 
 ## 💡 Key insight
 MyMinUI *raised* its menu clock ~2× on weak SoCs (miyoomini/my282) because ultra-low felt
@@ -103,3 +117,45 @@ side). Prereqs: v1.3 threading shipped + hands-on feel pass. Effort ~150 lines.
 Evidence base: SNES stacked-threading benchmark (Brick 2026-07-08): stock supafaust arm =
 excursions to 1416, temp rising 35.3->36.6C, 90 charge units/8min; stacked arm = flat 600,
 temp FALLING 33.3->32.2C, 30 units. PS1/GBC/GBA arms pending (SP).
+## Game open/exit latency (community report: johnnyq via GitHub, 2026-07-08)
+Measured by reporter: ~3s ROM open, ~1.5s close. Miyoo Mini/Plus = the benchmark (near-instant
+both ways). Two threads to pull:
+1. INSTRUMENT the 3s first: pak shell overhead, core dlopen, EGL/GLES init, rom read, gov/uv
+   init — find the fat slice before optimizing anything.
+2. GPU-dark games REVIVAL, load-time angle: we shelved software-present on a battery tie
+   (drain A/B = exact break-even vs GLES) but never measured LOAD TIME — skipping EGL init
+   per launch could be most of the 3s, and exit near-instant. Constraints from the shelved
+   work: Brick-only (SP display scans the GL layer, not fb0 — verified), software scale costs
+   ~72% CPU during play. A load-time-only measurement decides if it earns a Brick-only life.
+Also theirs: 6s boot as the target (we are ~7.15s; the wifi-module-load prune remains the
+known lead). Rewind demand: second community signal (they read our prior-art note as
+"coming" — it is "exploring").
+
+## Enable GitHub Discussions (johnnyq ask)
+Zero-cost community home for the commit-followers. Repo Settings -> Features -> Discussions.
+
+## MDEC NEON optimization (the BR2 endgame — next-session project, roadmap via Codex)
+The D47 boundary is core-level, not physical: pcsx's MDEC decode costs 42-60ms/frame on the
+A133P; below ~16ms those sections reach realtime at stock clocks and the source-audio chop
+dies. Plan: (1) profiler patch in mdec.c — timers around rl2blk, idct, yuv2rgb15/24, DMA
+copy; rebuild core via cores/patches, run the BR2 sequence, find the dominant cost.
+(2) NEONize yuv2rgb15 if it dominates (classic per-pixel NEON win) OR implement the
+row-sparsity IDCT shortcut (an explicit upstream TODO). Ruled out by Codex: Fast MDEC
+(GLES-path only; we build BUILTIN_GPU=neon), MDEC_BIAS (timing knob, compat-sensitive, not
+wall-clock). Success = BR2 (and all FMV-heavy PS1) flawless at stock clocks; patch is
+upstreamable. Prereq receipts: D47 + addendum (frontend/audio exhausted, replicated).
+
+## Deferred from the 2026-07-12 release audit (P2s, v1.3.1/v1.4)
+Verified real, consciously not blocking v1.3 (none affects a default configuration's
+correctness; each needs its own on-device re-gate):
+- **Audio catch-up is a no-op on tg5040**: `api.c` clears `should_vsync` for catch-up, but
+  the SDL renderer is created with `SDL_RENDERER_PRESENTVSYNC` and `PLAT_flip` ignores the
+  argument; ring/stat reads on that path are also unsynchronized. Either remove the dead
+  hot-path work or implement real pacing control - measure first.
+- **`PLAT_uvReassert` per-flip mutex contention**: every flip takes `uv_lock`, which the
+  UV hold thread holds during 200 Hz I2C traffic. Only material with UV active; fix is an
+  atomic already-started fast path, then re-measure frame-time tails before shipping.
+- **Pre-merge `tg3040` Extras invisible after upgrade**: `update.sh` migrates
+  `.userdata/tg3040` configs but not `/Emus/tg3040` / `/Tools/tg3040` pak folders; lookup
+  is tg5040-only now. Affects only ancient pre-merge Brick cards upgraded in place -
+  document or migrate.

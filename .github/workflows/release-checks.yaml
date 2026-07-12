@@ -1,0 +1,31 @@
+name: Release checks
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Governor tests
+        run: make test-governor
+      - name: Telemetry tests
+        run: make test-telemetry
+      - name: Undervolt data tests
+        run: make test-undervolt
+      - name: Source reproducibility tests
+        run: make test-reproducibility
+      - name: Shell syntax
+        run: |
+          set -e
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] || continue
+            case "$(head -n 1 "$file")" in
+              *bash*) bash -n "$file" ;;
+              *) sh -n "$file" ;;
+            esac
+          done < <(git ls-files -z '*.sh')
+      - name: Undervolt tool compile
+        run: cc -std=gnu99 -Wall -Wextra -Werror -o /tmp/uvtool workspace/tg5040/undervolt/uvtool.c
