@@ -166,8 +166,11 @@ measured cost on the PS1 titles that motivated it. (On SNES the same 2026-07-08 
 measured threading as a real efficiency win — DKC 747→600 MHz, Yoshi 1212→741 — deferred
 to the v1.4 thread-ownership redesign, not denied.) The release-build zero-underruns
 figure was read from the on-device underrun counter during this re-bench; that log was
-not archived (the RC-build HUD receipt in receipts/ shows the same behavior) — re-capture
-on the release binary is queued.
+not archived (audit finding) and was re-captured 2026-07-12 on the shipped binary:
+9.4 min BR2 attract, 0 underruns, gen 59–60/60 across sinks with one correct BIGSLIP
+re-provision — receipts/br2-release-binary-20260712.md. That session's light attract mix
+idled at a flat 600 MHz / 32°C beneath the 1008 ceiling, extending BR2's honest scene
+range to 600–1800: the two archived cells now bracket both extremes of the mix.
 
 ## Caveats
 
