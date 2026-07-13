@@ -159,7 +159,8 @@ int GFX_hdmiChanged(void);
 #define GFX_clearAll PLAT_clearAll // (void)
 
 void GFX_startFrame(void);
-void GFX_flip(SDL_Surface* screen);
+void GFX_flip(SDL_Surface* screen); // menu/UI/single-shot presents: never skippable (invisible-menu fix 2026-07-13)
+void GFX_flipGame(SDL_Surface* screen); // game run loop ONLY: presentation-drop catch-up may skip this present
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
 void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)

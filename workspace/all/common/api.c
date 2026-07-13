@@ -225,10 +225,18 @@ int GFX_didOverrun(void) {
 	return frame_overran;
 }
 
-static int SND_ringLow(void); // defined after the snd context (audio-priority catch-up)
+static int SND_ringPct(void); // defined after the snd context (presentation-drop catch-up)
+static uint32_t SND_lastBatchMs(void); // last producer write, for the menu/pause gate
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
+static int gfx_drop_active = 0; // presentation-drop state (game path only); menu flips clear it
 void GFX_flip(SDL_Surface* screen) {
+	// UNCONDITIONAL present — the menu/UI/single-shot path. Presentation-drop must never
+	// apply here: menu screens render once and then wait for input, so one skipped
+	// present is an INVISIBLE MENU until the next input-driven redraw — Dan hit an
+	// invisible menu in BR2 within minutes of the first candidate (2026-07-13). Only the
+	// game run loop, which presents continuously, may skip (GFX_flipGame below).
+	gfx_drop_active = 0; // a UI present re-anchors: leaving the menu re-evaluates fresh
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
 	// per-frame pure-work slip at us precision. Feeds the governor's BUSY (hold, don't sink)
@@ -236,15 +244,60 @@ void GFX_flip(SDL_Surface* screen) {
 	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
-	// AUDIO-PRIORITY CATCH-UP: when the ring runs low (MDEC/FMV frames stall production
-	// for 42-60ms and nothing in the old design ever refilled occupancy — capacity was
-	// never the problem), skip this vsync wait so the core immediately produces the next
-	// frame: a brief burst refills the ring. An occasional unpaced video frame during
-	// already-choppy FMV is imperceptible; an audio gap is not. (BR2 saga, 2026-07-08)
-	if (should_vsync && SND_ringLow()) should_vsync = 0; // ring below 25%: catch up
+
 	uint64_t flip_t0 = getMicroseconds();
 	PLAT_flip(screen, should_vsync);
 	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
+}
+void GFX_flipGame(SDL_Surface* screen) {
+	// GAME-RUN-LOOP present: the ONLY path where presentation-drop may skip.
+	//
+	// PRESENTATION-DROP CATCH-UP (task #13 phase 1 — "presentation-drop catch-up").
+	// The v1.3 vsync-skip here was a NO-OP on tg5040: the renderer is created with
+	// SDL_RENDERER_PRESENTVSYNC and PLAT_flip ignores its flag, so ring dips during
+	// MDEC/FMV stalls were never actually mitigated. Real contract: below 50% ring
+	// occupancy skip the ENTIRE present — no upload, no RenderCopy, no RenderPresent —
+	// so this frame's present+vsync time goes to producing the next frame's audio
+	// instead; resume presenting at 66% (hysteresis). Occupancy is a torn-free atomic
+	// snapshot (SND_ringPct), not a raw index read.
+	// Guard from the 2026-07-08 receipt (formerly on SND_ringLow): a refill target a
+	// below-realtime game can never reach locks catch-up on and collapses pacing — as
+	// presentation-drop that would be a frozen screen. So each engagement presents at
+	// least every 7th frame (max 6 consecutive drops, ~100ms): a frozen screen is
+	// structurally impossible and pacing re-anchors on every forced present.
+	static int drop_streak = 0;
+	int ring_pct = SND_ringPct();
+	// engage only while the core is actually producing audio (a batch write in the last
+	// 250ms — MDEC stalls measure 42-60ms, well inside). Belt on top of the GFX_flip
+	// split above: in the pause/menu state the core stops producing and the callback
+	// drains the ring to 0%; this gate alone proved insufficient at the menu-ENTRY edge
+	// (production <250ms stale, ring still low), which is why menu presents now bypass
+	// the drop entirely instead of relying on it.
+	int producing = (SDL_GetTicks() - SND_lastBatchMs()) < 250;
+	if (!producing) gfx_drop_active = 0;
+	else if (!gfx_drop_active) {
+		if (ring_pct < 50) {
+			gfx_drop_active = 1; drop_streak = 0;
+			LOG_info("audio catch-up: presentation-drop engaged (ring %d%%)\n", ring_pct);
+		}
+	}
+	else if (ring_pct >= 66) gfx_drop_active = 0;
+	if (gfx_drop_active && drop_streak < 6) {
+		drop_streak++;
+		if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us);
+		frame_overran = (frame_start!=0 && frame_work_us > 16667);
+		// a dropped present blocked for 0us — report exactly that. The governor treats
+		// flip-wait as its vsync-bound (panel-lock) signal; 0 reads as "not blocked",
+		// i.e. headroom, which holds the ceiling UP during catch-up — protective, the
+		// same direction as the frame_overran bias in GFX_flip (D14).
+		gfx_flip_wait_us = 0;
+		return;
+	}
+	drop_streak = 0;
+
+	int was_drop = gfx_drop_active;
+	GFX_flip(screen);
+	gfx_drop_active = was_drop; // GFX_flip clears it for UI presents; game path keeps hysteresis
 }
 uint32_t GFX_getFlipWaitUs(void) { return gfx_flip_wait_us; }
 static uint32_t gfx_pace_period_us = 0; // 0 = stock FRAME_BUDGET; set by DRC to the panel period
@@ -1051,6 +1104,7 @@ static struct SND_Context {
 	
 	SND_Resampler resample;
 } snd = {0};
+static void SND_publishOccupancy(void); // defined with the ring helpers below
 static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // plat_sound_callback
 	
 	// return (void)memset(stream,0,len); // TODO: tmp, silent
@@ -1071,10 +1125,11 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 		
 		snd.frame_out += 1;
 		len -= 1;
-		
+
 		if (snd.frame_out>=snd.frame_count) snd.frame_out = 0;
 	}
-	
+	SND_publishOccupancy(); // consumer side of the presentation-drop snapshot
+
 	if (len>0) snd.underruns++; // ring drained before the request was filled (audible crackle)
 	int zero = len>0 && len==SAMPLES;
 	if (zero) return (void)memset(out,0,len*(sizeof(int16_t) * 2));
@@ -1180,15 +1235,28 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
 	SND_selectResampler();
 }
-static int SND_ringLow(void) {
-	// simple 25% threshold — measured 0 delivery underruns on the BR2 MDEC gauntlet.
-	// A hysteresis variant (burst to 66%) scored 32: when the game runs below realtime,
-	// an unreachable refill target locks burst mode on and collapses pacing entirely.
-	// The modest target works BECAUSE it is reachable. (2026-07-08, the long night)
-	if (!snd.initialized || snd.frame_count <= 0) return 0;
-	int queued = snd.frame_in - snd.frame_out;
-	if (queued < 0) queued += snd.frame_count;
-	return queued < snd.frame_count / 4;
+// Torn-free ring-occupancy snapshot for the flip path ("presentation-drop catch-up"):
+// producer (SND_batchSamples, under SDL_LockAudio) and consumer (SDL callback) each
+// publish occupancy into ONE atomic word after moving their index; GFX_flip reads that
+// word with an atomic load. Raw frame_in/frame_out reads from the flip path were
+// unsynchronized (audit finding). 100 when audio is closed so catch-up can never engage
+// against a dead ring.
+static volatile int snd_ring_pct = 100;
+static volatile uint32_t snd_last_batch_ms = 0; // SDL_GetTicks of the last producer write
+static uint32_t SND_lastBatchMs(void) {
+	return __atomic_load_n(&snd_last_batch_ms, __ATOMIC_ACQUIRE);
+}
+static void SND_publishOccupancy(void) {
+	int pct = 100;
+	if (snd.initialized && snd.frame_count > 0) {
+		int queued = snd.frame_in - snd.frame_out;
+		if (queued < 0) queued += snd.frame_count;
+		pct = (int)((int64_t)queued * 100 / snd.frame_count);
+	}
+	__atomic_store_n(&snd_ring_pct, pct, __ATOMIC_RELEASE);
+}
+static int SND_ringPct(void) {
+	return __atomic_load_n(&snd_ring_pct, __ATOMIC_ACQUIRE);
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
@@ -1233,8 +1301,10 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 			consumed += consumed_frames;
 		}
 	}
+	SND_publishOccupancy(); // producer side of the presentation-drop snapshot (under lock)
+	__atomic_store_n(&snd_last_batch_ms, SDL_GetTicks(), __ATOMIC_RELEASE);
 	SDL_UnlockAudio();
-	
+
 	return consumed;
 }
 
@@ -1336,6 +1406,7 @@ void SND_quit(void) { // plat_sound_finish
 	snd.frame_count = 0;
 	snd.frame_in = snd.frame_out = snd.frame_filled = 0;
 	snd.initialized = 0;
+	SND_publishOccupancy(); // reads 100 now — catch-up can never engage on a closed ring
 }
 
 ///////////////////////////////
