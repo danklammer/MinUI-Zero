@@ -1,0 +1,26 @@
+v1.3.1 combined validation — BR2 fight bot, Brick, 2026-07-13
+Binary: 04f102e8 (release/v1.3.1 @ a3ea1b22; fingerprints presentation-drop + transition-gated BOTH verified in artifact and on-device)
+Config: UV table ARMED (both fixes coexisting — first combined cell)
+
+BR2 fight cell (~4.5 min bot, arecord 45s mid-fight):
+- catch-up engages: 359
+- transition-gated hold line: present (1)
+- uv armed: yes (8 table entries)
+- gov slips: exactly one — fight-onset provision 1008->1800 at gen 48.1, then zero slips
+  (the D54 rail-war signature of continuous 49-57 collapses is ABSENT with UV armed)
+- underruns: 1 (ALSA launch-fill artifact, same as the stock-volt catch-up cell; not fight-time)
+- crunch score (mic capture, crunch.py): 0 dropouts / 0 stutters
+- end temp: 40.0C (bot mash + sustained 1800 + UV)
+VERDICT: PASS — both fixes active simultaneously, no interaction, stock-volt-quality
+telemetry with the undervolt live.
+
+Engage sweep (same binary):
+- FC Contra, 3 min attract: 9 engages = 1 launch-fill (ring 8%) + 8 transient at ring
+  47-49% correlated with governor probe-sink dips (gen 58.2/57.8 at 576/792 ceilings) —
+  the catch-up defends audio through probes, bounded, invisible in principle.
+- GBC Bionic Commando, 2 min attract: 63 engages (launch fill + chronic ring ~47% at low
+  ceilings). GBC/NES class rides the ring near half-full — pre-existing task #11
+  pathology, now surfaced by the engage counter. Bounded (<=100ms holds) and audio-
+  protective, but "light games never engage" is FALSE as originally claimed; release
+  notes reworded. HUMAN GATE ADDED: Dan should eyeball GBC scroll smoothness on this
+  build before tagging (bot cells cannot judge visual micro-judder).

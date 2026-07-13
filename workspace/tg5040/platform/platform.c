@@ -987,14 +987,22 @@ static int uv_set_for_ceil(int khz) {
 	return 1;
 }
 void PLAT_setCPUVoltForCeil(int khz) { (void)uv_set_for_ceil(khz); }
-// The kernel re-stocks the rail on EVERY schedutil DVFS transition (many/sec), so a
-// per-frame (60Hz) reassert only wins ~50% of the time. A dedicated thread polls the
-// register at ~200Hz and rewrites the instant the kernel drifts us off target. Safe by
-// the governor's ordering: uv_target always covers the ceiling (raised before the clock,
-// lowered after it), so holding it continuously never under-volts a live clock. i2c is
-// serialized with the governor's own writes by uv_lock.
+// Rail-war armistice (v1.4, D54). The old loop verified the rail over i2c EVERY tick —
+// 400 bus reads/sec while holding uv_lock — and that bus contention inflated DVFS
+// transition latency exactly in transition-heavy scenes (BR2 fights: gen 49/60 with UV
+// vs 57+ without, both devices, first field day of calibrated silicon). The kernel only
+// re-stocks the rail on a DVFS transition, and a transition is visible as a
+// scaling_cur_freq change — a sysfs pread, no i2c. So: poll cur_freq each tick (cheap),
+// touch the i2c bus only right after a transition plus a 1s heartbeat. A missed
+// correction leaves the rail at stock — always >= our guarded value — so the failure
+// direction is efficiency, never safety. Ordering safety unchanged: uv_target always
+// covers the ceiling (raised before the clock, lowered after it). If cur_freq can't be
+// read, every tick verifies — the old behavior, as fallback.
 static void* uv_hold(void* arg) {
 	(void)arg;
+	int freq_fd = open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", O_RDONLY);
+	long last_freq = -1;
+	int ticks_since_i2c = 200; // first armed tick verifies immediately
 	while (__atomic_load_n(&uv_thread_run, __ATOMIC_ACQUIRE)) {
 		pthread_mutex_lock(&uv_lock);
 		while (__atomic_load_n(&uv_thread_run, __ATOMIC_ACQUIRE) && !uv_target)
@@ -1003,27 +1011,43 @@ static void* uv_hold(void* arg) {
 			pthread_mutex_unlock(&uv_lock);
 			break;
 		}
-		if (uv_fd >= 0 && uv_target) {
+		int need_check = 0;
+		if (freq_fd >= 0) {
+			char fbuf[16];
+			ssize_t n = pread(freq_fd, fbuf, sizeof(fbuf) - 1, 0);
+			if (n > 0) {
+				fbuf[n] = 0;
+				long f = atol(fbuf);
+				if (f != last_freq) { last_freq = f; need_check = 1; }
+			} else need_check = 1;
+		} else need_check = 1;
+		if (++ticks_since_i2c >= 200) need_check = 1; // 1s heartbeat
+		if (need_check && uv_fd >= 0 && uv_target) {
+			ticks_since_i2c = 0;
 			int v0 = uv_reg_read(0x00);
 			int v1 = uv_reg_read(0x01);
 			if (v0 < 0 || v1 < 0 || UV_BASE_UV + (v0 & 0x3F) * UV_STEP_UV != uv_target ||
 			    UV_BASE_UV + (v1 & 0x3F) * UV_STEP_UV != uv_target) uv_write(uv_target);
 		}
 		pthread_mutex_unlock(&uv_lock);
-		usleep(5000); // ~200Hz
+		usleep(5000); // ~200Hz tick; i2c only on transitions + heartbeat
 	}
+	if (freq_fd >= 0) close(freq_fd);
 	return NULL;
 }
 void PLAT_uvReassert(void) {
 	// Lazily start the hold thread on first armed frame (no-op unless the authority armed).
+	// Hot path (audit P2): once the thread is up, every flip returns on one atomic load —
+	// the flip path must never queue behind uv_lock while it's busy with i2c.
+	if (__atomic_load_n(&uv_thread_started, __ATOMIC_ACQUIRE)) return;
 	pthread_mutex_lock(&uv_lock);
-	if (uv_fd < 0 || !uv_target || uv_thread_started) { pthread_mutex_unlock(&uv_lock); return; }
+	if (uv_fd < 0 || !uv_target || __atomic_load_n(&uv_thread_started, __ATOMIC_ACQUIRE)) { pthread_mutex_unlock(&uv_lock); return; }
 	__atomic_store_n(&uv_thread_run, 1, __ATOMIC_RELEASE);
 	if (pthread_create(&uv_thread, NULL, uv_hold, NULL) != 0)
 		__atomic_store_n(&uv_thread_run, 0, __ATOMIC_RELEASE);
 	else {
-		uv_thread_started = 1;
-		LOG_info("uv: hold thread started (~200Hz, holding %duV)\n", uv_target);
+		__atomic_store_n(&uv_thread_started, 1, __ATOMIC_RELEASE);
+		LOG_info("uv: hold thread started (transition-gated, holding %duV)\n", uv_target);
 	}
 	pthread_mutex_unlock(&uv_lock);
 }
@@ -1042,12 +1066,12 @@ void PLAT_restoreCPUVolt(void) {
 	// one always-safe write: stock max voltage; the kernel re-asserts exact stock on the
 	// next OPP transition. Called on quit and from the crash handler.
 	__atomic_store_n(&uv_thread_run, 0, __ATOMIC_RELEASE); // stop the hold thread first
-	if (uv_thread_started) {
+	if (__atomic_load_n(&uv_thread_started, __ATOMIC_ACQUIRE)) {
 		pthread_mutex_lock(&uv_lock);
 		pthread_cond_broadcast(&uv_cv);
 		pthread_mutex_unlock(&uv_lock);
 		pthread_join(uv_thread, NULL);
-		uv_thread_started = 0;
+		__atomic_store_n(&uv_thread_started, 0, __ATOMIC_RELEASE);
 	}
 	pthread_mutex_lock(&uv_lock);
 	uv_target = 0;
