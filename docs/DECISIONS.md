@@ -820,3 +820,30 @@ unknown) was deemed riskier than shipping layers 1+2 — deferred. Acceptance on
 hardware: SCHED_FIFO 99 verified, SIGTERM cancel clean, budget-expiry force-reboot
 confirmed by uptime reset. Residual honesty: a wedge deeper than both layers still
 needs POWER; the next real marginal-voltage freeze is the live-fire validation.
+
+## D55 — BR2 "crunchy audio" root-caused: chronic ring starvation, never mitigated (2026-07-13)
+The post-release crunch Dan heard in BR2 fight scenes (both devices) had TWO real mechanisms
+found during one hunt. The first was the UV rail-war (D54) — real, fixed, but not the whole
+story: crunch persisted at stock volts. The second is the root cause: BR2 fights run the
+audio ring chronically at 45-48% occupancy — measured 289 presentation-drop engages in a
+single 4-minute bot-fight cell at stock volts — and v1.3 had ZERO mitigation because its
+audio catch-up path was a verified no-op (the SND_ringLow should_vsync flag feeds PLAT_flip,
+which ignores it under SDL_RENDERER_PRESENTVSYNC; found in the release audit, wrongly
+backlogged as dead-code-no-harm). Fix (feat/audio-catchup, api.c only): REAL presentation
+frameskip — below 50% ring occupancy the entire present is skipped (no upload, no RenderCopy,
+no RenderPresent, no PLAT_flip), emulation and audio production continue, presenting resumes
+at 66%; occupancy is a torn-free atomic word published by producer and consumer; plus two
+guards from in-repo receipts: a 100ms consecutive-drop cap (the 2026-07-08 receipt shows a
+below-realtime game locks catch-up on forever — as presentation-drop that would freeze the
+screen) and a 250ms producer-activity gate (the pause menu stops production and drains the
+ring; ungated logic would throttle menu rendering). Governor sees gfx_flip_wait_us=0 on
+skipped frames (reads as headroom — protective direction). Validation: bot cell zero
+measured cost (crunch detector 0/0, one normal fight-onset gov slip, receipt
+docs/bench/bench3-real-raw/zero-v14-catchup-br2-fightbot.txt at 99591c8d), then Dan's ears
+on a real fight, 2026-07-13: "sounds awesome, 60fps, so much better." Credit: the
+two-problem framing (frontend catch-up defect vs core decode cost) came from the Codex
+audio plan (task #13). Phase 2 — RAM-based PCM instrumentation + MDEC/480i profiling —
+remains open but is no longer release-gating; the presentation-drop defends the ring while
+decode-side headroom is pursued on its own schedule. Lesson recorded: a mechanism verified
+as dead code is a defect in the feature that needed it, not a curiosity — the "no measured
+claim depended on it" framing hid a live user-facing bug for five days.
