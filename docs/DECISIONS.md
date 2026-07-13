@@ -820,3 +820,27 @@ unknown) was deemed riskier than shipping layers 1+2 — deferred. Acceptance on
 hardware: SCHED_FIFO 99 verified, SIGTERM cancel clean, budget-expiry force-reboot
 confirmed by uptime reset. Residual honesty: a wedge deeper than both layers still
 needs POWER; the next real marginal-voltage freeze is the live-fire validation.
+
+## D54 — the rail war ends: transition-gated voltage hold (2026-07-12, v1.4 opener)
+v1.3's first field day found it: on calibrated devices, transition-heavy PS1 games (BR2
+fights) dropped to gen 49/60 with choppy audio — both devices, while flat-clock games
+stayed clean (why the uvab-thps2/zelda receipts never caught it). Root cause was not the
+undervolt VALUES but the HOLD: the loop verified the rail over i2c every 5ms tick (400 bus
+reads/sec under uv_lock), and that bus contention inflated DVFS transition latency exactly
+in scenes that transition hardest. Fix: the kernel only re-stocks the rail on a DVFS
+transition, and a transition is visible as a scaling_cur_freq change — a sysfs pread, no
+i2c. The hold thread now polls cur_freq per tick and touches i2c only right after a
+transition plus a 1s heartbeat; the per-flip PLAT_uvReassert takes one atomic load, never
+the mutex (audit P2 closed). Failure direction is safe by construction: a missed
+correction leaves the rail at stock, which is always >= the guarded value. Probed and
+rejected alternatives: sysfs regulator constraints read-only; debugfs OPP u_volt
+read-only; tcs4838 VSEL0/VSEL1 both driven so no free setpoint register. Validated: bot
+fight harness, provably-new binary (log fingerprint), UV armed — one 53.3 slip at fight
+onset (scene discovery, same as stock-volt sessions) then zero slips over ~3min of flat
+1800, 0 underruns; vs continuous 49-57 collapses on the old hold. Deployment lesson
+re-learned: the first test arm silently ran a stale platform.o (built via the platform
+makefile instead of the always-clean workspace path, the D38 trap) — caught by log
+fingerprint, not hash; fingerprint-verify test arms. Ships in v1.4; Dan's devices run it
+now; ear-verdict pending, bench re-validation (UV BR2 fight cell) required before release.
+Side intel from the probes: the kernel exposes 12 OPPs incl. 1320/1464/1512 never used by
+the 8-step table (staircase task #10 material).
