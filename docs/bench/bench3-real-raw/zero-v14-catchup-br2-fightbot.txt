@@ -1,0 +1,15 @@
+# Catch-up fight cell — BR2 bot fight, catch-up binary 25480ad7, stock volts (table parked)
+# Brick, 2026-07-13. Same bot/mic/scoring protocol as the three baseline arms.
+engage_count: 289            # presentation-drop ENGAGE transitions logged in one ~4min session
+engage_ring_pcts: 7% at launch fill, then chronic 45-48% oscillation during fights
+underruns: 1                 # single ALSA snd_pcm_recover at launch (ring 7%); zero during fights
+gov_slips: one — 1008->1800 signal=3 gen=47.8 (fight-onset provision; same pattern as all clean arms)
+end_temp_milliC: 31383
+crunch_score: 45.0s median-env 16735 dropouts 0 stutters 0   # clean, matches all 3 baseline arms
+baseline_arms (all 0 dropouts / 0 stutters): golden-RC+stock, release+stock, release+UV
+# READING: BR2 fights chronically run the audio ring just under half-full, cycling through
+# the 50%->66% hysteresis 289 times in ~4min. Pre-fix, these dips had NO mitigation (the
+# catch-up path was a verified no-op) — transient demand spikes from a ~46% ring are the
+# plausible mechanism for audible crackle that never trips the underrun counter. The fix
+# defends every dip with reclaimed presentation time at zero measured cost (capture clean,
+# generation clean, temps low). Ear verdict = Dan's.
