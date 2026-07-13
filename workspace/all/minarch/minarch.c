@@ -3236,8 +3236,10 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// LOG_info("video_refresh_callback: %ix%i@%i %ix%i@%i\n",width,height,pitch,screen->w,screen->h,screen->pitch);
 	
 	GFX_blitRenderer(&renderer);
-	
-	if (!thread_video) GFX_flip(screen);
+
+	// game run-loop present: the ONLY path where presentation-drop may skip (menu/UI
+	// presents use GFX_flip and are never skippable — invisible-menu fix, 2026-07-13)
+	if (!thread_video) GFX_flipGame(screen);
 	last_flip_time = SDL_GetTicks();
 }
 static void video_refresh_callback(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -5300,7 +5302,7 @@ int main(int argc , char* argv[]) {
 			pthread_mutex_unlock(&core_mx);
 			if (frame) {
 				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
-				GFX_flip(screen);
+				GFX_flipGame(screen); // game path — skippable (see invisible-menu fix)
 				mb_flips_total++;
 				static uint64_t last_flip_us = 0;
 				uint64_t now_us = getMicroseconds();
