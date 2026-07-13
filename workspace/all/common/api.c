@@ -229,7 +229,14 @@ static int SND_ringPct(void); // defined after the snd context (presentation-dro
 static uint32_t SND_lastBatchMs(void); // last producer write, for the menu/pause gate
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
+static int gfx_drop_active = 0; // presentation-drop state (game path only); menu flips clear it
 void GFX_flip(SDL_Surface* screen) {
+	// UNCONDITIONAL present — the menu/UI/single-shot path. Presentation-drop must never
+	// apply here: menu screens render once and then wait for input, so one skipped
+	// present is an INVISIBLE MENU until the next input-driven redraw — Dan hit an
+	// invisible menu in BR2 within minutes of the first candidate (2026-07-13). Only the
+	// game run loop, which presents continuously, may skip (GFX_flipGame below).
+	gfx_drop_active = 0; // a UI present re-anchors: leaving the menu re-evaluates fresh
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
 	// per-frame pure-work slip at us precision. Feeds the governor's BUSY (hold, don't sink)
@@ -238,6 +245,13 @@ void GFX_flip(SDL_Surface* screen) {
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
 
+	uint64_t flip_t0 = getMicroseconds();
+	PLAT_flip(screen, should_vsync);
+	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
+}
+void GFX_flipGame(SDL_Surface* screen) {
+	// GAME-RUN-LOOP present: the ONLY path where presentation-drop may skip.
+	//
 	// PRESENTATION-DROP CATCH-UP (task #13 phase 1 — "presentation-drop catch-up").
 	// The v1.3 vsync-skip here was a NO-OP on tg5040: the renderer is created with
 	// SDL_RENDERER_PRESENTVSYNC and PLAT_flip ignores its flag, so ring dips during
@@ -251,36 +265,39 @@ void GFX_flip(SDL_Surface* screen) {
 	// presentation-drop that would be a frozen screen. So each engagement presents at
 	// least every 7th frame (max 6 consecutive drops, ~100ms): a frozen screen is
 	// structurally impossible and pacing re-anchors on every forced present.
-	static int drop_active = 0;
 	static int drop_streak = 0;
 	int ring_pct = SND_ringPct();
 	// engage only while the core is actually producing audio (a batch write in the last
-	// 250ms — MDEC stalls measure 42-60ms, well inside). In the pause/menu state the core
-	// stops producing, the callback drains the ring to 0%, and without this gate the drop
-	// would throttle MENU rendering to one frame in seven.
+	// 250ms — MDEC stalls measure 42-60ms, well inside). Belt on top of the GFX_flip
+	// split above: in the pause/menu state the core stops producing and the callback
+	// drains the ring to 0%; this gate alone proved insufficient at the menu-ENTRY edge
+	// (production <250ms stale, ring still low), which is why menu presents now bypass
+	// the drop entirely instead of relying on it.
 	int producing = (SDL_GetTicks() - SND_lastBatchMs()) < 250;
-	if (!producing) drop_active = 0;
-	else if (!drop_active) {
+	if (!producing) gfx_drop_active = 0;
+	else if (!gfx_drop_active) {
 		if (ring_pct < 50) {
-			drop_active = 1; drop_streak = 0;
+			gfx_drop_active = 1; drop_streak = 0;
 			LOG_info("audio catch-up: presentation-drop engaged (ring %d%%)\n", ring_pct);
 		}
 	}
-	else if (ring_pct >= 66) drop_active = 0;
-	if (drop_active && drop_streak < 6) {
+	else if (ring_pct >= 66) gfx_drop_active = 0;
+	if (gfx_drop_active && drop_streak < 6) {
 		drop_streak++;
+		if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us);
+		frame_overran = (frame_start!=0 && frame_work_us > 16667);
 		// a dropped present blocked for 0us — report exactly that. The governor treats
 		// flip-wait as its vsync-bound (panel-lock) signal; 0 reads as "not blocked",
 		// i.e. headroom, which holds the ceiling UP during catch-up — protective, the
-		// same direction as the frame_overran bias above (D14).
+		// same direction as the frame_overran bias in GFX_flip (D14).
 		gfx_flip_wait_us = 0;
 		return;
 	}
 	drop_streak = 0;
 
-	uint64_t flip_t0 = getMicroseconds();
-	PLAT_flip(screen, should_vsync);
-	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
+	int was_drop = gfx_drop_active;
+	GFX_flip(screen);
+	gfx_drop_active = was_drop; // GFX_flip clears it for UI presents; game path keeps hysteresis
 }
 uint32_t GFX_getFlipWaitUs(void) { return gfx_flip_wait_us; }
 static uint32_t gfx_pace_period_us = 0; // 0 = stock FRAME_BUDGET; set by DRC to the panel period
