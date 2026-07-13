@@ -53,6 +53,14 @@ test-undervolt:
 	sh ./workspace/tg5040/undervolt/run-tests.sh
 test-reproducibility:
 	sh ./workspace/all/cores/run-source-verifier-tests.sh
+# threading v2 framering protocol module (host; TSan/ASan are SEPARATE builds per contract)
+.PHONY: test-framering test-framering-tsan test-framering-asan
+test-framering:
+	sh ./workspace/all/common/run-framering-tests.sh plain
+test-framering-tsan:
+	sh ./workspace/all/common/run-framering-tests.sh tsan
+test-framering-asan:
+	sh ./workspace/all/common/run-framering-tests.sh asan
 
 build:
 	# ----------------------------------------------------
