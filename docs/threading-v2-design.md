@@ -1,75 +1,145 @@
-# Threading v2 — ownership-model design (v1.4)
+# Threading v2.1 — ownership-model design (v1.4)
 
-Status: DESIGN FOR ADVERSARIAL REVIEW — no code until this survives review.
-Predecessors: v1.3 threading (compiled out, D52 — 17 audit findings, shared-state races);
-evidence base: DKC 747→600 MHz at 1/3 energy, Yoshi 1212→741 (docs/bench/2026-07-08-snes-*).
+Status: REVISED FOR RE-REVIEW — closes all seven P0s from the 2026-07-13 adversarial
+review (.notes/threading-v2-review-codex.md). No code until this version survives review.
+Predecessors: v1.3 threading (compiled out, D52); evidence: DKC 747→600 MHz at 1/3 energy,
+Yoshi 1212→741 (docs/bench/2026-07-08-snes-*).
 
-## Why v1.3's model failed
-The mailbox handoff let the core thread mutate renderer/governor state owned by the video
-thread (resize, scaler re-init, HUD fields) with ad-hoc volatiles under `-O3 -flto`. Races
-are not testable defects: a clean soak proves nothing about their absence. v2 makes them
-*structurally impossible* instead of carefully avoided.
+## Threads, named once
+- **MAIN** — one OS thread: process main = menu = present = SDL/GLES/audio-lifecycle owner.
+- **CORE** — one OS thread per loaded session: the ONLY thread that ever calls into the
+  libretro core, from `retro_load_game` to `retro_unload_game`/`dlclose` prep.
+- **UV-HOLD** — existing voltage thread, unchanged (D54 contract).
+In single mode CORE's event loop simply runs inline on MAIN's schedule? **No — rejected.**
+Single vs threaded differ ONLY in where *presentation* work happens; the core session is
+pinned to CORE from load in every mode (P0-1). "Single mode" = MAIN blocks on a completed
+frame each iteration (synchronous rendezvous); "threaded" = MAIN presents from the ring
+without blocking on production. The trial toggles the rendezvous, never thread ownership.
 
-## The ownership contract (single-writer, everywhere)
-Every mutable datum has exactly ONE writing thread, named here, enforced by layout:
+## P0-1 — Session-pinned core thread
+ALL libretro entry points execute on CORE: run, serialize/unserialize, reset, disc control,
+options, memory queries. Today's violators, each becoming a request executed by CORE at the
+safe point (between `retro_run` returns): `Menu_loop` save/load slot (`State_write`
+minarch.c:4583, `State_read`:4607), `Game_changeDisc`:4601, `Core_reset`:3414 (menu +
+SHORTCUT_RESET_GAME), `State_autosave`:3543 and `Menu_beforeSleep`/`PWR_update` save paths,
+boot `State_resume`:741 (runs on CORE after load, before first frame). MAIN blocks on the
+request's ack (core is paused-at-safe-point during menu anyway), so menu UX is unchanged.
+No TLS/thread-affinity hazard remains: a core sees exactly one thread its whole life.
 
-| State | Owner (sole writer) | Readers | Mechanism |
-|---|---|---|---|
-| Emulation state, SRAM/RTC ptrs | core thread | crash handler (async) | unchanged from single-thread |
-| Frame ring buffers + indices | producer: core; consumer: present | — | SPSC ring, C11 acquire/release |
-| Renderer/scaler/texture state | present thread ONLY | — | core NEVER touches; changes via command queue |
-| Geometry changes (AV_INFO/GEOMETRY) | core detects → enqueues command | present applies | SPSC command queue, applied between frames |
-| Governor inputs (gen count, frame work µs) | core thread | governor tick (core thread) | governor stays ON the core thread — no cross-thread gov state |
-| uv_target / ceiling | governor (core thread) | uv hold thread | existing uv_lock + atomics (unchanged, D54) |
-| Audio ring | producer: core; consumer: SDL callback | — | existing SND ring (already SPSC) — audited for C11 fences |
-| Thread lifecycle (run/park flags) | main/menu thread | both workers | C11 atomics, join-before-free everywhere |
-| HUD/debug fields | core thread writes snapshot into ring slot | present renders from its dequeued slot | data travels WITH the frame, never shared |
+## P0-2 — Control plane (request/ack)
+Core-side callbacks (input poll, environment, video/audio refresh) NEVER execute lifecycle
+operations. They may only set request flags. MAIN executes: quit, menu enter/exit, sleep
+(`PWR_update`'s synchronous close-audio/save/resize/suspend chain, minarch.c:4167/3597),
+poweroff, FF toggle, reset, disc change, save ops — each as: MAIN sets `park_request` →
+CORE acks at safe point (parked) → MAIN performs the operation (calling into CORE via the
+request queue where the operation is a libretro call, per P0-1) → MAIN releases park.
+Every request/ack pair is C11 acquire/release; ack carries the generation it parked at.
 
-Design rules that fall out:
-1. **The frame is the only crossing.** Everything the present thread needs (pixels, pitch,
-   geometry generation number, HUD snapshot) travels inside the ring slot it dequeues.
-   No other core→present data path exists.
-2. **Commands, not calls.** Anything that must change present-side state (resize, sharpness,
-   effect toggles) is an enqueued command consumed at slot boundaries. The core thread never
-   calls SDL/GLES/scaler functions while threading is active.
-3. **The governor never crosses.** v1.3 judged core-thread window utilization from another
-   thread's data. v2 keeps measurement, decision, and PLAT_setCPUMaxFreq/VoltForCeil calls
-   on the core thread (as single-threaded builds do today) — zero new shared governor state.
-4. **C11 `<stdatomic.h>` only** (closes the deferred audit item): acquire/release on ring
-   indices and lifecycle flags; no volatile-as-sync, no fence-free flags. `-O3 -flto` legal.
-5. **Teardown is a protocol**: park → drain ring → join → free, in that order, on the menu
-   thread; the v1.3 dlclose-SIGSEGV class (liveness flag skipped on persisted-ON) cannot
-   recur because launch always starts single-threaded (see policy) so there is no
-   persisted-ON boot path at all.
+## P0-3 — Total ordering: one generation counter
+A single monotonic `gen` (u64, CORE-owned) stamps BOTH frame slots and commands. Rules:
+commands are immutable deep-copied payloads; present applies all commands with
+`cmd.gen <= frame.gen` before presenting that frame; command-queue-full blocks CORE at the
+safe point (never drops, never reorders); menu-owned mutations of the same state (options
+screen) happen only while CORE is parked with both queues drained — no interleave exists.
 
-## Ship policy (unchanged from the approved auto-threading design)
-No menu. Every game launches single-threaded. After governor settle (~60s): floor-band
-ceiling → verdict "no", remember. Ceiling ≥ ~1008 → 60s threaded trial → commit only if
-the ceiling sinks ≥1 OPP step with generation rate intact; else revert. Verdict persists in
-the existing `.thread` sidecar. Re-trial if an unverdicted game later climbs. PS1 expected
-"no" per receipts; SNES-class expected "yes".
+## P0-4 — Frame lifetime: the retained snapshot
+Present maintains an immutable **last-presented snapshot** (own allocation, copied — not
+aliased — from the slot before slot release; RGB565 copy of the ≤1MB frame is ~0.2ms).
+All retained uses read the snapshot, never a slot and never `renderer.src`: menu
+background, save-state screenshot/BMP, HDMI re-blit. Save-state + screenshot is one
+transaction: MAIN requests park → CORE parks at gen G → serialize (on CORE) + snapshot
+tagged G → both written together. Slots are recycled only after present's copy completes;
+`vid.blit`/platform pointers never outlive the frame they were handed.
 
-## Verification plan (the shipping gate)
-1. **TSan harness**: extract ring + command queue + lifecycle into a host-compilable module
-   (`workspace/all/common/framering.{c,h}`) with a synthetic producer/consumer stress test
-   run under ThreadSanitizer + AddressSanitizer on macOS/CI. The module IS the code minarch
-   links — not a model of it.
-2. **Torture gauntlet on-device**: ≥26 thread create/destroy cycles flat-RSS, persisted-
-   verdict launches, FF round-trips, menu park/resume, sleep/wake with zero gov moves,
-   threaded savestates, clean-quit after every path.
-3. **Adversarial review** of this doc AND the diff (Codex + blind reviewer), before merge.
-4. **Fingerprint discipline** (D54 lesson): every test arm verified by log fingerprint,
-   never hash alone; workspace-level clean builds only.
+## P0-5 — Audio ownership partition
+| Audio state | Owner | Sync |
+|---|---|---|
+| Ring payload + indices | producer CORE / consumer SDL callback | C11 SPSC acquire/release |
+| Stats (occupancy, underruns) read by flip path (`SND_ringLow`, api.c) | written by callback | single atomic word snapshot, torn-free |
+| Config (rate, resampler/DRC ratio) | MAIN, applied via command at gen boundary | park producer first |
+| Lifecycle (open/close/pause/free) | MAIN | producer parked + acked BEFORE any close/resize/free |
+Producer writes are **stop-aware**: blocked-on-full waits on (space OR park_request), so
+sleep can never deadlock against a full ring (P1-8's failure case).
 
-## Measurement plan (after task #11's pipeline profile — sequencing matters)
-Run the low-clock pipeline profile FIRST: if present-path waste is found, the single-thread
-baseline gets cheaper and threading's honest marginal win must be re-measured against it.
-Then Dan's save-state protocol: he plays each SNES-class game to a demanding scene once and
-saves state (DKC, Yoshi's Island, Mario RPG, + picks); arms load identical states — real
-gameplay load, never intro loops. Metrics per arm: generation rate, underruns, OPP
-residency, coulomb delta, temperature. Ship gate per game class: threaded commits only
-where the trial criterion (≥1 OPP sink, rate intact) reproduces in the matched bench.
+## P0-6 — Crash contract
+CORE publishes an **emergency snapshot** after each frame batch that dirtied SRAM/RTC:
+double-buffered copies guarded by a seqlock generation (odd = torn). The signal handler
+writes ONLY the snapshot whose generation reads even-and-stable — never live core memory.
+A fault on a non-CORE thread with a torn snapshot skips the emergency save (the last
+menu/sleep flush stands; a stale-but-consistent save beats a torn one). SIGTERM sets the
+shutdown request flag only; orderly teardown runs outside signal context. Fatal exits are
+the one sanctioned exception to park→join teardown (re-raise after snapshot write).
+
+## P0-7 + trial protocol — verdicts that stay honest
+- Floor-band observation writes **no durable verdict** (the "no" is session-local).
+- A durable negative records the ceiling band it was measured in and **re-arms** when
+  demand exceeds that band (SuperFX heavy-scene case).
+- Trial windows count **active gameplay samples** (gov ticks with content running), not
+  wall time; the window invalidates on: FF, menu, sleep, state load, geometry/timing
+  change, core-option change, HDMI, thermal intervention.
+- Governor history (fail memory, presink) resets symmetrically before EACH arm.
+- Commit requires **A/B/A**: single-baseline → threaded → single-confirm, all valid.
+- Commit criterion: threaded arm sinks ≥1 OPP **and** delivery health intact (generation
+  rate, zero new underruns, present backlog) — plus the class must have matched
+  total-device energy evidence from the bench (P1-12); ceiling alone never ships.
+- A positive persists only after a clean post-trial dwell AND clean teardown.
+- Sidecar v2 key: content path + core build hash + threading schema version + device
+  model. Legacy `minarch_thread_video=On` configs are ignored; all v1 `.thread` sidecars
+  invalidated on first v1.4 launch; corrupt/unknown records = unverdicted. A persisted
+  positive is honored only after load, auto-resume, audio, renderer, and crash-snapshot
+  setup reach the named safe point — the first 60 frames always run the synchronous
+  rendezvous regardless of verdict.
+
+## Teardown protocol (every exit path)
+`park(stop-aware) → ack(gen) → drain-or-discard → join → free → dlclose`, on MAIN.
+Drain vs discard per path: quit/menu/sleep = present pending frames then stop (no visual
+pop); trial reversal/FF flip = discard (stale frames wrong-paced); load-failure/thread-
+create-failure = discard. Fail-closed: if park or join times out, LEAK the resources and
+exit the process — never dlclose or free while a worker may live. Covered paths: quit,
+menu, sleep, poweroff, FF on/off, trial start/stop, HDMI restart, core-requested shutdown
+(`RETRO_ENVIRONMENT_SHUTDOWN` → request flag), load failure, thread-create failure.
+
+## Core→present path classification (complete, per review P1-9)
+| Path | Class |
+|---|---|
+| Frame pixels, pitch, dimensions, HUD snapshot | frame slot |
+| SET_GEOMETRY (incl. same-size aspect change) | command (gen-stamped) |
+| SET_SYSTEM_AV_INFO (fps/sample-rate) | **versioned transaction**: one command carrying new timing; present acks; pacing, audio config, governor target, DRC all switch at that gen — never piecemeal |
+| Scaler/crop/effect/sharpness/DMG palette/vsync config | MAIN-owned (options UI mutates while CORE parked); applied present-side |
+| DRC ppm / present-rate feedback → core pacing | reverse channel: single atomic word written by present, read by CORE pacer |
+| Governor (gen counts, work µs, ceiling calls, size-change burst) | CORE-thread-local (measurement, decision, PLAT calls all on CORE; unchanged from single-thread) |
+| fb_present/fb_game software present | present-side only; reads slot/snapshot, never `vid.blit` aliases |
+| Menu background / savestate screenshot | retained snapshot (P0-4) |
+| `video_refresh(NULL)` duplicate frame | ring message "repeat gen G" — present re-shows snapshot; no pixel copy |
+| Quit/shutdown/menu/FF/sleep requests | control plane (P0-2) |
+
+## Verification gate (ships or it doesn't)
+1. `framering.{c,h}` (ring + command queue + gen logic + lifecycle flags) is the linked
+   shipping code AND host-compiled under **TSan** and **ASan as two separate builds**,
+   driven by an **adversarial fake core** (random geometry storms, NULL frames, mid-run
+   AV_INFO, saves during load, shutdown at every state) — not just a synthetic pump.
+2. **Forbidden-globals audit, mechanical**: CI script (nm/objdump on minarch.o set) fails
+   the build if CORE-compiled units reference present-owned symbols (list checked into
+   the repo beside the CI script).
+3. On-device gauntlet, expanded per review: geometry before/after/without a following
+   frame; NULL dup frames; multiple video callbacks per retro_run; ring/command
+   wraparound + saturation; slow producer / slow consumer; alloc, thread-create, audio-
+   device failures; sleep while producer blocked; SIGTERM + fatal signals to each thread;
+   auto-resume with old/corrupt/conflicting sidecars; HDMI/effects/scaling/fb_game; save/
+   load/reset/disc from shortcuts and menu; core-requested shutdown; ≥26 create/destroy
+   cycles flat-RSS; release-flag `-O3 -flto` soaks; assertions: dlclose never with live
+   worker, CORE never touches renderer state.
+4. Fingerprint discipline (D54): every test arm verified by log fingerprint, never hash;
+   workspace-level clean builds only.
+
+## Measurement plan (anti-bias, per review P1-15)
+Task #11 pipeline profile FIRST, run in **both** modes once v2 exists; then freeze the
+pipeline before any verdict testing. Invalidate all prior sidecars; recalibrate the trial
+eligibility threshold on the frozen pipeline. Dan's save-state scenes split into
+discovery (tuning) and holdout (validation) sets — never reused across roles. Arms run
+counterbalanced A/B/A/B with matched charge/thermal preconditions (cold-start cells).
+Ship evidence per class = total-device energy + temperature + delivery health.
 
 ## Explicitly out of scope
-PS1 threading revival (receipts: no benefit), threading in the menu binary, more than two
-threads, per-game user-facing toggles.
+PS1 threading revival (receipts: no benefit), threading in the menu binary, >2 frontend
+threads, user-facing toggles (the machine decides; design axiom).
