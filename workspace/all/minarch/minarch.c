@@ -95,6 +95,7 @@ static int prevent_tearing = 1; // lenient
 static int show_debug = 0;
 static int max_ff_speed = 3; // 4x
 static int fast_forward = 0;
+static int ff_audio = 1; // FF-with-sound: feed sped-up audio during fast-forward (see audio callbacks)
 static int overclock = 1; // normal
 static int has_custom_controllers = 0;
 static int gamepad_type = 0; // index in gamepad_labels/gamepad_values
@@ -1894,6 +1895,9 @@ static int setFastForward(int enable) {
 		toggle_thread = 1;
 	}
 	fast_forward = enable;
+	// FF-with-sound: put the audio ring in non-blocking mode while fast-forwarding so
+	// feeding audio can't throttle FF back to real time (drop-on-full instead of block).
+	SND_setFastForward(enable && ff_audio);
 	return enable;
 }
 
@@ -3274,14 +3278,18 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 }
 ///////////////////////////////
 
-// NOTE: sound must be disabled for fast forward to work...
+// FF-with-sound (ff_audio, on by default): historically FF muted because feeding 4x audio
+// into the blocking ring throttled emulation back to 1x. SND now feeds non-blocking during
+// FF (SND_setFastForward, hooked in setFastForward), so we CAN feed audio while fast-
+// forwarding — you hear sped-up/chipmunk audio and know exactly when a cutscene ends.
+// FF speed stays governed by limitFF(). ff_audio=0 restores the classic silent FF.
+// (ff_audio is declared with the other FF globals near the top.)
 static void audio_sample_callback(int16_t left, int16_t right) {
-	if (!fast_forward) SND_batchSamples(&(const SND_Frame){left,right}, 1);
+	if (!fast_forward || ff_audio) SND_batchSamples(&(const SND_Frame){left,right}, 1);
 }
-static size_t audio_sample_batch_callback(const int16_t *data, size_t frames) { 
-	if (!fast_forward) return SND_batchSamples((const SND_Frame*)data, frames);
+static size_t audio_sample_batch_callback(const int16_t *data, size_t frames) {
+	if (!fast_forward || ff_audio) return SND_batchSamples((const SND_Frame*)data, frames);
 	else return frames;
-	// return frames;
 };
 
 ///////////////////////////////////////
