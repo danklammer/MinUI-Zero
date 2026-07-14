@@ -153,8 +153,31 @@ static int inv_hits[32];
 static uint64_t applied_events;
 static void on_ev(void* ctx, const fr_event* ev){ (void)ctx; (void)ev; applied_events++; }
 
-// run ONE session with a given failure injection; assert the oracle.
-static void run_session(int fail_op, int fail_kind, rng_t* mr){
+// Drive bootstrap STAGE-BY-STAGE via fc_boot_stage/fc_boot_finish (what real minarch
+// does — D58), interleaving a simulated 'MAIN frontend work' no-op between stages. Must
+// reach the same state as the monolithic fc_bootstrap, keep the D57 thread-affinity
+// oracle green, and NOT flip the ring to RUNNING until fc_boot_finish. The no-op MAIN
+// work between stages proves the interleave is race-free (CORE quiescent between stages).
+static fc_state boot_stage_by_stage(fc* f){
+	static const fc_op seq[] = {
+		FC_OP_GET_INFO, FC_OP_INIT, FC_OP_OPEN, FC_OP_LOAD, FC_OP_MEMORY,
+		FC_OP_ARM_CRASH, FC_OP_AV, FC_OP_CONTROLLER, FC_OP_AUDIO,
+		FC_OP_RENDERER, FC_OP_RESUME,
+	};
+	for (unsigned i=0;i<sizeof(seq)/sizeof(seq[0]);i++){
+		fc_boot_stage(f, seq[i]);
+		volatile int main_work=0; for(int k=0;k<8;k++) main_work+=k; (void)main_work; // sim MAIN frontend work
+		if (fc_boot_failed(f)) return fc_get_state(f);
+	}
+	// INV9: all stages succeeded but the ring has NOT been released to RUNNING yet —
+	// state is RESUME_APPLIED; grants only flow after the explicit fc_boot_finish.
+	INV(9, fc_get_state(f)==FC_RESUME_APPLIED, "RUNNING flipped before fc_boot_finish");
+	return fc_boot_finish(f);
+}
+
+// run ONE session with a given failure injection; assert the oracle. stage_by_stage
+// selects the fc_boot_stage driving path (else monolithic fc_bootstrap).
+static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stage){
 	fakecore fk; memset(&fk,0,sizeof(fk));
 	fk.fail_op = fail_op; fk.fail_kind = fail_kind;
 	fk.run_rng.s = rng_next(mr) | 1;
@@ -164,7 +187,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr){
 	uint32_t depth = (rng_below(mr,2)?2:1);
 	fc_init(&F,&vt,depth);
 
-	fc_state reached = fc_bootstrap(&F);
+	fc_state reached = stage_by_stage ? boot_stage_by_stage(&F) : fc_bootstrap(&F);
 	// RESUME failure is NON-FATAL by policy: that injection completes bootstrap and
 	// behaves like the success path (while still exercising vt.resume returning <0).
 	int failed = (fail_op!=0 && fail_op!=FC_OP_RESUME);
@@ -234,8 +257,11 @@ int main(int argc, char** argv){
 		for (unsigned i=0;i<sizeof(fail_ops)/sizeof(fail_ops[0]);i++){
 			int op = fail_ops[i];
 			int kind = (op==FC_OP_RESUME) ? -1 : (rng_below(&mr,2)?-1:+1);
-			run_session(op, kind, &mr);
-			sessions++;
+			// every injection driven BOTH ways: monolithic fc_bootstrap AND the
+			// stage-by-stage fc_boot_stage path real minarch uses (D58). Same oracle.
+			run_session(op, kind, &mr, 0);
+			run_session(op, kind, &mr, 1);
+			sessions += 2;
 		}
 	}
 
