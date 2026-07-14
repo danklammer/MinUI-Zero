@@ -42,6 +42,17 @@ BUILD_DATE!=date +%Y.%m.%d
 BUILD_HASH!=cat ../../hash.txt
 CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 
+# Threading v2 (phase 2) — OPT-IN, default OFF. When unset, SOURCE and CFLAGS above are
+# untouched, so the shipped build is byte-for-byte identical. Enable for dev/test with:
+#   make ... ZERO_FRONTEND_THREADING_V2=1
+# The minarch.c integration is NOT yet wired (see docs/threading-v2-phase2b-findings.md —
+# blocked on the old-thread_video-replacement decision); enabling today only compiles the
+# framering + frontend_core engines into the binary (inert until step 3 wires the run loop).
+ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
+SOURCE += ../common/framering.c ../common/frontend_core.c
+CFLAGS += -DZERO_FRONTEND_THREADING_V2
+endif
+
 # CFLAGS += -DBUILD_DATE=\"20230326\" -DBUILD_HASH=\"d34db33f\"
 
 PRODUCT= build/$(PLATFORM)/$(TARGET).elf
