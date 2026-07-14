@@ -12,10 +12,25 @@
 #include "frontend_core.h"
 #include <assert.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+// D57 thread-affinity oracle: FC_OP_AUDIO/RENDERER are SDL-affine and MUST run on the
+// MAIN thread (fc_bootstrap direct-calls them while CORE is quiescent); every other
+// bootstrap/runtime stage MUST run on the CORE thread. Captured in main() before fc_init.
+static pthread_t g_main_tid;
+static int g_tid_ready = 0;
+static void assert_affinity(int op) {
+	if (!g_tid_ready) return;
+	int on_main = pthread_equal(pthread_self(), g_main_tid);
+	if (op == FC_OP_AUDIO || op == FC_OP_RENDERER)
+		assert(on_main && "F-A: audio/renderer init must run on MAIN (D57)");
+	else
+		assert(!on_main && "CORE stage must run on the CORE thread (D57)");
+}
 
 typedef struct { uint64_t s; } rng_t;
 static uint64_t rng_next(rng_t* r){ uint64_t x=r->s; x^=x<<13; x^=x>>7; x^=x<<17; return r->s=x; }
@@ -40,6 +55,7 @@ typedef struct {
 } fakecore;
 
 static int stage_rc(fakecore* fk, int op) {
+	assert_affinity(op); // D57: audio/renderer on MAIN, all other stages on CORE
 	if (fk->fail_op == op) return fk->fail_kind < 0 ? -1 : +1;
 	return 0;
 }
@@ -54,6 +70,7 @@ static int fk_ctrl     (void* c){ return stage_rc((fakecore*)c, FC_OP_CONTROLLER
 static int fk_audio    (void* c){ return stage_rc((fakecore*)c, FC_OP_AUDIO); }
 static int fk_renderer (void* c){ return stage_rc((fakecore*)c, FC_OP_RENDERER); }
 static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it failing
+	assert_affinity(FC_OP_RESUME); // CORE
 	fakecore* fk=c; return (fk->fail_op==FC_OP_RESUME) ? -1 : 0;
 }
 
@@ -61,6 +78,7 @@ static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it
 // geometry commands, an AV_INFO barrier, SET_VARIABLE — the real cross-thread mix.
 static void fk_run(void* c){
 	fakecore* fk = c;
+	if (g_tid_ready) assert(!pthread_equal(pthread_self(), g_main_tid) && "fk_run must be on CORE (D57)");
 	rng_t* r = &fk->run_rng;
 	uint32_t n = rng_below(r, 8);
 	int did_barrier = 0;
@@ -194,6 +212,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr){
 }
 
 int main(int argc, char** argv){
+	g_main_tid = pthread_self(); g_tid_ready = 1; // D57 affinity oracle baseline
 	int seconds = argc>1?atoi(argv[1]):3;
 	uint64_t seed = argc>2?strtoull(argv[2],NULL,0):(uint64_t)time(NULL)*2654435761u;
 	printf("frontend_core_test: seconds=%d seed=0x%016" PRIx64 "\n", seconds, seed);
