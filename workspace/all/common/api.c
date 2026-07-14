@@ -1258,6 +1258,18 @@ static void SND_publishOccupancy(void) {
 static int SND_ringPct(void) {
 	return __atomic_load_n(&snd_ring_pct, __ATOMIC_ACQUIRE);
 }
+
+// FF-with-sound: normally a full ring blocks SND_batchSamples (SDL_Delay retry), which
+// audio-paces emulation to real time — that is exactly why fast-forward historically had
+// to mute (feeding 4x audio would throttle FF back to 1x). During FF we instead feed the
+// ring NON-BLOCKING: consume what fits, drop the overflow, never wait. The DAC plays the
+// samples that landed at 1x, i.e. the game audio temporally compressed — the expected
+// sped-up/chipmunk FF sound — while FF speed stays governed by limitFF(), not the ring.
+// The ring rides FULL during FF, so SND_ringPct stays high and the presentation-drop
+// catch-up can never engage (correct: FF is never audio-starved).
+static int snd_ff_nonblock = 0;
+static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
+void SND_setFastForward(int on) { snd_ff_nonblock = on ? 1 : 0; }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
@@ -1283,12 +1295,15 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		int tries = 0;
 		int amount = MIN(BATCH_SIZE, frame_count);
 		
-		while (tries < 10 && snd.frame_in==snd.frame_filled) {
+		while (!snd_ff_nonblock && tries < 10 && snd.frame_in==snd.frame_filled) {
 			tries++;
 			SDL_UnlockAudio();
 			SDL_Delay(1);
 			SDL_LockAudio();
 		}
+		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
+		// frames and return so emulation never blocks on audio during fast-forward.
+		if (snd_ff_nonblock && snd.frame_in==snd.frame_filled) break;
 		if (tries) { snd.overruns++; snd.wait_ms += tries; } // buffer full: audio-blocking paced emulation
 		// if (tries) LOG_info("%8i waited %ims for buffer to get low...\n", ms(), tries);
 

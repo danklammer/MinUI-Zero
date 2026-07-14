@@ -212,6 +212,7 @@ typedef struct SND_Frame {
 
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
+void SND_setFastForward(int on); // FF-with-sound: non-blocking ring feed during fast-forward
 void SND_setRateAdjustPPM(int ppm); // dynamic rate control: scale audio-paced core speed
 void SND_pause(void);  // close the audio device during sleep (thread fully stops)
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
