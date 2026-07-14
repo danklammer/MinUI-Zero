@@ -59,3 +59,51 @@ Task #11's pipeline profile is DONE (floor-control insight); the single-thread b
 threading trials measure against will shift again if floor-control ships — recalibrate the
 trial threshold after floor-control's ship decision, before threading's final measurements.
 Dan's save states (DKC/Yoshi/Mario RPG demanding scenes) remain the measurement arms.
+
+
+---
+
+## Phase 2 step 1 - implemented + host-proven (frontend_core engine)
+
+`workspace/all/common/frontend_core.{c,h}` implements the CORE-thread lifecycle
+engine over framering, driven by a libretro-shaped vtable: the F31 nine-state
+bootstrap machine, the RUNNING epoch loop, the QUIESCENT service loop, and the
+per-state **terminal cleanup oracle** (which teardown calls are legal from each
+reached state). `frontend_core_test.c` is the adversarial fake core - it fails or
+requests-shutdown at every bootstrap stage and emits adversarial runtime patterns -
+and asserts the oracle at each stage. Same shipping code, TSan+ASan clean 30s each;
+`check-forbidden-globals.sh` confirms neither module holds a mutable file-scope
+global (all shared state is ring-owned). This is the integration LOGIC minarch 2b
+plugs into (fill the vtable with real libretro calls); the harness tests it, not a
+model of it.
+
+## Map-vs-reality findings (phase 2b must honour these - not improvised here)
+
+**F-A. Two bootstrap stages are MAIN-affine, not CORE-affine.** F31 lists audio
+init and renderer init as CORE-side service ops, but SDL video/renderer creation is
+thread-affine to the thread that owns the window (MAIN), and SDL audio open is
+safest on MAIN too. The *libretro* bootstrap stages (get_system_info, init,
+load_game, get_av_info, memory setup, resume) are correctly CORE-pinned - those are
+the TLS/affinity-critical ones F23 exists for. The fix for 2b: MAIN performs the SDL
+audio+renderer init at the **AV_READY boundary** (it has av_info by then), between
+the CORE-side AV service-ack and the first grant - i.e. fc_bootstrap splits so the
+SDL init happens MAIN-side mid-sequence, rather than as CORE vtable bodies. The
+engine already isolates these as the only two vtable hooks that would need to
+marshal; treat them as MAIN-side steps in 2b. NON-BLOCKING for the engine.
+
+**F-B. Audio payload is NOT a framering event class (by design).** The audio ring
+stays the existing `SND_*` SPSC (producer CORE, consumer SDL callback); framering
+carries only video frames, commands (geometry / AV_INFO / SET_VARIABLE), and
+lifecycle. The AV_INFO barrier coordinates the audio *config* switch (sample rate) -
+the audio *data* rides its own ring. frontend_core models video+command+lifecycle
+only; audio integration in 2b is the existing SND ring plus the config-barrier hook.
+
+## Deliberately deferred to step 2 (on-device / toolchain)
+The guarded minarch.c wiring is NOT done in step 1: it cannot be host-validated
+(needs SDL/libretro/platform + the Docker toolchain), and injecting guard-ON code
+that compiles only in the toolchain would be improvising the exact SDL-threading
+model F-A flags. Step 2 = fill the vtable in minarch behind ZERO_FRONTEND_THREADING_V2
+(default OFF, shipped path byte-identical), apply F-A MAIN-side SDL init split,
+compile guard-ON in the toolchain, then the on-device gauntlet + release-binary
+__tls_get_addr inspection (needs the aarch64 build - the crash-marker __thread
+must resolve to initial-exec, no dynamic TLS resolver).
