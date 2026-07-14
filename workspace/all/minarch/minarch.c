@@ -3283,14 +3283,15 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	renderer.dst = screen->pixels;
 	// LOG_info("video_refresh_callback: %ix%i@%i %ix%i@%i\n",width,height,pitch,screen->w,screen->h,screen->pitch);
 	
-	GFX_blitRenderer(&renderer);
-
 #ifdef ZERO_FRONTEND_THREADING_V2
-	// WP1: under v2 the CORE thread has blitted into screen->pixels; signal MAIN to flip
-	// (zero_ftv2_drain) rather than flipping from the CORE thread.
+	// WP1 (v2): the scaler blit + flip BOTH run on MAIN in zero_ftv2_drain (the GLES present
+	// path is bound to MAIN's EGL context). On the CORE thread we only emit — the `renderer`
+	// globals set above stay valid until the next epoch (depth-1 serial), so the drain reads
+	// them. Do NOT GFX_blitRenderer here under v2.
 	if (zero_ftv2_running) fc_emit_frame(&zero_ftv2, 0);
-	else if (!thread_video) GFX_flip(screen);
+	else { GFX_blitRenderer(&renderer); if (!thread_video) GFX_flip(screen); }
 #else
+	GFX_blitRenderer(&renderer);
 	if (!thread_video) GFX_flip(screen);
 #endif
 	last_flip_time = SDL_GetTicks();
@@ -5238,7 +5239,7 @@ static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer alread
 static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
 
 // --- runtime ---
-static void zero_ftv2_run(void* c)             { (void)c; core.run(); /* video_refresh emits via fc_emit_frame — routed in S3.3 */ }
+static void zero_ftv2_run(void* c)             { (void)c; core.run(); /* video_refresh emits via fc_emit_frame */ }
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
 static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }
@@ -5279,7 +5280,13 @@ static const fc_vtable zero_ftv2_vt = {
 static int zero_ftv2_inited = 0;  // fc_init called (CORE thread spawned) — gates teardown
 static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 	(void)ctx;
-	if (ev->kind == FR_EV_FRAME) GFX_flip(screen);
+	// v2 present is MAIN-only: the GLES blit+flip path is bound to MAIN's EGL context, so
+	// CORE just emits and MAIN does BOTH the scaler blit and the flip here. `renderer` is
+	// the global set by video_refresh_callback (still valid: depth-1 serial, core hasn't
+	// re-run). WP1 fix 2026-07-14: doing the blit on CORE left the screen black (present
+	// no-op'd off-context) while audio ran — Dan's "menu showed the game" confirmed the
+	// frame data was correct, only the on-CORE present failed.
+	if (ev->kind == FR_EV_FRAME) { GFX_blitRenderer(&renderer); GFX_flip(screen); }
 	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in S3.3b; ignoring it is harmless for
 	// a depth-1 first boot on a fixed-geometry SNES title (watch-point).
 }
