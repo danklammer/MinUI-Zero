@@ -1,0 +1,182 @@
+// frontend_core.c — the CORE-thread lifecycle engine (threading v2 phase 2).
+// See frontend_core.h. Pure logic over framering + a core vtable; no SDL/libretro.
+#include "frontend_core.h"
+#include <string.h>
+
+// ---- CORE-side: state, emit shims, service dispatch, cleanup oracle ----------
+
+static inline void set_state(fc* f, fc_state s) {
+	atomic_store_explicit(&f->state, (int)s, memory_order_release);
+}
+static inline fc_state get_state_core(fc* f) {
+	return (fc_state)atomic_load_explicit(&f->state, memory_order_acquire);
+}
+
+// CORE-only per-epoch scratch (never touched by MAIN → no atomics, TSan-clean)
+static _Thread_local uint32_t tl_ep_frames;
+static _Thread_local int      tl_ep_dup;
+
+fr_rc fc_emit_frame(fc* f, uint64_t payload) {
+	fr_rc rc = fr_core_emit(&f->fr, FR_EV_FRAME, 0, payload);
+	if (rc == FR_OK) tl_ep_frames++;
+	return rc;
+}
+fr_rc fc_emit_cmd(fc* f, uint32_t flags, uint64_t payload) {
+	return fr_core_emit(&f->fr, FR_EV_CMD, flags, payload);
+}
+fr_rc fc_emit_barrier(fc* f, uint64_t payload) {
+	fr_rc rc = fr_core_emit(&f->fr, FR_EV_CMD, FR_EVF_PERSISTENT | FR_EVF_BARRIER, payload);
+	if (rc == FR_OK) (void)fr_core_barrier_wait(&f->fr);  // FR_ABORT ok: applied before park ack
+	return rc;
+}
+
+// Decode a service op word: low 8 bits = fc_op, high bits = arg.
+static inline fc_op   op_of(uint64_t w)  { return (fc_op)(w & 0xFF); }
+static inline uint64_t arg_of(uint64_t w) { return w >> 8; }
+
+// Execute one bootstrap/menu service op on CORE. Advances state on bootstrap
+// success; sets boot_failed (and boot_shutdown) on hard failure / requested
+// shutdown. RESUME failure is non-fatal (state still advances). Returns nothing;
+// products (if any) are emitted via fr_core_service_emit by the vtable body.
+static void dispatch_service(fc* f, uint64_t opword) {
+	fc_op op = op_of(opword);
+	uint64_t arg = arg_of(opword);
+	int r = 0;
+	switch (op) {
+	case FC_OP_GET_INFO:   r = f->vt.get_system_info(f->vt.ctx); if (!r) set_state(f, FC_INFO_READY); break;
+	case FC_OP_INIT:       r = f->vt.init(f->vt.ctx);            if (!r) set_state(f, FC_INITIALIZED); break;
+	case FC_OP_OPEN:       r = f->vt.open_content(f->vt.ctx);    break; // path prep; state unchanged
+	case FC_OP_LOAD:       r = f->vt.load_game(f->vt.ctx);       if (!r) set_state(f, FC_CONTENT_LOADED); break;
+	case FC_OP_MEMORY:     r = f->vt.setup_memory(f->vt.ctx);    break; // pointers valid; crash arm next
+	case FC_OP_ARM_CRASH:  r = f->vt.arm_crash(f->vt.ctx);       if (!r) set_state(f, FC_MEMORY_READY); break;
+	case FC_OP_AV:         r = f->vt.get_av_info(f->vt.ctx);     if (!r) set_state(f, FC_AV_READY); break;
+	case FC_OP_CONTROLLER: r = f->vt.set_controller(f->vt.ctx);  break;
+	case FC_OP_AUDIO:      r = f->vt.audio_init(f->vt.ctx);      break;
+	case FC_OP_RENDERER:   r = f->vt.renderer_init(f->vt.ctx);   if (!r) set_state(f, FC_FRONTEND_READY); break;
+	case FC_OP_RESUME:     (void)f->vt.resume(f->vt.ctx);        set_state(f, FC_RESUME_APPLIED); r = 0; break; // nonfatal
+	case FC_OP_SERIALIZE:   r = f->vt.serialize(f->vt.ctx, arg);   break;
+	case FC_OP_UNSERIALIZE: r = f->vt.unserialize(f->vt.ctx, arg); break;
+	case FC_OP_RESET:       f->vt.reset(f->vt.ctx);               r = 0; break;
+	default: break;
+	}
+	atomic_store_explicit(&f->last_op_result,
+	                      r ? (((uint64_t)op << 8) | (uint64_t)(r & 0xFF)) : 0,
+	                      memory_order_release);
+	if (r) {
+		atomic_store_explicit(&f->boot_failed, 1, memory_order_release);
+		if (r > 0) atomic_store_explicit(&f->boot_shutdown, 1, memory_order_release);
+	}
+}
+
+// The per-state terminal cleanup oracle (F31): exactly which teardown calls are
+// legal from the highest state reached. THIS is what the fake-core harness asserts.
+static void terminal_cleanup(fc* f) {
+	fc_state s = get_state_core(f);
+	if (s >= FC_MEMORY_READY)   f->vt.disarm_crash(f->vt.ctx);  // armed at MEMORY_READY
+	if (s >= FC_CONTENT_LOADED) f->vt.unload_game(f->vt.ctx);   // load_game succeeded
+	if (s >= FC_INITIALIZED)    f->vt.deinit(f->vt.ctx);        // retro_init succeeded
+	// below FC_INITIALIZED: get_system_info / thread-create only → no libretro cleanup
+}
+
+static void* fc_core_thread(void* arg) {
+	fc* f = (fc*)arg;
+	set_state(f, FC_CORE_CREATED);
+	for (;;) {
+		if (fr_get_state(&f->fr) == FR_QUIESCENT) {
+			uint64_t opword = 0;
+			fr_rc rc = fr_core_service_next(&f->fr, &opword);
+			if (rc == FR_STOP) break;
+			if (rc == FR_RELEASED) continue;   // going RUNNING; loop re-reads state
+			// FR_SVC
+			dispatch_service(f, opword);
+			fr_core_service_ack(&f->fr);
+			continue;
+		}
+		// RUNNING
+		uint64_t gen = 0; uint64_t snap[4];
+		fr_rc rc = fr_core_wait_grant(&f->fr, &gen, snap);
+		if (rc == FR_STOP) break;
+		if (rc == FR_PARKED) continue;
+		// FR_GRANT
+		if (get_state_core(f) != FC_RUNNING) set_state(f, FC_RUNNING);
+		tl_ep_frames = 0; tl_ep_dup = 0;
+		f->vt.run(f->vt.ctx);   // emits via fc_emit_* (from the core's callbacks)
+		fr_outcome out = tl_ep_frames ? FR_OUT_FRAME : (tl_ep_dup ? FR_OUT_DUP : FR_OUT_NONE);
+		rc = fr_core_run_done(&f->fr, out, 0);
+		if (rc == FR_STOP) break;
+	}
+	terminal_cleanup(f);
+	fr_core_thread_exit(&f->fr);
+	return NULL;
+}
+
+// CORE-side hook the fake/real run() can call to mark a NULL duplicate frame.
+void fc_signal_dup(fc* f) { (void)f; tl_ep_dup = 1; }
+
+// ---- MAIN-side lifecycle ----------------------------------------------------
+
+// framering invokes the drain callback per event; a NULL callback would crash when
+// there is anything to drain (teardown, a resume that emitted, a park with pending
+// events). Every fr_* drain-taking call routes through here so cb is never NULL.
+static void fc_noop_cb(void* ctx, const fr_event* ev) { (void)ctx; (void)ev; }
+static inline fr_drain_cb cb_or_noop(fr_drain_cb cb) { return cb ? cb : fc_noop_cb; }
+
+void fc_init(fc* f, const fc_vtable* vt, uint32_t depth) {
+	memset(f, 0, sizeof(*f));
+	f->vt = *vt;
+	fr_init(&f->fr, depth ? depth : 1);
+	f->fr.failclosed_sec = 60;
+	atomic_store(&f->state, (int)FC_NONE);
+	pthread_create(&f->core_thread, NULL, fc_core_thread, f);
+	f->thread_started = 1;
+}
+
+fc_state fc_bootstrap(fc* f) {
+	static const fc_op seq[] = {
+		FC_OP_GET_INFO, FC_OP_INIT, FC_OP_OPEN, FC_OP_LOAD, FC_OP_MEMORY,
+		FC_OP_ARM_CRASH, FC_OP_AV, FC_OP_CONTROLLER, FC_OP_AUDIO,
+		FC_OP_RENDERER, FC_OP_RESUME,
+	};
+	for (unsigned i = 0; i < sizeof(seq)/sizeof(seq[0]); i++) {
+		fr_service(&f->fr, (uint64_t)seq[i], fc_noop_cb, NULL);
+		if (atomic_load_explicit(&f->boot_failed, memory_order_acquire))
+			return fc_get_state(f);   // caller invokes fc_teardown from here
+	}
+	fr_release(&f->fr);   // QUIESCENT -> RUNNING; grants may now flow
+	return fc_get_state(f); // FC_RESUME_APPLIED; becomes FC_RUNNING at first pump
+}
+
+void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx) {
+	uint64_t g = 0;
+	(void)fr_grant(&f->fr, snapshot, &g);   // FR_NOSPACE tolerated (no free credit)
+	(void)fr_drain(&f->fr, cb_or_noop(cb), cbctx, FR_DRAIN_NORMAL); // prefix-drain applies barriers
+}
+
+void fc_park(fc* f, fr_drain_cb cb, void* cbctx, int discard) {
+	fr_park(&f->fr, cb_or_noop(cb), cbctx, discard ? FR_DRAIN_DISCARD : FR_DRAIN_NORMAL);
+}
+void fc_release(fc* f) { fr_release(&f->fr); }
+void fc_set_depth(fc* f, uint32_t depth, fr_drain_cb cb, void* cbctx, int discard) {
+	fr_set_depth(&f->fr, depth, cb_or_noop(cb), cbctx, discard ? FR_DRAIN_DISCARD : FR_DRAIN_NORMAL);
+}
+
+int fc_menu_op(fc* f, fc_op op, uint64_t arg, fr_drain_cb cb, void* cbctx) {
+	// F18: park -> service -> release. The op runs on CORE (single-thread session).
+	fr_park(&f->fr, cb_or_noop(cb), cbctx, FR_DRAIN_NORMAL);
+	fr_service(&f->fr, ((uint64_t)arg << 8) | (uint64_t)op, cb_or_noop(cb), cbctx);
+	uint64_t res = atomic_load_explicit(&f->last_op_result, memory_order_acquire);
+	fr_release(&f->fr);
+	return (int)(res & 0xFF) ? -1 : 0;
+}
+
+void fc_teardown(fc* f) {
+	if (!f->thread_started) return;
+	// Reversible->terminal: bring CORE to a boundary (park absorbs if already
+	// QUIESCENT after a failed bootstrap), request stop, let CORE run the
+	// state-keyed cleanup oracle, then join. Never join/free out of order.
+	fr_park(&f->fr, fc_noop_cb, NULL, FR_DRAIN_NORMAL);
+	fr_stop(&f->fr);
+	pthread_join(f->core_thread, NULL);
+	f->thread_started = 0;
+	fr_destroy(&f->fr);
+}

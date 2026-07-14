@@ -61,6 +61,17 @@ test-framering-tsan:
 	sh ./workspace/all/common/run-framering-tests.sh tsan
 test-framering-asan:
 	sh ./workspace/all/common/run-framering-tests.sh asan
+# threading v2 frontend_core lifecycle engine (host; F31 cleanup oracle + adversarial runtime)
+.PHONY: test-frontend-core test-frontend-core-tsan test-frontend-core-asan
+test-frontend-core:
+	sh ./workspace/all/common/run-frontend-core-tests.sh plain
+test-frontend-core-tsan:
+	sh ./workspace/all/common/run-frontend-core-tests.sh tsan
+test-frontend-core-asan:
+	sh ./workspace/all/common/run-frontend-core-tests.sh asan
+.PHONY: check-forbidden-globals
+check-forbidden-globals:
+	sh ./workspace/all/common/check-forbidden-globals.sh
 
 build:
 	# ----------------------------------------------------

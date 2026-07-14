@@ -1,0 +1,227 @@
+// frontend_core_test.c — adversarial harness for the phase-2 lifecycle engine.
+//
+// A libretro-shaped FAKE CORE that can be commanded to fail or request shutdown at
+// EVERY F31 bootstrap stage, and (on the success path) to emit adversarial runtime
+// patterns: zero / NULL-dup / multi-frame epochs, mid-run SET_GEOMETRY, AV_INFO
+// barriers, SET_VARIABLE, slow runs, and requested shutdown mid-epoch. The MAIN
+// driver runs each injection point and asserts the terminal cleanup ORACLE: exactly
+// which teardown calls are legal from the highest bootstrap state reached. The
+// TSan/ASan builds adjudicate races on the same shipping frontend_core code.
+//
+//   frontend_core_test [seconds] [seed]
+#include "frontend_core.h"
+#include <assert.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct { uint64_t s; } rng_t;
+static uint64_t rng_next(rng_t* r){ uint64_t x=r->s; x^=x<<13; x^=x>>7; x^=x<<17; return r->s=x; }
+static uint32_t rng_below(rng_t* r, uint32_t n){ return (uint32_t)(rng_next(r)%n); }
+
+// ---- the fake core ---------------------------------------------------------------
+typedef struct {
+	fc* f;
+	int fail_op;     // fc_op to fail at, or 0 for none
+	int fail_kind;   // -1 hard failure, +1 requested shutdown
+	rng_t run_rng;
+
+	// teardown record (written by CORE during terminal_cleanup, read by MAIN
+	// after pthread_join → join is the happens-before; plain ints are safe/TSan-clean)
+	int crash_armed;
+	int disarm_called;
+	int unload_called;
+	int deinit_called;
+
+	// runtime emit accounting (CORE-only during a session)
+	uint64_t frames_emitted, cmds_emitted, barriers_emitted;
+} fakecore;
+
+static int stage_rc(fakecore* fk, int op) {
+	if (fk->fail_op == op) return fk->fail_kind < 0 ? -1 : +1;
+	return 0;
+}
+static int fk_get_info (void* c){ return stage_rc((fakecore*)c, FC_OP_GET_INFO); }
+static int fk_init     (void* c){ return stage_rc((fakecore*)c, FC_OP_INIT); }
+static int fk_open     (void* c){ return stage_rc((fakecore*)c, FC_OP_OPEN); }
+static int fk_load     (void* c){ return stage_rc((fakecore*)c, FC_OP_LOAD); }
+static int fk_memory   (void* c){ return stage_rc((fakecore*)c, FC_OP_MEMORY); }
+static int fk_armcrash (void* c){ fakecore* fk=c; int r=stage_rc(fk,FC_OP_ARM_CRASH); if(!r) fk->crash_armed=1; return r; }
+static int fk_av       (void* c){ return stage_rc((fakecore*)c, FC_OP_AV); }
+static int fk_ctrl     (void* c){ return stage_rc((fakecore*)c, FC_OP_CONTROLLER); }
+static int fk_audio    (void* c){ return stage_rc((fakecore*)c, FC_OP_AUDIO); }
+static int fk_renderer (void* c){ return stage_rc((fakecore*)c, FC_OP_RENDERER); }
+static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it failing
+	fakecore* fk=c; return (fk->fail_op==FC_OP_RESUME) ? -1 : 0;
+}
+
+// The adversarial run(): a randomized epoch. Emits 0..N frames (some NULL-dup),
+// geometry commands, an AV_INFO barrier, SET_VARIABLE — the real cross-thread mix.
+static void fk_run(void* c){
+	fakecore* fk = c;
+	rng_t* r = &fk->run_rng;
+	uint32_t n = rng_below(r, 8);
+	int did_barrier = 0;
+	uint32_t emitted = 0;
+	for (uint32_t i=0;i<n;i++){
+		uint32_t roll = rng_below(r,100);
+		if (roll < 45){
+			if (rng_below(r,10)==0){ fc_signal_dup(fk->f); }        // NULL dup
+			else if (fc_emit_frame(fk->f, 0xF00D ^ i) == FR_OK){ emitted++; fk->frames_emitted++; }
+		} else if (roll < 70){
+			if (fc_emit_cmd(fk->f, 0, 0xC0DE ^ i) != FR_DROPPED) fk->cmds_emitted++;  // SET_VARIABLE-ish
+		} else if (roll < 85){
+			if (fc_emit_cmd(fk->f, FR_EVF_PERSISTENT, 0x6E0 ^ i) != FR_DROPPED) fk->cmds_emitted++; // GEOMETRY
+		} else if (roll < 93 && !did_barrier){
+			fc_emit_barrier(fk->f, 0xA71F ^ i); fk->barriers_emitted++; fk->cmds_emitted++; did_barrier=1; // AV_INFO
+		} else {
+			struct timespec ts={0,(long)rng_below(r,30000)}; nanosleep(&ts,NULL);
+		}
+	}
+	(void)emitted;
+}
+static int  fk_serialize  (void* c, uint64_t a){ (void)a; return (rng_below(&((fakecore*)c)->run_rng,20)==0)?-1:0; }
+static int  fk_unserialize(void* c, uint64_t a){ (void)a; return (rng_below(&((fakecore*)c)->run_rng,20)==0)?-1:0; }
+static void fk_reset      (void* c){ (void)c; }
+static void fk_disarm     (void* c){ fakecore* fk=c; fk->disarm_called=1; }
+static void fk_unload     (void* c){ fakecore* fk=c; fk->unload_called=1; }
+static void fk_deinit     (void* c){ fakecore* fk=c; fk->deinit_called=1; }
+
+static void fill_vtable(fc_vtable* vt, fakecore* fk){
+	memset(vt,0,sizeof(*vt));
+	vt->ctx=fk;
+	vt->get_system_info=fk_get_info; vt->init=fk_init; vt->open_content=fk_open;
+	vt->load_game=fk_load; vt->setup_memory=fk_memory; vt->arm_crash=fk_armcrash;
+	vt->get_av_info=fk_av; vt->set_controller=fk_ctrl; vt->audio_init=fk_audio;
+	vt->renderer_init=fk_renderer; vt->resume=fk_resume;
+	vt->run=fk_run; vt->serialize=fk_serialize; vt->unserialize=fk_unserialize; vt->reset=fk_reset;
+	vt->disarm_crash=fk_disarm; vt->unload_game=fk_unload; vt->deinit=fk_deinit;
+}
+
+// ---- oracle: expected teardown set as a pure fn of highest state reached --------
+typedef struct { int disarm, unload, deinit; } tset;
+static tset oracle(fc_state s){
+	tset t = {0,0,0};
+	if (s >= FC_MEMORY_READY)   t.disarm = 1;
+	if (s >= FC_CONTENT_LOADED) t.unload = 1;
+	if (s >= FC_INITIALIZED)    t.deinit = 1;
+	return t;
+}
+// expected reached state when failing at a given op (hard fail / shutdown both stop
+// bootstrap at the same reached state — the op that failed did not complete).
+static fc_state reached_on_fail(int op){
+	switch(op){
+	case FC_OP_GET_INFO:   return FC_CORE_CREATED;
+	case FC_OP_INIT:       return FC_INFO_READY;
+	case FC_OP_OPEN:       return FC_INITIALIZED;   // open is post-init path prep
+	case FC_OP_LOAD:       return FC_INITIALIZED;
+	case FC_OP_MEMORY:     return FC_CONTENT_LOADED;
+	case FC_OP_ARM_CRASH:  return FC_CONTENT_LOADED;
+	case FC_OP_AV:         return FC_MEMORY_READY;
+	case FC_OP_CONTROLLER: return FC_AV_READY;
+	case FC_OP_AUDIO:      return FC_AV_READY;
+	case FC_OP_RENDERER:   return FC_AV_READY;
+	default:               return FC_RUNNING; // no fail / resume(nonfatal) -> full boot
+	}
+}
+
+static int inv_hits[32];
+#define INV(n,cond,msg) do{ if(!(cond)){ fprintf(stderr,"FC INVARIANT %d FAILED: %s\n",(n),(msg)); abort(); } inv_hits[n]++; }while(0)
+
+// consumer drain callback: sanity only (frame/cmd/rundone ordering is framering's
+// job, proven in framering_test; here we just count applied events)
+static uint64_t applied_events;
+static void on_ev(void* ctx, const fr_event* ev){ (void)ctx; (void)ev; applied_events++; }
+
+// run ONE session with a given failure injection; assert the oracle.
+static void run_session(int fail_op, int fail_kind, rng_t* mr){
+	fakecore fk; memset(&fk,0,sizeof(fk));
+	fk.fail_op = fail_op; fk.fail_kind = fail_kind;
+	fk.run_rng.s = rng_next(mr) | 1;
+	fc_vtable vt; fill_vtable(&vt,&fk);
+
+	fc F; fk.f=&F;
+	uint32_t depth = (rng_below(mr,2)?2:1);
+	fc_init(&F,&vt,depth);
+
+	fc_state reached = fc_bootstrap(&F);
+	// RESUME failure is NON-FATAL by policy: that injection completes bootstrap and
+	// behaves like the success path (while still exercising vt.resume returning <0).
+	int failed = (fail_op!=0 && fail_op!=FC_OP_RESUME);
+
+	// INV1: bootstrap reached exactly the state the oracle predicts for this injection
+	fc_state expect = failed ? reached_on_fail(fail_op) : FC_RESUME_APPLIED;
+	INV(1, reached==expect || (!failed && reached==FC_RUNNING),
+	    "bootstrap reached the wrong state for the injection");
+	// INV2: on failure, NO teardown has happened yet (cleanup is teardown's job)
+	if (failed)
+		INV(2, !fk.disarm_called && !fk.unload_called && !fk.deinit_called,
+		    "teardown ran during bootstrap failure");
+
+	// success path: drive an adversarial RUNNING session concurrently with pumps
+	if (!failed){
+		struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
+		for(;;){
+			struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now);
+			double dt = (now.tv_sec-t0.tv_sec) + (now.tv_nsec-t0.tv_nsec)/1e9;
+			if (dt > 0.05) break;   // ~50ms of adversarial runtime per success session
+			uint64_t snap[4] = { atomic_load(&F.fr.gen)+1, rng_next(mr), rng_next(mr), 0 };
+			fc_pump(&F, snap, on_ev, NULL);
+			uint32_t roll = rng_below(mr,100);
+			if (roll < 12){ fc_park(&F,on_ev,NULL, roll<4); fc_release(&F); }         // park (some discard)
+			else if (roll < 18){ uint32_t nd=(rng_below(mr,2)?2:1); fc_set_depth(&F,nd,on_ev,NULL,0); fc_release(&F); }
+			else if (roll < 24){ fc_menu_op(&F, FC_OP_SERIALIZE, rng_below(mr,8), on_ev, NULL); }
+			else if (roll < 28){ fc_menu_op(&F, FC_OP_UNSERIALIZE, rng_below(mr,8), on_ev, NULL); }
+			else if (roll < 30){ fc_menu_op(&F, FC_OP_RESET, 0, on_ev, NULL); }
+		}
+	}
+
+	fc_state at_teardown = fc_get_state(&F);
+	fc_teardown(&F);
+
+	// INV3: terminal cleanup oracle — the teardown set equals oracle(reached state)
+	tset ex = oracle(at_teardown);
+	INV(3, fk.disarm_called==ex.disarm, "disarm_crash legality violated (oracle)");
+	INV(4, fk.unload_called==ex.unload, "unload_game legality violated (oracle)");
+	INV(5, fk.deinit_called==ex.deinit, "deinit legality violated (oracle)");
+	// INV6: crash disarm implies it had been armed (never disarm an unarmed handler)
+	if (fk.disarm_called) INV(6, fk.crash_armed, "disarmed a crash handler that was never armed");
+	// INV7: unload never without load; deinit never without init (belt over the oracle)
+	INV(7, !(fk.unload_called && at_teardown < FC_CONTENT_LOADED), "unload_game before content loaded");
+	INV(8, !(fk.deinit_called && at_teardown < FC_INITIALIZED), "deinit before init");
+}
+
+int main(int argc, char** argv){
+	int seconds = argc>1?atoi(argv[1]):3;
+	uint64_t seed = argc>2?strtoull(argv[2],NULL,0):(uint64_t)time(NULL)*2654435761u;
+	printf("frontend_core_test: seconds=%d seed=0x%016" PRIx64 "\n", seconds, seed);
+	fflush(stdout);
+	rng_t mr = { seed?seed:1 };
+
+	// every bootstrap failure injection point, hard-fail AND requested-shutdown, plus
+	// the resume-nonfatal path and the clean success path — cycled until time runs out
+	static const int fail_ops[] = {
+		0, FC_OP_GET_INFO, FC_OP_INIT, FC_OP_OPEN, FC_OP_LOAD, FC_OP_MEMORY,
+		FC_OP_ARM_CRASH, FC_OP_AV, FC_OP_CONTROLLER, FC_OP_AUDIO, FC_OP_RENDERER,
+		FC_OP_RESUME,
+	};
+	struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
+	uint64_t sessions=0;
+	for(;;){
+		struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now);
+		if (now.tv_sec - t0.tv_sec >= seconds) break;
+		for (unsigned i=0;i<sizeof(fail_ops)/sizeof(fail_ops[0]);i++){
+			int op = fail_ops[i];
+			int kind = (op==FC_OP_RESUME) ? -1 : (rng_below(&mr,2)?-1:+1);
+			run_session(op, kind, &mr);
+			sessions++;
+		}
+	}
+
+	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
+	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);
+	printf("frontend_core_test: ALL PASS (%d invariant sites, cleanup oracle verified at every bootstrap stage)\n", sites);
+	return 0;
+}
