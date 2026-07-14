@@ -57,69 +57,10 @@
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
 static const char zero_ftv2_fingerprint[] __attribute__((used)) =
-	"threading-v2 S3.1 skeleton (guard-ON; run loop not yet wired)";
+	"threading-v2 S3.2 (guard-ON; vtable filled+relocated, compile-validated; run loop not yet rerouted)";
 
-static fc zero_ftv2; // v2 engine handle (MAIN-side); the ring/state live inside it
-
-// --- bootstrap stages (return 0 ok / <0 fail / >0 core-requested shutdown) ---
-static int  zero_ftv2_get_system_info(void* c) { (void)c; /* S3.2: core.get_system_info */ return 0; }
-static int  zero_ftv2_init(void* c)            { (void)c; /* S3.2: core.init */ return 0; }
-static int  zero_ftv2_open_content(void* c)    { (void)c; /* S3.2: Game_open (precedes init in real minarch) */ return 0; }
-static int  zero_ftv2_load_game(void* c)       { (void)c; /* S3.2: core.load_game */ return 0; }
-static int  zero_ftv2_setup_memory(void* c)    { (void)c; /* S3.2: get_memory_size/data, SRAM/RTC load */ return 0; }
-static int  zero_ftv2_arm_crash(void* c)       { (void)c; /* S3.2: Crash_install (AFTER memory pointers valid) */ return 0; }
-static int  zero_ftv2_get_av_info(void* c)     { (void)c; /* S3.2: core.get_system_av_info */ return 0; }
-static int  zero_ftv2_set_controller(void* c)  { (void)c; /* S3.2: core.set_controller_port_device */ return 0; }
-static int  zero_ftv2_audio_init(void* c)      { (void)c; /* S3.2: SND_init MAIN-side (needs core.sample_rate) — F-A */ return 0; }
-static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* S3.2: SDL renderer MAIN-side — F-A */ return 0; }
-static int  zero_ftv2_resume(void* c)          { (void)c; /* S3.2: auto-resume unserialize (nonfatal) */ return 0; }
-
-// --- runtime ---
-static void zero_ftv2_run(void* c)             { (void)c; /* S3.3: core.run; emits via fc_emit_frame/_cmd/_barrier/_signal_dup */ }
-static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; (void)a; /* S3.3: State_write path */ return 0; }
-static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; (void)a; /* S3.3: State_read path */ return 0; }
-static void zero_ftv2_reset(void* c)           { (void)c; /* S3.3: core.reset */ }
-
-// --- teardown (oracle governs which are legal from the reached state) ---
-static void zero_ftv2_disarm_crash(void* c)    { (void)c; /* S3.2: Crash_uninstall */ }
-static void zero_ftv2_unload_game(void* c)     { (void)c; /* S3.2: core.unload_game */ }
-static void zero_ftv2_deinit(void* c)          { (void)c; /* S3.2: core.deinit */ }
-
-static const fc_vtable zero_ftv2_vt = {
-	.ctx             = NULL,
-	.get_system_info = zero_ftv2_get_system_info,
-	.init            = zero_ftv2_init,
-	.open_content    = zero_ftv2_open_content,
-	.load_game       = zero_ftv2_load_game,
-	.setup_memory    = zero_ftv2_setup_memory,
-	.arm_crash       = zero_ftv2_arm_crash,
-	.get_av_info     = zero_ftv2_get_av_info,
-	.set_controller  = zero_ftv2_set_controller,
-	.audio_init      = zero_ftv2_audio_init,
-	.renderer_init   = zero_ftv2_renderer_init,
-	.resume          = zero_ftv2_resume,
-	.run             = zero_ftv2_run,
-	.serialize       = zero_ftv2_serialize,
-	.unserialize     = zero_ftv2_unserialize,
-	.reset           = zero_ftv2_reset,
-	.disarm_crash    = zero_ftv2_disarm_crash,
-	.unload_game     = zero_ftv2_unload_game,
-	.deinit          = zero_ftv2_deinit,
-};
-
-// S3.2 entry point: spawns the CORE thread and runs the F31 bootstrap. NOT yet
-// called — the run loop still uses the old path under guard-ON until S3.3 routes
-// it through fc_pump. `used` forces the compiler/LTO to emit it (and transitively
-// the vtable, the stubs, and the fc_init/fc_bootstrap engine calls it references)
-// so the guard-ON build actually links framering.c + frontend_core.c under the
-// real -O3 -flto toolchain — proving the engines are integration-ready, not just
-// standalone-compilable. It has zero runtime effect (never called). Guard OFF
-// drops the whole block, so the shipped binary is unaffected.
-__attribute__((used))
-static fc_state zero_ftv2_bootstrap(void) {
-	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial; S3.4 depth-1 bring-up first */);
-	return fc_bootstrap(&zero_ftv2);
-}
+// NOTE (S3.2): the fc handle, filled vtable, and bootstrap entry are defined just
+// before main(), AFTER core/game/State_*/Core_* are declared (they reference those).
 #endif // ZERO_FRONTEND_THREADING_V2
 
 ///////////////////////////////////////
@@ -5229,6 +5170,106 @@ static void* coreThread(void *arg) {
 	}
 	pthread_exit(NULL);
 }
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+static fc zero_ftv2; // v2 engine handle (MAIN-side); the ring/state live inside it
+
+// S3.2 stub fills — the vtable now maps to the REAL minarch bootstrap/runtime calls,
+// decomposed from the monolithic Core_open/Core_init/Core_load per D58. These run on
+// the CORE thread (F23) except audio_init/renderer_init which fc_bootstrap direct-calls
+// on MAIN (F-A/D57). Filling them here proves the vtable<->minarch mapping typechecks
+// and links under the real -O3 -flto toolchain. They are NOT yet the runtime path: the
+// guard-ON run loop still uses the (single-threaded, ZERO_DISABLE-compiled-out) base
+// path — wiring main() to drive fc_boot_stage + fc_pump is the interactive S3.3/S3.4
+// device-in-the-loop step (frame-present / input-snapshot / env-result dataflow are
+// device-validatable; see docs/threading-v2-s33-reroute-plan.md).
+//
+// Result-passing decomposition (D58): get_system_info/get_av_info fill these shared
+// statics on CORE; MAIN consumes them after the stage (serialised: CORE quiescent
+// between stages, MAIN blocked during — race-free).
+static struct retro_system_info    zero_ftv2_info;     // filled by GET_INFO stage
+static struct retro_system_av_info zero_ftv2_av;       // filled by AV stage
+
+// --- bootstrap stages (return 0 ok / <0 fail / >0 core-requested shutdown) ---
+static int  zero_ftv2_get_system_info(void* c) { (void)c; core.get_system_info(&zero_ftv2_info); return 0; }
+static int  zero_ftv2_init(void* c)            { (void)c; core.init(); core.initialized = 1; return 0; }
+static int  zero_ftv2_open_content(void* c)    { (void)c; /* content/path prep is MAIN work (Game_open) interleaved by the caller; nothing on CORE here */ return 0; }
+static int  zero_ftv2_load_game(void* c) {
+	(void)c;
+	struct retro_game_info gi;
+	gi.path = game.tmp_path[0]?game.tmp_path:game.path;
+	gi.data = game.data;
+	gi.size = game.size;
+	return core.load_game(&gi) ? 0 : -1; // <0 => bootstrap stops; MAIN runs the load-fail cleanup
+}
+static int  zero_ftv2_setup_memory(void* c)    { (void)c; SRAM_read(); RTC_read(); return 0; }
+static int  zero_ftv2_arm_crash(void* c)       { (void)c; Crash_install(); return 0; }
+static int  zero_ftv2_get_av_info(void* c) {
+	(void)c;
+	core.get_system_av_info(&zero_ftv2_av);
+	core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+	core.fps = zero_ftv2_av.timing.fps;
+	core.sample_rate = zero_ftv2_av.timing.sample_rate;
+	double a = zero_ftv2_av.geometry.aspect_ratio;
+	if (a<=0) a = (double)zero_ftv2_av.geometry.base_width / zero_ftv2_av.geometry.base_height;
+	core.aspect_ratio = a;
+	return 0;
+}
+static int  zero_ftv2_set_controller(void* c)  { (void)c; core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD); return 0; }
+// audio_init/renderer_init run MAIN-side (D57): SND_init needs core.sample_rate (ready
+// after the AV stage); the SDL renderer is set up in PLAT_initVideo already, so renderer
+// init is a no-op here on this platform (watch-point: confirm on device).
+static int  zero_ftv2_audio_init(void* c)      { (void)c; SND_init(core.sample_rate, core.fps); return 0; }
+static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer already up (PLAT_initVideo); MAIN-side no-op */ return 0; }
+static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
+
+// --- runtime ---
+static void zero_ftv2_run(void* c)             { (void)c; core.run(); /* video_refresh emits via fc_emit_frame — routed in S3.3 */ }
+static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
+static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
+static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }
+
+// --- teardown (oracle governs which are legal from the reached state) ---
+static void zero_ftv2_disarm_crash(void* c)    { (void)c; /* Crash handler is signal-based; no explicit uninstall in this tree — no-op */ }
+static void zero_ftv2_unload_game(void* c)     { (void)c; core.unload_game(); }
+static void zero_ftv2_deinit(void* c)          { (void)c; core.deinit(); core.initialized = 0; }
+
+static const fc_vtable zero_ftv2_vt = {
+	.ctx             = NULL,
+	.get_system_info = zero_ftv2_get_system_info,
+	.init            = zero_ftv2_init,
+	.open_content    = zero_ftv2_open_content,
+	.load_game       = zero_ftv2_load_game,
+	.setup_memory    = zero_ftv2_setup_memory,
+	.arm_crash       = zero_ftv2_arm_crash,
+	.get_av_info     = zero_ftv2_get_av_info,
+	.set_controller  = zero_ftv2_set_controller,
+	.audio_init      = zero_ftv2_audio_init,
+	.renderer_init   = zero_ftv2_renderer_init,
+	.resume          = zero_ftv2_resume,
+	.run             = zero_ftv2_run,
+	.serialize       = zero_ftv2_serialize,
+	.unserialize     = zero_ftv2_unserialize,
+	.reset           = zero_ftv2_reset,
+	.disarm_crash    = zero_ftv2_disarm_crash,
+	.unload_game     = zero_ftv2_unload_game,
+	.deinit          = zero_ftv2_deinit,
+};
+
+// S3.2 entry point: spawns the CORE thread and runs the F31 bootstrap. NOT yet
+// called — the run loop still uses the old path under guard-ON until S3.3 routes
+// it through fc_pump. `used` forces the compiler/LTO to emit it (and transitively
+// the vtable, the stubs, and the fc_init/fc_bootstrap engine calls it references)
+// so the guard-ON build actually links framering.c + frontend_core.c under the
+// real -O3 -flto toolchain — proving the engines are integration-ready, not just
+// standalone-compilable. It has zero runtime effect (never called). Guard OFF
+// drops the whole block, so the shipped binary is unaffected.
+__attribute__((used))
+static fc_state zero_ftv2_bootstrap(void) {
+	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial; S3.4 depth-1 bring-up first */);
+	return fc_bootstrap(&zero_ftv2);
+}
+#endif // ZERO_FRONTEND_THREADING_V2
 
 int main(int argc , char* argv[]) {
 	LOG_info("MinArch\n");
