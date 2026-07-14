@@ -1269,7 +1269,26 @@ static int SND_ringPct(void) {
 // catch-up can never engage (correct: FF is never audio-starved).
 static int snd_ff_nonblock = 0;
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
-void SND_setFastForward(int on) { snd_ff_nonblock = on ? 1 : 0; }
+void SND_setFastForward(int on) {
+	int next = on ? 1 : 0;
+	if (next == snd_ff_nonblock) return; // no transition
+	snd_ff_nonblock = next;
+	// Clean the FF->normal handoff (borrowed from NextUI's occupancy pause-management,
+	// kept lean — no adaptive resampler): on LEAVING fast-forward the ring holds
+	// temporally-compressed FF audio whose drop-induced discontinuities are audible as
+	// a brief crackle as they drain. Discard that stale audio and re-prime the DAC
+	// through the existing ~40% prefill gate: a short clean silence instead of trailing
+	// chop. (Entering FF needs nothing — 4x production floods the ring instantly.)
+	if (!on && snd.initialized && snd.buffer && snd.frame_count>0) {
+		SDL_LockAudio();
+		snd.frame_out = snd.frame_in;                                        // empty the ring
+		snd.frame_filled = (snd.frame_in + snd.frame_count - 1) % snd.frame_count;
+		snd.prefilling = 1;                                                  // gate DAC until ~40% refill
+		SDL_PauseAudio(1);
+		SND_publishOccupancy();
+		SDL_UnlockAudio();
+	}
+}
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
