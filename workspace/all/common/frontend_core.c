@@ -138,7 +138,19 @@ fc_state fc_bootstrap(fc* f) {
 		FC_OP_RENDERER, FC_OP_RESUME,
 	};
 	for (unsigned i = 0; i < sizeof(seq)/sizeof(seq[0]); i++) {
-		fr_service(&f->fr, (uint64_t)seq[i], fc_noop_cb, NULL);
+		fc_op op = seq[i];
+		// F-A resolution: FC_OP_AUDIO / FC_OP_RENDERER are SDL init (SND_init /
+		// SDL renderer) which MUST run on the MAIN/window thread, not CORE. fc_bootstrap
+		// runs on MAIN, and between service ops the CORE thread is QUIESCENT — parked in
+		// fr_core_service_next, blocked on its condvar, touching nothing these stages
+		// touch — so MAIN calls dispatch_service directly for identical state/boot_failed
+		// semantics with zero concurrent CORE access. (The previous FC_OP av-info stage
+		// has completed, so core.sample_rate is available to audio_init.) These stages
+		// emit no ring products, so no drain is owed. See DECISIONS D57.
+		if (op == FC_OP_AUDIO || op == FC_OP_RENDERER)
+			dispatch_service(f, (uint64_t)op);          // MAIN-side, CORE idle
+		else
+			fr_service(&f->fr, (uint64_t)op, fc_noop_cb, NULL); // CORE-side
 		if (atomic_load_explicit(&f->boot_failed, memory_order_acquire))
 			return fc_get_state(f);   // caller invokes fc_teardown from here
 	}

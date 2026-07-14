@@ -820,3 +820,19 @@ unknown) was deemed riskier than shipping layers 1+2 — deferred. Acceptance on
 hardware: SCHED_FIFO 99 verified, SIGTERM cancel clean, budget-expiry force-reboot
 confirmed by uptime reset. Residual honesty: a wedge deeper than both layers still
 needs POWER; the next real marginal-voltage freeze is the live-fire validation.
+
+## D57 — threading v2 F-A: SDL-affine bootstrap stages run MAIN-side (2026-07-14)
+The frontend_core F31 bootstrap machine dispatches every stage to the CORE thread via
+fr_service. But FC_OP_AUDIO / FC_OP_RENDERER are SDL init (SND_init, SDL renderer) which
+MUST run on the MAIN/window thread. Resolution: fc_bootstrap runs on MAIN and, for those
+two stages only, calls the dispatcher (dispatch_service) DIRECTLY on MAIN instead of
+enqueuing to CORE. This is race-free by construction — between bootstrap service ops the
+CORE thread is QUIESCENT (parked in fr_core_service_next, blocked on its condvar), so
+there is no concurrent CORE access to the SDL/audio state these stages touch; and the
+FC_OP_AV stage has already completed, so core.sample_rate is available to audio_init.
+State/boot_failed/cleanup-oracle semantics are identical because the same dispatch_service
+runs the stage — only the thread differs. The stages emit no ring products, so no drain is
+owed. Proven: the adversarial fake core now asserts thread affinity (audio/renderer see
+the MAIN tid, all other stages a CORE tid) with bootstrap-failure coverage still at every
+stage including the two MAIN-side ones; TSan/ASan silent. This unblocks the minarch S3.2
+device bring-up (which remains interactive Dan+Brick work).

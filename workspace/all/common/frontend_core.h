@@ -50,8 +50,8 @@ typedef struct fc_vtable {
 	int  (*arm_crash)(void* c);       // arm emergency-save AFTER memory pointers valid
 	int  (*get_av_info)(void* c);     // retro_get_system_av_info
 	int  (*set_controller)(void* c);
-	int  (*audio_init)(void* c);      // NOTE: SDL-side in real minarch — see D-log draft
-	int  (*renderer_init)(void* c);   // NOTE: SDL-side in real minarch — see D-log draft
+	int  (*audio_init)(void* c);      // SDL-side: RUNS ON MAIN (fc_bootstrap direct-calls it while CORE is quiescent) — D57
+	int  (*renderer_init)(void* c);   // SDL-side: RUNS ON MAIN (fc_bootstrap direct-calls it while CORE is quiescent) — D57
 	int  (*resume)(void* c);          // auto-resume unserialize; nonfatal by policy
 
 	// --- runtime ---
