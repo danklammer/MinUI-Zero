@@ -54,10 +54,17 @@
 // ============================================================================
 #include "frontend_core.h" // pulls framering.h
 
+// v2 engine handle + running flag declared HERE (early) because video_refresh_callback —
+// far above main() — references them for the S3.3 frame divert. The rest of the engine
+// wiring (vtable, stubs, drain cb) lives in the block just before main() where core/game/
+// State_* are in scope.
+static fc zero_ftv2;          // engine handle (MAIN-side); ring/state live inside it
+static int zero_ftv2_running; // 0 until fc_boot_finish; gates the frame divert (WP1)
+
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
 static const char zero_ftv2_fingerprint[] __attribute__((used)) =
-	"threading-v2 S3.2 (guard-ON; vtable filled+relocated, compile-validated; run loop not yet rerouted)";
+	"threading-v2 S3.3 (guard-ON; run loop rerouted through fc_pump; depth-1 candidate for device bring-up)";
 
 // NOTE (S3.2): the fc handle, filled vtable, and bootstrap entry are defined just
 // before main(), AFTER core/game/State_*/Core_* are declared (they reference those).
@@ -3277,8 +3284,15 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// LOG_info("video_refresh_callback: %ix%i@%i %ix%i@%i\n",width,height,pitch,screen->w,screen->h,screen->pitch);
 	
 	GFX_blitRenderer(&renderer);
-	
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// WP1: under v2 the CORE thread has blitted into screen->pixels; signal MAIN to flip
+	// (zero_ftv2_drain) rather than flipping from the CORE thread.
+	if (zero_ftv2_running) fc_emit_frame(&zero_ftv2, 0);
+	else if (!thread_video) GFX_flip(screen);
+#else
 	if (!thread_video) GFX_flip(screen);
+#endif
 	last_flip_time = SDL_GetTicks();
 }
 static void video_refresh_callback(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -5172,7 +5186,7 @@ static void* coreThread(void *arg) {
 }
 
 #ifdef ZERO_FRONTEND_THREADING_V2
-static fc zero_ftv2; // v2 engine handle (MAIN-side); the ring/state live inside it
+// zero_ftv2 handle declared early (near the frontend_core.h include) for video_refresh_callback
 
 // S3.2 stub fills — the vtable now maps to the REAL minarch bootstrap/runtime calls,
 // decomposed from the monolithic Core_open/Core_init/Core_load per D58. These run on
@@ -5256,6 +5270,20 @@ static const fc_vtable zero_ftv2_vt = {
 	.deinit          = zero_ftv2_deinit,
 };
 
+// S3.3 run-loop reroute state. zero_ftv2_running is 0 until fc_boot_finish; it gates the
+// frame divert. Depth-1 is SERIAL: the CORE thread runs core.run() -> video_refresh_callback
+// (which blits into screen->pixels then fc_emit_frame), then RUN_DONE; MAIN drains here and
+// flips. CORE produces THEN MAIN drains — no overlap — so the shared screen surface is
+// race-free at depth 1. (Depth-2 will need a real frame slot; that's later.)
+// zero_ftv2_running declared early (near the frontend_core.h include) for video_refresh_callback
+static int zero_ftv2_inited = 0;  // fc_init called (CORE thread spawned) — gates teardown
+static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
+	(void)ctx;
+	if (ev->kind == FR_EV_FRAME) GFX_flip(screen);
+	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in S3.3b; ignoring it is harmless for
+	// a depth-1 first boot on a fixed-geometry SNES title (watch-point).
+}
+
 // S3.2 entry point: spawns the CORE thread and runs the F31 bootstrap. NOT yet
 // called — the run loop still uses the old path under guard-ON until S3.3 routes
 // it through fc_pump. `used` forces the compiler/LTO to emit it (and transitively
@@ -5321,8 +5349,19 @@ int main(int argc , char* argv[]) {
 	Config_readOptions(); // cores with boot logo option (eg. gb) need to load options early
 	setOverclock(overclock);
 	GFX_setVsync(prevent_tearing);
-	
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// v2 bootstrap: Core_open (above) did dlopen/dlsym/get_info/paths/register on MAIN
+	// (get_system_info on MAIN is the one F23 deviation for depth-1 first boot — read-only
+	// info query, lowest TLS risk; the F23-critical init/load/run run on the CORE thread).
+	// Drive the remaining stages through fc_boot_stage (D57/D58), interleaving MAIN work.
+	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial */);
+	zero_ftv2_inited = 1;
+	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
+	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+#else
 	Core_init();
+#endif
 	
 	// TODO: find a better place to do this
 	// mixing static and loaded data is messy
@@ -5330,6 +5369,15 @@ int main(int argc , char* argv[]) {
 	// ah, because it's defined before options_menu...
 	options_menu.items[1].desc = (char*)core.version;
 	
+#ifdef ZERO_FRONTEND_THREADING_V2
+	fc_boot_stage(&zero_ftv2, FC_OP_LOAD);   // load_game returns -1 on failure (fc_boot_failed set)
+	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+	fc_boot_stage(&zero_ftv2, FC_OP_MEMORY);      // SRAM_read + RTC_read
+	fc_boot_stage(&zero_ftv2, FC_OP_ARM_CRASH);   // Crash_install (pointers valid now)
+	fc_boot_stage(&zero_ftv2, FC_OP_AV);          // get_system_av_info -> core.fps/sample_rate/aspect
+	fc_boot_stage(&zero_ftv2, FC_OP_CONTROLLER);  // set_controller_port_device (after av, matches Core_load order)
+	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+#else
 	if (!Core_load()) {
 		// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
 		// run, but an initialized core still owes retro_deinit before dlclose: call it
@@ -5338,6 +5386,7 @@ int main(int argc , char* argv[]) {
 		core.initialized = 0;
 		goto finish;
 	}
+#endif
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
@@ -5350,11 +5399,22 @@ int main(int argc , char* argv[]) {
 	}
 #endif
 	Config_free();
-		
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+	fc_boot_stage(&zero_ftv2, FC_OP_AUDIO);    // = SND_init MAIN-side, D57 (sample_rate ready from AV)
+	fc_boot_stage(&zero_ftv2, FC_OP_RENDERER); // MAIN-side no-op on this platform (SDL renderer already up)
+#else
 	SND_init(core.sample_rate, core.fps);
+#endif
 	InitSettings(); // after we initialize audio
 	Menu_init();
+#ifdef ZERO_FRONTEND_THREADING_V2
+	fc_boot_stage(&zero_ftv2, FC_OP_RESUME);   // = State_resume (nonfatal)
+	fc_boot_finish(&zero_ftv2);                // QUIESCENT -> RUNNING; grants may now flow
+	zero_ftv2_running = 1;
+#else
 	State_resume();
+#endif
 	Menu_initState(); // make ready for state shortcuts
 	
 	{
@@ -5414,7 +5474,14 @@ int main(int argc , char* argv[]) {
 		GFX_startFrame();
 		
 		if (!thread_video) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// depth-1: grant one epoch (CORE runs core.run + emits the frame), drain +
+			// present on MAIN. snap={0}: input globals are MAIN-set and read by CORE with
+			// no overlap in serial mode (WP2), so the per-epoch snapshot is unused at depth 1.
+			{ uint64_t snap[4] = {0}; fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL); }
+#else
 			core.run();
+#endif
 			limitFF();
 			trackFPS();
 		}
@@ -5464,7 +5531,14 @@ int main(int argc , char* argv[]) {
 				LOG_info("auto-thread: trial aborted (menu opened mid-window)\n");
 			}
 			else if (thread_auto && ta_phase == 0) ta_phase_at = 0; // restart observation clock
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// park the CORE thread (drain pending frames) while the menu runs, release after
+			if (zero_ftv2_running) fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+#endif
 			Menu_loop();
+#ifdef ZERO_FRONTEND_THREADING_V2
+			if (zero_ftv2_running) fc_release(&zero_ftv2);
+#endif
 			// reset the rate window: a second that spans the menu would read as a false
 			// generation-rate drop and spuriously climb the governor on menu exit.
 			// (threaded mode resets before the resume signal instead — the core owns
@@ -5830,8 +5904,16 @@ finish:
 
 	Game_close();
 	Core_unload();
-	
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// v2 teardown: fc_teardown runs unload_game + deinit on the CORE thread (state-keyed
+	// cleanup oracle) then joins it — replacing Core_quit, which would call them from MAIN
+	// (the D52 dlclose-SIGSEGV class). Core_close (dlclose) stays on MAIN.
+	if (zero_ftv2_inited) fc_teardown(&zero_ftv2);
+	else Core_quit();
+#else
 	Core_quit();
+#endif
 	Core_close();
 	
 	Config_quit();
