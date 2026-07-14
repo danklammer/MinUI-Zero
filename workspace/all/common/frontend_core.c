@@ -131,6 +131,44 @@ void fc_init(fc* f, const fc_vtable* vt, uint32_t depth) {
 	f->thread_started = 1;
 }
 
+// Drive ONE bootstrap stage. Used both by fc_bootstrap (the monolithic loop) and by
+// callers that must interleave their own MAIN-thread frontend work between core stages
+// (real minarch: get_system_info's result drives MAIN dir setup; Config/Input/Menu/SND
+// run between LOAD and CONTROLLER — see DECISIONS D58). The CALLER owns ordering.
+//
+// F-A resolution (D57): FC_OP_AUDIO / FC_OP_RENDERER are SDL init (SND_init / SDL
+// renderer) which MUST run on the MAIN/window thread, not CORE. fc_boot_stage runs on
+// MAIN, and between service ops the CORE thread is QUIESCENT — parked in
+// fr_core_service_next, blocked on its condvar, touching nothing these stages touch — so
+// MAIN calls dispatch_service directly for identical state/boot_failed semantics with
+// zero concurrent CORE access. (The AV stage must have run first, so core.sample_rate is
+// available to audio_init — the caller's responsibility per the documented order.) These
+// stages emit no ring products, so no drain is owed. All other stages run their core.*
+// op on the CORE thread via fr_service.
+//
+// If boot already failed, this is a no-op (stay put): the caller should tear down, not
+// keep issuing stages. Returns the state reached; check fc_boot_failed() after.
+fc_state fc_boot_stage(fc* f, fc_op op) {
+	if (atomic_load_explicit(&f->boot_failed, memory_order_acquire))
+		return fc_get_state(f);
+	if (op == FC_OP_AUDIO || op == FC_OP_RENDERER)
+		dispatch_service(f, (uint64_t)op);                  // MAIN-side, CORE idle (D57)
+	else
+		fr_service(&f->fr, (uint64_t)op, fc_noop_cb, NULL); // CORE-side
+	return fc_get_state(f);
+}
+
+// Flip QUIESCENT -> RUNNING after the LAST bootstrap stage succeeded; grants may now
+// flow. No-op if boot_failed (the caller should fc_teardown instead) so a mis-sequenced
+// call can never release a failed ring. Idempotent-safe is NOT claimed: call exactly once
+// after a clean stage run.
+fc_state fc_boot_finish(fc* f) {
+	if (atomic_load_explicit(&f->boot_failed, memory_order_acquire))
+		return fc_get_state(f);
+	fr_release(&f->fr);     // QUIESCENT -> RUNNING; grants may now flow
+	return fc_get_state(f); // FC_RESUME_APPLIED; becomes FC_RUNNING at first pump
+}
+
 fc_state fc_bootstrap(fc* f) {
 	static const fc_op seq[] = {
 		FC_OP_GET_INFO, FC_OP_INIT, FC_OP_OPEN, FC_OP_LOAD, FC_OP_MEMORY,
@@ -138,24 +176,11 @@ fc_state fc_bootstrap(fc* f) {
 		FC_OP_RENDERER, FC_OP_RESUME,
 	};
 	for (unsigned i = 0; i < sizeof(seq)/sizeof(seq[0]); i++) {
-		fc_op op = seq[i];
-		// F-A resolution: FC_OP_AUDIO / FC_OP_RENDERER are SDL init (SND_init /
-		// SDL renderer) which MUST run on the MAIN/window thread, not CORE. fc_bootstrap
-		// runs on MAIN, and between service ops the CORE thread is QUIESCENT — parked in
-		// fr_core_service_next, blocked on its condvar, touching nothing these stages
-		// touch — so MAIN calls dispatch_service directly for identical state/boot_failed
-		// semantics with zero concurrent CORE access. (The previous FC_OP av-info stage
-		// has completed, so core.sample_rate is available to audio_init.) These stages
-		// emit no ring products, so no drain is owed. See DECISIONS D57.
-		if (op == FC_OP_AUDIO || op == FC_OP_RENDERER)
-			dispatch_service(f, (uint64_t)op);          // MAIN-side, CORE idle
-		else
-			fr_service(&f->fr, (uint64_t)op, fc_noop_cb, NULL); // CORE-side
+		fc_boot_stage(f, seq[i]);
 		if (atomic_load_explicit(&f->boot_failed, memory_order_acquire))
 			return fc_get_state(f);   // caller invokes fc_teardown from here
 	}
-	fr_release(&f->fr);   // QUIESCENT -> RUNNING; grants may now flow
-	return fc_get_state(f); // FC_RESUME_APPLIED; becomes FC_RUNNING at first pump
+	return fc_boot_finish(f);
 }
 
 void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx) {

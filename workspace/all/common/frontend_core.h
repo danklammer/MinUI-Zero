@@ -92,10 +92,30 @@ typedef struct fc {
 // Initialise, spawn the CORE thread (born QUIESCENT), depth = 1 (serial) or 2.
 void fc_init(fc* f, const fc_vtable* vt, uint32_t depth);
 
-// Run the F31 bootstrap: issues each stage as a service op in order, stops at the
-// first failure/shutdown. Returns the highest state reached; on success == FC_RUNNING
-// (and the ring has been released to RUNNING, ready for grants).
+// Run the F31 bootstrap monolithically: issues each stage in order, stops at the first
+// failure/shutdown, flips to RUNNING on success. Returns the highest state reached. The
+// host harness uses this; real minarch uses fc_boot_stage below (it must interleave its
+// own MAIN-thread frontend work between stages).
 fc_state fc_bootstrap(fc* f);
+
+// Drive ONE bootstrap stage, for callers that interleave MAIN-thread frontend work
+// (directory setup from get_system_info's result, Config/Input/Menu/SND_init) between
+// core stages — which real minarch requires (DECISIONS D58). Dispatches the core.* op on
+// the CORE thread, EXCEPT FC_OP_AUDIO/FC_OP_RENDERER which run MAIN-side (D57 F-A). The
+// CALLER owns ordering; the required order is:
+//   GET_INFO -> INIT -> OPEN -> LOAD -> MEMORY -> ARM_CRASH -> AV -> CONTROLLER
+//   -> AUDIO -> RENDERER -> RESUME
+// After each stage check fc_boot_failed(): if set, call fc_teardown() (do NOT continue or
+// finish). After ALL stages succeed, call fc_boot_finish() once to flip QUIESCENT ->
+// RUNNING. Returns the state reached.
+fc_state fc_boot_stage(fc* f, fc_op op);
+fc_state fc_boot_finish(fc* f);
+
+// True if a bootstrap stage failed or the core requested shutdown. Check after each
+// fc_boot_stage(); on true, tear down (do not finish/continue).
+static inline int fc_boot_failed(const fc* f) {
+	return atomic_load_explicit((_Atomic int*)&f->boot_failed, memory_order_acquire);
+}
 
 // One pacer tick in RUNNING: issue a grant if a credit is free, then drain+present.
 // cb receives applied frames/commands in order (MAIN applies them).
