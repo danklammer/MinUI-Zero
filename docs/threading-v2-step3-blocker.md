@@ -84,3 +84,49 @@ on hardware before the next — or as a sequence of narrowly-scoped forks, one p
 with a device-observation gate between them. S3.1 (guard-wall scaffold) is the safe, mechanical
 first commit and can be done anytime; S3.2+ want eyes on the device. The measurement finale
 still needs Dan's DKC/Yoshi/Mario RPG save-state scenes.
+
+---
+
+## S3.2 fork addendum (code-grounded confirmation of the boundary)
+
+A fork was dispatched to "fill the bootstrap stubs and prove the new engine BOOTS AND RUNS
+a game at depth-1." Reading the real code before touching anything (no build-deploy-fix
+cycles spent) confirmed the directive's milestone spans doc-S3.2+S3.3+S3.4 and cannot be
+fork-completed. Specifics, with line numbers:
+
+1. The parent milestone = S3.3 + S3.4, not S3.2. "Boots and runs a game" requires routing
+   the always-compiled run loop through fc_pump (doc-S3.3, the #ifndef-wall of the old
+   run-loop body) and iterative on-device bring-up (doc-S3.4, explicitly "the first rung a
+   fork cannot do fire-and-forget"). Unchanged from the three prior STOP-reports.
+
+2. Even doc-S3.2 (compile-only bootstrap fill) is not a mechanical fill — it is a
+   decomposition of shared functions. The fc_vtable wants fine-grained F31 stages
+   (get_system_info / init / load_game / setup_memory / arm_crash / get_av_info as separate
+   ops). Real minarch bundles them coarsely:
+   - Core_open (minarch.c:3392) = dlopen + dlsym-all + set_environment + get_system_info +
+     callback registration, in one function.
+   - Core_load (:3482) = load_game + SRAM_read/RTC_read (setup_memory) + Crash_install
+     (arm_crash, :3498) + av_info, in one function.
+   - Boot order in main (:5271-5316): Core_open -> Game_open -> Core_init -> Core_load ->
+     SND_init(MAIN, needs core.sample_rate) -> State_resume.
+   Filling the fine stubs means splitting these bundles. The F31-critical orderings
+   (arm_crash ONLY after memory pointers valid; get_av_info after load_game; SND_init
+   MAIN-side after Core_load per finding F-A) are exactly what the split must preserve — and
+   a mis-split COMPILES CLEAN but breaks only when run (wrong crash-arm point = torn
+   emergency save; wrong av order = bad geometry). Compile is not validation here; only S3.4
+   device bring-up is. Committing a filled-but-never-run bootstrap would be unvalidated code
+   masquerading as done — the inverse of the D55 "dead code hid a live bug" lesson.
+
+3. Additional structural note: the S3.1 skeleton block sits at minarch.c:25 (after includes),
+   before every function its stubs must call (Game_open:370, SRAM_read:562, State_resume:841,
+   Core_*:3392+, SND_init). The S3.2/S3.3 fill must relocate the guard-ON block below those
+   definitions (or forward-declare) — a further reason it is a deliberate edit, not a stub
+   swap.
+
+Fork outcome: no minarch.c changes (byte-identical trivially held), no device work (nothing
+to validate without the run-loop reroute). This addendum is the deliverable. Recommendation
+unchanged and reinforced: S3.2->S3.4 is one continuous device-in-the-loop session —
+decompose the bootstrap, wire fc_pump, bring up depth-1 on the Brick, iterating on hardware —
+best done interactively with Dan + the Brick, not as a fork. The engines
+(framering/frontend_core) and the fine-grained vtable are ready; the surgery is the
+coarse<->fine bootstrap split + run-loop reroute, both device-validatable only.
