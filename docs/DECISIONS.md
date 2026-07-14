@@ -836,3 +836,34 @@ owed. Proven: the adversarial fake core now asserts thread affinity (audio/rende
 the MAIN tid, all other stages a CORE tid) with bootstrap-failure coverage still at every
 stage including the two MAIN-side ones; TSan/ASan silent. This unblocks the minarch S3.2
 device bring-up (which remains interactive Dan+Brick work).
+
+## D58 — fc_boot_stage: MAIN drives bootstrap stage-by-stage (2026-07-14)
+fc_bootstrap ran the eleven F31 stages as one back-to-back sequence. Real minarch's
+bootstrap is result-consuming and frontend-interleaved: get_system_info's result drives
+MAIN directory setup (core.name/paths/mkdir); Config_load/readOptions, Input_init,
+SND_init, Menu_init, State_resume run on MAIN between the core stages; and the controller
+device comes from Config_readControls state, not a standalone call (see
+docs/threading-v2-s32-bootstrap-finding.md). The monolith had nowhere to run that
+interleaved MAIN work and no path to hand a stage result back to MAIN. Resolution: expose
+`fc_boot_stage(fc*, fc_op)` — drive ONE stage (core.* on CORE via fr_service; audio/renderer
+MAIN-side per D57) — plus `fc_boot_finish(fc*)` for the explicit QUIESCENT->RUNNING flip and
+`fc_boot_failed(fc*)` for the per-stage check. fc_bootstrap becomes a thin loop over them,
+so the monolithic path (and the host harness's default) is behaviorally unchanged. minarch's
+guard-ON bootstrap now interleaves its MAIN frontend work between fc_boot_stage calls; the
+required stage order (GET_INFO→INIT→OPEN→LOAD→MEMORY→ARM_CRASH→AV→CONTROLLER→AUDIO→RENDERER
+→RESUME) is the caller's responsibility, documented in the header. Safe because stages are
+serialized: the CORE thread is QUIESCENT between stages and MAIN blocks during each
+(fc_boot_stage waits for the service ack), so shared core/game-struct result-passing is
+race-free; F23 (every core.* on the one CORE thread) and F-A/D57 (SDL/SND on MAIN) both
+hold. Validated: the fake core now drives bootstrap BOTH ways (monolithic and stage-by-
+stage with simulated MAIN work interleaved), asserting the same cleanup-oracle state at
+every failure injection, the thread-affinity oracle, and that RUNNING never flips before
+fc_boot_finish (INV9). TSan silent 792 sessions, ASan silent 1968, framering/governor/
+telemetry/forbidden-globals all pass. Together with D57 this fully unblocks the interactive
+minarch S3.2 depth-1 bring-up: guard-ON main() now has a clean checklist (create CORE thread;
+MAIN dlopen/dlsym+register; fc_boot_stage GET_INFO; MAIN dir setup + Game_open +
+Config_load/readOptions; fc_boot_stage INIT; MAIN overclock/vsync; fc_boot_stage LOAD, MEMORY,
+ARM_CRASH, AV; MAIN Input_init + Config_readControls; fc_boot_stage CONTROLLER; MAIN SND_init +
+renderer (F-A) via AUDIO/RENDERER stages + Menu_init; fc_boot_stage RESUME; fc_boot_finish;
+run loop drives fc_pump). The bring-up itself (run-loop reroute + on-device iteration)
+remains interactive, not forkable.
