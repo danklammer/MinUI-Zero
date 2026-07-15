@@ -27,6 +27,7 @@ static _Atomic uint64_t g_snap_checks = 0;  // INV16: epochs whose input snapsho
 static _Atomic uint64_t g_slot_checks = 0;  // INV17: epochs whose slot==gen%depth fk_run verified (coverage guard)
 static _Atomic uint64_t g_pool_retires = 0; // INV18/19: frame buffers retired via the D-a2 hook (coverage guard)
 static _Atomic uint64_t g_svc_cmd_emitted = 0; // INV21: commands/barriers emitted from a bootstrap service (D-b routing)
+static _Atomic uint64_t g_teardown_emits = 0;  // INV22: deinit-time emits drained by fc_teardown's loop (D-b2)
 
 // D-a2 MAIN-side retirement: framering calls this once per published frame on every drain
 // path (present, DISCARD-skip, park). Returns the buffer to the (modeled) pool.
@@ -187,7 +188,15 @@ static int  fk_unserialize(void* c, uint64_t a){ (void)a; return (rng_below(&((f
 static void fk_reset      (void* c){ (void)c; }
 static void fk_disarm     (void* c){ fakecore* fk=c; fk->disarm_called=1; }
 static void fk_unload     (void* c){ fakecore* fk=c; fk->unload_called=1; }
-static void fk_deinit     (void* c){ fakecore* fk=c; fk->deinit_called=1; }
+static void fk_deinit     (void* c){
+	fakecore* fk=c; fk->deinit_called=1;
+	// D-b2: a core's deinit can emit env callbacks (FCP_TEARDOWN_SVC -> service stream). Emit
+	// MORE than the (tiny -DFR_SVC_STREAM=4) service stream holds, so fr_core_service_emit
+	// BLOCKS and only completes if fc_teardown keeps draining until STOPPED. Missing that
+	// drain => CORE stuck emitting + MAIN in join = deadlock (fail-closed abort).
+	for (int i=0;i<6;i++) fc_emit_cmd(fk->f, FR_EVF_PERSISTENT, 0xDEAD00 + i);
+	atomic_fetch_add(&g_teardown_emits, 1);
+}
 static void fk_retire(void* ctx, uint64_t payload){
 	(void)payload; fakecore* fk = ctx;
 	atomic_fetch_sub(&fk->pool_outstanding, 1);  // MAIN returns the published buffer to the pool
@@ -458,6 +467,10 @@ int main(int argc, char** argv){
 	// stream. Correctness is proven by the RUN of these tests NOT aborting on fr_core_emit's
 	// `in_run` assert (mis-route) and NOT hanging (broken service barrier); this is coverage.
 	INV(21, atomic_load(&g_svc_cmd_emitted) > 0, "bootstrap-service command routing never exercised");
+	// INV22 (D-b2): deinit-time service emits (more than the stream holds) were drained by
+	// fc_teardown's until-STOPPED loop. A missing drain deadlocks (fail-closed), so reaching
+	// here with this > 0 proves the teardown drain unblocks a cleanup that overflows the stream.
+	INV(22, atomic_load(&g_teardown_emits) > 0, "teardown-drain (D-b2) never exercised");
 
 	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
 	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);

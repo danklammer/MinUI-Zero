@@ -284,6 +284,18 @@ void fc_teardown(fc* f) {
 	// state-keyed cleanup oracle, then join. Never join/free out of order.
 	fr_park(&f->fr, fc_noop_cb, NULL, FR_DRAIN_NORMAL);
 	fr_stop(&f->fr);
+	// D-b2: CORE runs terminal_cleanup (FCP_TEARDOWN_SVC) before exiting; a core's unload/
+	// deinit may emit env callbacks, which route to the SERVICE stream (D-b). If MAIN stops
+	// draining at fr_stop, those products leak and — once they fill the service stream —
+	// fr_core_service_emit blocks forever (CORE stuck, MAIN in join = deadlock). So MAIN
+	// keeps draining until CORE publishes STOPPED (bounded 100ms ticks; STOPPED is release-
+	// published after the last emit, so the final drain sees everything). terminal_cleanup
+	// still runs exactly ONCE, on CORE — no cleanup service, no double unload/deinit.
+	while (fr_get_state(&f->fr) != FR_STOPPED) {
+		fr_drain(&f->fr, fc_noop_cb, NULL, FR_DRAIN_NORMAL);
+		fr_wait_events(&f->fr);
+	}
+	fr_drain(&f->fr, fc_noop_cb, NULL, FR_DRAIN_NORMAL);  // drain products published just before STOPPED
 	pthread_join(f->core_thread, NULL);
 	f->thread_started = 0;
 	fr_destroy(&f->fr);
