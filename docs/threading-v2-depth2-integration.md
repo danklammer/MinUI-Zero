@@ -5,7 +5,115 @@ device time. Depth-1 is COMPLETE and on-device-validated (D52–D59); WP2 (the `
 delivery contract) is committed (D60). This doc covers the **remaining** work: turning the serial
 depth-1 rendezvous into the depth-2 **pipeline** that is the actual energy win.
 
-## What is already reviewed vs. what is new (where to aim the review)
+---
+
+# REVISION 2 — post-Codex adversarial review (2026-07-15)
+
+Codex reviewed rev-1 at commit b2858858 and returned 13 findings (8×P0, 5×P1). Spot-checked
+against source and accepted: F1 (CORE calls `GFX_clearAll` + mutates global `renderer` on resize,
+minarch.c:3196+), F2 (`PWR_update → Menu_beforeSleep → State_autosave` enters the core, 1959→3604),
+F6 (NULL early-return, no `fc_signal_dup`, 3305) — all as cited. Rev-1 was frame+input scoped and
+under-specified the command channel, the sleep/power core-entry, the depth-2 pacer, the governor
+gen-signal, and frame-descriptor immutability. **This revision supersedes rev-1 where noted; the
+rev-1 body is retained below for the review trail.**
+
+## Corrected architecture principle: CORE is a PURE PRODUCER
+
+The CORE thread does exactly three things per epoch: (1) run `core.run()`, (2) **copy** each frame
+into a credit-owned buffer and publish an **immutable descriptor**, (3) emit audio + commands into
+the ring. It applies **nothing**. Every application of state — renderer/scaler selection,
+`GFX_resize`/`GFX_clearAll`, `renderer.dst`, HUD, geometry/AV/variables, present, save-pairing —
+happens on **MAIN**, in ring order. Rev-1's shortcut (CORE did the HUD blit + renderer setup +
+resize) was the root of F1 and F5. This is the v2.4 contract taken literally.
+
+## Work packages, revised (each finding folded in)
+
+- **WP-A — input tick to MAIN + snapshots + service routing.**
+  - Split `input_poll_callback` → `input_tick_main()` on MAIN; registered libretro callback is a
+    no-op when `on_core`. (rev-1)
+  - **F2 sleep flow:** `PWR_update` is NOT a plain MAIN move. MAIN detects the sleep request, then
+    **park → drain → run autosave/memory-flush as CORE services → close audio only after park ack
+    → stay QUIESCENT through sleep → resume audio on MAIN → release CORE.**
+  - **F11 control snapshots:** carry `fast_forward` (and other per-epoch control flags) in the grant
+    snapshot; do NOT read them live on CORE. Pack analog axes through `uint16_t` casts —
+    left-shifting a negative signed axis is UB.
+  - **F3 pacer + input latching:** MAIN must not free-spin when the pipeline is full (fc_pump
+    returns immediately at depth≥2 — the D59 busy-spin, pipelined). Add a MAIN-owned grant cadence
+    with a lifecycle-wakeable wait; **latch edge-triggered input until a grant succeeds** so a short
+    press during a failed grant is never lost.
+
+- **WP-B — immutable per-credit frame descriptor** (replaces rev-1's bare pool).
+  - CORE copies pixels into the credit's buffer and publishes an **immutable** descriptor
+    `{pixels, gen, width, height, pitch, format}`. MAIN owns renderer/scaler/`GFX_resize`/
+    `GFX_clearAll`/HUD/dst/present. (**F1**)
+  - **F6 DUP/NONE + multi-callback:** route NULL → `fc_signal_dup`; MAIN re-presents the MAIN-owned
+    **last-presented** immutable frame for DUP/NONE. A retro_run that calls video_refresh multiple
+    times needs per-published-frame storage or a specified coalescing+ack — one mutable buffer per
+    epoch is insufficient.
+  - **F12 failure paths:** validate depth∈{1,2}; validate dims/alloc sizes (checked multiply);
+    allocate+verify all slots before enabling depth-2; never publish a stale/null slot; on OOM fall
+    back to depth-1 through the depth-change gate.
+
+- **WP-C — command channel** (NEW; the biggest rev-1 omission, **F5**).
+  - Route `SET_SYSTEM_AV_INFO` / `SET_GEOMETRY` / `SET_VARIABLE` / `SHUTDOWN` / rumble through
+    `FR_EV_CMD` (persistent/barrier as the design specifies); `zero_ftv2_drain` applies them on MAIN
+    in order (it currently ignores FR_EV_CMD, minarch.c:5294). The libretro data pointer is
+    transient → **deep-copy** the payload into the event. Shutdown/quit via an atomic/event, not a
+    bare CORE-write/MAIN-read. Rumble via the contracted atomic handoff.
+
+- **WP-D — governor + telemetry at depth-2** (NEW, **F4**).
+  - Derive generation rate from **drained RUN_DONE** epochs, not loop/pump iterations. Publish CORE
+    work through defined atomics/events. Replace the `thread_video` predicate (always 0 under
+    guard-ON, so single-thread gov/DRC branches are wrongly selected) with an explicit v2
+    depth/mode predicate. Reconcile with the v2.4 governor-ownership clause.
+
+- **WP-E — audio lifecycle** (NEW, **F8**).
+  - Make `SND_batchSamples` producer waits **park/stop-cancellable** with partial-accept, and
+    propagate the shortfall into RUN_DONE (the framering already models `shortfall`). Always
+    park-and-ack before any pause/close/resize/free of the audio device — otherwise the F2 sleep
+    ordering can wedge park (CORE waiting on a full ring MAIN has stopped draining). The bounded
+    audio lead itself is fine for bring-up; the cancellation/lifecycle gaps are the bug.
+
+- **WP-F — save-state visual identity** (**F9**).
+  - Keep a MAIN-owned **immutable last-presented** snapshot tagged with visual gen V. While parked,
+    save the contractual pair `(state G, snapshot V)`. Add a terminal **save-and-quit** service path
+    that does NOT release CORE or grant another epoch (rev-1's `fc_menu_op`-then-quit released
+    RUNNING and could grant again before quit was seen).
+
+- **WP-G — run signature** (**F10** — rev-1's TLS-stash cannot work; `zero_ftv2_run` never receives
+  gen). Extend explicitly: `run(ctx, gen, slot, snapshot)` — pass the actual credit slot too, so
+  minarch is not coupled to the `gen % depth` selection and needs no hidden TLS.
+
+- **WP-C(enable) — unchanged in intent**, but default depth stays **1**; depth-2 is a guarded
+  bring-up only; requalification gate precedes any auto-trial.
+
+- **F7 (menu/disc F23):** valid but NOT a novel depth-2 blocker — depth-1 already calls
+  `core.serialize` from MAIN during menu saves (shipped + on-device-validated), and `fc_park` fully
+  quiesces CORE, so there is no concurrent access; only thread-identity differs, which our shipped
+  cores don't care about in serialize. Fold the full service inventory in (memory flush, disc
+  replace, controller change, save/load/reset, split MAIN screenshot/file work from CORE
+  serialization) as **contract-hardening**, prioritized below F1–F6.
+
+- **F13 (harness tests the glue):** the engine harness does not exercise minarch's renderer/input/
+  audio/save/pool glue. Extract the shipping glue into a testable module (or compile the real
+  callbacks/pool into a harness) and add the enumerated adversarial cases (pipeline-full-no-event,
+  input edge with no credit, NULL/zero/multi-callback epochs, geometry/AV during N+1 while
+  presenting N, normal+discard park with pool poisoning after credit return, save/load/reset/
+  save-quit, sleep with a full audio ring, pool alloc/resize failure).
+
+## Revised work-package verdict (accepting Codex's)
+
+WP-A not sound until sleep-service + pacer + input-latch + control snapshots land. WP-B partially
+sound (the raw credit-lifetime invariant holds; incomplete for renderer metadata / DUP-NONE /
+multi-callback / last-presented / OOM). WP-C(enable) sound only as a guarded bring-up; depth-1 stays
+the default. New WP-C(commands)/WP-D/WP-E/WP-F/WP-G are the added surface.
+
+**Next process step:** iterate this to zero findings with a second Codex pass (as the v2.4 contract
+did over 5 rounds) BEFORE writing code; the measurement A/B remains gated on Dan's save states.
+
+---
+
+## What is already reviewed vs. what is new (where to aim the review)  *(rev-1, superseded above)*
 
 - **Already at zero findings** (do not re-review): the v2.4 ownership contract (5 Codex rounds),
   the framering protocol, and the frontend_core lifecycle engine. Depth-1 rode entirely on that
