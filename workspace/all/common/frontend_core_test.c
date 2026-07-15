@@ -52,6 +52,14 @@ typedef struct {
 
 	// runtime emit accounting (CORE-only during a session)
 	uint64_t frames_emitted, cmds_emitted, barriers_emitted;
+
+	// D59 cancellation sub-test: when use_gate, fk_run blocks on this gate so MAIN can
+	// observe in_run==1, request an async stop, then release it — proving the depth-1
+	// fc_pump block terminates cleanly (never hangs) when stop lands mid-epoch.
+	int use_gate;
+	pthread_mutex_t gate_lk;
+	pthread_cond_t  gate_cv;
+	int gate_open;
 } fakecore;
 
 static int stage_rc(fakecore* fk, int op) {
@@ -79,6 +87,13 @@ static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it
 static void fk_run(void* c){
 	fakecore* fk = c;
 	if (g_tid_ready) assert(!pthread_equal(pthread_self(), g_main_tid) && "fk_run must be on CORE (D57)");
+	if (fk->use_gate){  // D59 cancel test: park inside the epoch until MAIN opens the gate
+		pthread_mutex_lock(&fk->gate_lk);
+		while (!fk->gate_open) pthread_cond_wait(&fk->gate_cv, &fk->gate_lk);
+		pthread_mutex_unlock(&fk->gate_lk);
+		fc_emit_frame(fk->f, 0xF00D); fk->frames_emitted++;   // one frame, then the epoch closes
+		return;
+	}
 	rng_t* r = &fk->run_rng;
 	uint32_t n = rng_below(r, 8);
 	int did_barrier = 0;
@@ -148,10 +163,20 @@ static fc_state reached_on_fail(int op){
 static int inv_hits[32];
 #define INV(n,cond,msg) do{ if(!(cond)){ fprintf(stderr,"FC INVARIANT %d FAILED: %s\n",(n),(msg)); abort(); } inv_hits[n]++; }while(0)
 
-// consumer drain callback: sanity only (frame/cmd/rundone ordering is framering's
-// job, proven in framering_test; here we just count applied events)
+// consumer drain callback: counts applied events (frame/cmd/rundone ORDER is framering's
+// job, proven in framering_test). With a non-NULL ctx it also records a per-drain tally
+// so the depth-1 serial-rendezvous invariants (D59) can assert one-pump-one-epoch.
+typedef struct { uint64_t frames, rundone, events; } drainrec;
 static uint64_t applied_events;
-static void on_ev(void* ctx, const fr_event* ev){ (void)ctx; (void)ev; applied_events++; }
+static void on_ev(void* ctx, const fr_event* ev){
+	applied_events++;
+	if (ctx){
+		drainrec* d = ctx;
+		d->events++;
+		if      (ev->kind == FR_EV_FRAME)    d->frames++;
+		else if (ev->kind == FR_EV_RUN_DONE) d->rundone++;
+	}
+}
 
 // Drive bootstrap STAGE-BY-STAGE via fc_boot_stage/fc_boot_finish (what real minarch
 // does — D58), interleaving a simulated 'MAIN frontend work' no-op between stages. Must
@@ -208,8 +233,28 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 			struct timespec now; clock_gettime(CLOCK_MONOTONIC,&now);
 			double dt = (now.tv_sec-t0.tv_sec) + (now.tv_nsec-t0.tv_nsec)/1e9;
 			if (dt > 0.05) break;   // ~50ms of adversarial runtime per success session
-			uint64_t snap[4] = { atomic_load(&F.fr.gen)+1, rng_next(mr), rng_next(mr), 0 };
-			fc_pump(&F, snap, on_ev, NULL);
+			// Sample the ring BEFORE the pump. With depth 1 + RUNNING + no credit
+			// outstanding (and this single-threaded driver leaves no park/stop pending at
+			// the loop top), fr_grant is GUARANTEED to land — so the pump MUST rendezvous
+			// with that epoch's RUN_DONE. Guarding on credits_before==0 makes the check
+			// self-contained (independent of the depth-change gate's reclaim timing).
+			uint32_t depth_before   = F.fr.depth;
+			int      run_before     = (fr_get_state(&F.fr) == FR_RUNNING);
+			uint32_t credits_before = atomic_load(&F.fr.credits_out);
+			uint64_t gen_before     = atomic_load(&F.fr.gen);
+			drainrec dr = {0,0,0};
+			uint64_t snap[4] = { gen_before+1, rng_next(mr), rng_next(mr), 0 };
+			fc_pump(&F, snap, on_ev, &dr);
+			// INV10-13 (D59 serial rendezvous / anti-busy-spin): a depth-1 pump that
+			// issued a grant must have BLOCKED until exactly one epoch drained — no credit
+			// left outstanding, CORE not mid-run, gen advanced by one. All four FAIL
+			// against the old grant+drain+return pump that returned before RUN_DONE.
+			if (depth_before == 1 && run_before && credits_before == 0){
+				INV(10, atomic_load(&F.fr.in_run) == 0, "depth-1 pump returned with CORE still mid-run (busy-spin)");
+				INV(11, atomic_load(&F.fr.credits_out) == 0, "depth-1 pump returned with a credit outstanding");
+				INV(12, dr.rundone == 1, "depth-1 pump did not drain exactly one RUN_DONE epoch");
+				INV(13, atomic_load(&F.fr.gen) == gen_before+1, "depth-1 pump did not advance gen by exactly one");
+			}
 			uint32_t roll = rng_below(mr,100);
 			if (roll < 12){ fc_park(&F,on_ev,NULL, roll<4); fc_release(&F); }         // park (some discard)
 			else if (roll < 18){ uint32_t nd=(rng_below(mr,2)?2:1); fc_set_depth(&F,nd,on_ev,NULL,0); fc_release(&F); }
@@ -234,6 +279,56 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 	INV(8, !(fk.deinit_called && at_teardown < FC_INITIALIZED), "deinit before init");
 }
 
+// ---- D59: deterministic stop-cancel sub-test --------------------------------------
+// A depth-1 pump BLOCKS until its epoch's RUN_DONE. Prove that block ALWAYS terminates
+// when a stop lands mid-epoch: a gated fk_run lets MAIN observe in_run==1, fire an async
+// fr_stop, then open the gate. The pump must return (via the drained RUN_DONE or the
+// STOPPED state edge) — a hang here would wedge the real run loop. MAIN is the ONLY
+// non-consumer here (it drives stop + gate); the pump thread is the sole ring consumer,
+// so the single-consumer contract holds.
+static _Atomic int g_pump_returned;
+static void* pump_thread_fn(void* p){
+	fc* f = (fc*)p;
+	drainrec dr = {0,0,0};
+	uint64_t snap[4] = { atomic_load(&f->fr.gen)+1, 0, 0, 0 };
+	fc_pump(f, snap, on_ev, &dr);
+	atomic_store(&g_pump_returned, 1);
+	return NULL;
+}
+static void poll_until(_Atomic int* flag, int want, const char* what){
+	struct timespec d0; clock_gettime(CLOCK_MONOTONIC,&d0);
+	while (atomic_load(flag) != want){
+		struct timespec n; clock_gettime(CLOCK_MONOTONIC,&n);
+		if (n.tv_sec - d0.tv_sec > 5){ fprintf(stderr,"cancel-test hung: %s\n", what); abort(); }
+		struct timespec s={0,200000}; nanosleep(&s,NULL);  // 0.2ms
+	}
+}
+static void run_cancel_test(rng_t* mr){
+	fakecore fk; memset(&fk,0,sizeof(fk));
+	fk.run_rng.s = rng_next(mr) | 1;
+	fk.use_gate = 1;
+	pthread_mutex_init(&fk.gate_lk,NULL);
+	pthread_cond_init(&fk.gate_cv,NULL);
+	fc_vtable vt; fill_vtable(&vt,&fk);
+	fc F; fk.f=&F;
+	fc_init(&F,&vt,1);   // depth 1: serial rendezvous
+	fc_state reached = fc_bootstrap(&F);
+	INV(14, reached==FC_RESUME_APPLIED || reached==FC_RUNNING, "cancel-test bootstrap did not reach RUNNING");
+
+	atomic_store(&g_pump_returned, 0);
+	pthread_t pt; pthread_create(&pt,NULL,pump_thread_fn,&F);
+	poll_until(&F.fr.in_run, 1, "CORE never entered gated run");  // grant consumed, epoch open
+	fr_stop(&F.fr);                                               // async stop mid-epoch
+	pthread_mutex_lock(&fk.gate_lk); fk.gate_open=1; pthread_cond_broadcast(&fk.gate_cv); pthread_mutex_unlock(&fk.gate_lk);
+	poll_until(&g_pump_returned, 1, "depth-1 pump hung under mid-epoch stop");
+	INV(15, 1, "depth-1 pump returned cleanly under mid-epoch stop");  // site marker; the hang-abort is the real gate
+	pthread_join(pt,NULL);
+
+	fc_teardown(&F);    // CORE already stopping; teardown reconciles the ledger + joins
+	pthread_cond_destroy(&fk.gate_cv);
+	pthread_mutex_destroy(&fk.gate_lk);
+}
+
 int main(int argc, char** argv){
 	g_main_tid = pthread_self(); g_tid_ready = 1; // D57 affinity oracle baseline
 	int seconds = argc>1?atoi(argv[1]):3;
@@ -241,6 +336,9 @@ int main(int argc, char** argv){
 	printf("frontend_core_test: seconds=%d seed=0x%016" PRIx64 "\n", seconds, seed);
 	fflush(stdout);
 	rng_t mr = { seed?seed:1 };
+
+	// D59: depth-1 stop-cancel — the serial-rendezvous block must always terminate
+	for (int i=0;i<3;i++) run_cancel_test(&mr);
 
 	// every bootstrap failure injection point, hard-fail AND requested-shutdown, plus
 	// the resume-nonfatal path and the clean success path — cycled until time runs out

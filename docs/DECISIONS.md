@@ -867,3 +867,34 @@ ARM_CRASH, AV; MAIN Input_init + Config_readControls; fc_boot_stage CONTROLLER; 
 renderer (F-A) via AUDIO/RENDERER stages + Menu_init; fc_boot_stage RESUME; fc_boot_finish;
 run loop drives fc_pump). The bring-up itself (run-loop reroute + on-device iteration)
 remains interactive, not forkable.
+
+## D59 — depth-1 fc_pump is a serial rendezvous, not a busy-spin (2026-07-14)
+The first on-device depth-1 run (ActRaiser: picture, sound, menu, clean exit) worked but
+MAIN busy-spun ~11k pumps/sec: `fc_pump` granted the epoch, drained whatever was ready, and
+returned IMMEDIATELY — without waiting for that epoch's RUN_DONE. So MAIN raced ahead of the
+CORE thread, re-granting into an already-full pipeline (fr_grant -> FR_NOSPACE, tolerated) and
+looping at spin speed. Two costs: wasted clock (the exact opposite of this fork's thesis), and
+a corrupted governor signal — trackFPS counts pump calls, so `gen` read the spin rate, not the
+frame rate. Resolution: at depth 1 (serial mode) `fc_pump` now BLOCKS after a successful grant
+until that epoch's RUN_DONE drains, then presents and returns — one pump == one epoch. The
+block reuses framering's existing cancellable primitive `fr_wait_events` (bounded 100 ms tick,
+woken on any producer state edge); it is NOT a busy-wait — every spin of the loop sleeps in
+fr_wait_events until CORE publishes. Completion is detected by wrapping the drain callback and
+counting the single FR_EV_RUN_DONE (at depth 1 exactly one credit is ever outstanding, so that
+boundary IS the granted epoch). Cancellation is free from the contract: a cross-thread stop —
+or a park that drops CORE out of RUNNING — flips the ring to STOPPED/QUIESCENT, fr_wait_events
+wakes on that edge, and the loop's state check returns without a RUN_DONE instead of hanging
+(and `fr_core_run_done` clears in_run before the release-publish of RUN_DONE, so MAIN reading
+in_run==0 after the drain is race-free). Depth >= 2 is unchanged and MUST stay grant + prefix-
+drain + return: pipelined mode overlaps MAIN and CORE by design, the epoch completes on a later
+pump, and MAIN never blocks on any single epoch. Engine-only change (`fc_pump` in
+frontend_core.c); no framering edit. The fake-core harness now asserts the serial rendezvous
+directly: after any depth-1 pump that landed a grant (guarded on credits_out==0 + RUNNING
+before the pump, which makes the grant certain), CORE is not mid-run (in_run==0), no credit is
+outstanding, exactly one RUN_DONE drained, and gen advanced by exactly one (INV10-13) — all
+four FAIL against the old grant+drain+return pump. A deterministic gated sub-test fires an
+async fr_stop while a depth-1 pump is blocked mid-epoch and asserts the pump always returns
+(hang => abort, not a wedged CI) (INV14-15). test-frontend-core{,-tsan,-asan} all silent (TSan
+120 sessions, ASan 1248, no races); framering/governor/telemetry/forbidden-globals all pass.
+minarch's guard-ON run loop needs NO change — it already calls `fc_pump` once per iteration; it
+simply now paces to real frames, so the governor's gen signal reads true frame rate again.

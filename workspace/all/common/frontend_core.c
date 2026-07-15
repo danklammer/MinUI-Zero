@@ -183,10 +183,42 @@ fc_state fc_bootstrap(fc* f) {
 	return fc_boot_finish(f);
 }
 
+// Drain wrapper that notices this pump's epoch boundary. At depth 1 exactly one credit
+// is ever outstanding, so the single FR_EV_RUN_DONE it counts IS the epoch we just
+// granted — that is the depth-1 completion signal. Every event is still forwarded to
+// the caller's cb unchanged (minarch's drain switches on kind and ignores RUN_DONE).
+struct fc_pump_ctx { fr_drain_cb cb; void* ctx; int run_done; };
+static void fc_pump_cb(void* p, const fr_event* ev) {
+	struct fc_pump_ctx* w = (struct fc_pump_ctx*)p;
+	if (ev->kind == FR_EV_RUN_DONE) w->run_done++;
+	w->cb(w->ctx, ev);
+}
+
+// D59: depth-1 is a SERIAL rendezvous — fc_pump must BLOCK until the granted epoch's
+// RUN_DONE drains, then present and return. The old grant+drain+return raced ahead of
+// CORE and made MAIN busy-spin ~11k pumps/sec (wasted clock; the governor's gen signal
+// read the spin rate, not the frame rate). The block reuses framering's cancellable
+// fr_wait_events (bounded 100ms tick, woken on any producer state edge) — never a
+// busy-wait. Cancellation: a cross-thread stop (or a park that drops CORE out of
+// RUNNING) flips the ring to STOPPED/QUIESCENT; fr_wait_events wakes on that edge and
+// the state check returns without a RUN_DONE instead of hanging. Depth >= 2 is
+// PIPELINED: keep grant + prefix-drain + return so the epoch completes on a later pump
+// and MAIN never blocks on any single epoch.
 void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx) {
+	struct fc_pump_ctx w = { cb_or_noop(cb), cbctx, 0 };
 	uint64_t g = 0;
-	(void)fr_grant(&f->fr, snapshot, &g);   // FR_NOSPACE tolerated (no free credit)
-	(void)fr_drain(&f->fr, cb_or_noop(cb), cbctx, FR_DRAIN_NORMAL); // prefix-drain applies barriers
+	fr_rc rc = fr_grant(&f->fr, snapshot, &g);  // FR_NOSPACE tolerated (parked/stopped/pipeline full)
+	if (rc == FR_OK && f->fr.depth <= 1) {
+		for (;;) {
+			fr_drain(&f->fr, fc_pump_cb, &w, FR_DRAIN_NORMAL);  // applies barriers + presents frames
+			if (w.run_done) break;                              // epoch done + presented
+			fr_state st = fr_get_state(&f->fr);
+			if (st == FR_QUIESCENT || st == FR_STOPPED) break;  // park/stop cancelled the wait
+			fr_wait_events(&f->fr);                             // cancellable block; no busy-wait
+		}
+	} else {
+		fr_drain(&f->fr, fc_pump_cb, &w, FR_DRAIN_NORMAL);  // pipelined / no-credit: prefix-drain + return
+	}
 }
 
 void fc_park(fc* f, fr_drain_cb cb, void* cbctx, int discard) {
