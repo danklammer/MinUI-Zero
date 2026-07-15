@@ -252,7 +252,13 @@ void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx) {
 			fr_wait_events(&f->fr);                             // cancellable block; no busy-wait
 		}
 	} else {
-		fr_drain(&f->fr, fc_pump_cb, &w, FR_DRAIN_NORMAL);  // pipelined / no-credit: prefix-drain + return
+		// depth >= 2 (D61 pacer TODO): currently non-blocking prefix-drain + return (grant keeps
+		// the pipeline full). This renders/pipelines on hardware but MAIN free-runs (the on-device
+		// "4397 fps" spin) and the governor can't sink. A naive "block until drain makes progress"
+		// pacer DEADLOCKS (harness FTV2-STUCK: a pending grant the CORE never consumes while MAIN
+		// blocks — a grant-consume/wake race the rapid-return pump masked). The real pacer needs a
+		// frame-specific wait (fr_wait_events wakes on every CORE edge) or a framering wake fix.
+		fr_drain(&f->fr, fc_pump_cb, &w, FR_DRAIN_NORMAL);
 	}
 }
 

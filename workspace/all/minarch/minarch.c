@@ -74,6 +74,10 @@ static __thread int zero_ftv2_on_core = 0;
 // service routing at depth-2 are the on-device pieces — see input_tick TODO.)
 static int zero_ftv2_depth2 = 0;
 static __thread uint64_t zero_ftv2_isnap[4] = {0};
+// D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
+// depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
+// for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
+static uint64_t zero_ftv2_presented = 0;
 
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
@@ -5374,8 +5378,10 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 	// zero_pool_retire(payload) AFTER this returns (D-a2), freeing the buffer.
 	if (ev->kind == FR_EV_FRAME) {
 		int buf = (int)ev->payload;
-		if (buf >= 0 && buf < ZERO_FTV2_POOL)
+		if (buf >= 0 && buf < ZERO_FTV2_POOL) {
 			present_frame(zero_pool[buf].px, zero_pool[buf].w, zero_pool[buf].h, zero_pool[buf].pitch, 1);
+			zero_ftv2_presented++;  // D61 pacer: a frame reached the screen (vsync-paced) this tick
+		}
 	}
 	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in WP-C; ignoring it is harmless for a
 	// depth-1 boot on a fixed-geometry SNES title (watch-point).
@@ -5452,9 +5458,14 @@ int main(int argc , char* argv[]) {
 	// (get_system_info on MAIN is the one F23 deviation for depth-1 first boot — read-only
 	// info query, lowest TLS risk; the F23-critical init/load/run run on the CORE thread).
 	// Drive the remaining stages through fc_boot_stage (D57/D58), interleaving MAIN work.
-	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial */);
+	// Depth bring-up (design Stage 1): ZERO_FTV2_DEPTH=2 forces the pipelined ring; default 1
+	// (serial). Capped at 2 (v1.4 ships <=2). This is the env switch for the depth-2 smoke test.
+	int ftv2_depth = 1;
+	{ const char* e = getenv("ZERO_FTV2_DEPTH"); if (e && atoi(e) >= 2) ftv2_depth = 2; }
+	fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
 	fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
 	zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);  // WP-A gate: 0 at serial depth-1 (dormant), 1 when depth-2 is enabled
+	LOG_info("threading v2: depth=%u (%s)\n", zero_ftv2.fr.depth, zero_ftv2_depth2 ? "PIPELINED" : "serial");
 	zero_ftv2_inited = 1;
 	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
 	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
@@ -5590,6 +5601,9 @@ int main(int argc , char* argv[]) {
 					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
 					snap[3] = (uint64_t)(uint32_t)fast_forward;
 				}
+				// D61: depth-2 pacing lives in fc_pump now (block-until-drain-progress) — it
+				// blocks MAIN until a frame presents (vsync-paced) so 1 pump == 1 frame, cool,
+				// overlapped. No minarch-side deadline sleep (that throttled the pipeline).
 				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
 			}
 #else
