@@ -82,6 +82,25 @@ typedef enum {
 	FC_OP_SERIALIZE, FC_OP_UNSERIALIZE, FC_OP_RESET,   // runtime menu ops
 } fc_op;
 
+// CORE execution phase (D-b): which core operation the CORE thread is currently inside. The
+// engine sets it (CORE-TLS) immediately around every vtable op; the emit shims and minarch's
+// frontend callbacks route by it — RUN_EPOCH emits ride the run stream, every *_SVC phase
+// rides the SERVICE stream (a command emitted during bootstrap/runtime/teardown has no open
+// epoch, so the run stream would assert `in_run`). FCP_NONE = not inside any core op (CORE
+// parked in wait_grant, or MAIN — where a menu-redraw video_refresh takes the legacy path).
+typedef enum {
+	FCP_NONE = 0,
+	FCP_BOOTSTRAP_SVC,   // inside a bootstrap stage (get_info..resume)
+	FCP_RUN_EPOCH,       // inside vt.run — the run epoch
+	FCP_RUNTIME_SVC,     // inside a runtime service op (serialize/unserialize/reset)
+	FCP_TEARDOWN_SVC,    // inside terminal cleanup (unload/deinit)
+} fc_phase;
+
+// CORE-TLS read: the calling thread's current execution phase. minarch's video_refresh /
+// environment callbacks call this to route (RUN_EPOCH -> emit into the run epoch; *_SVC ->
+// emit into the service stream; NONE -> legacy direct MAIN path). Returns FCP_NONE off-CORE.
+fc_phase fc_current_phase(void);
+
 typedef struct fc {
 	fr_ring fr;
 	fc_vtable vt;
