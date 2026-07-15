@@ -7,6 +7,96 @@ depth-1 rendezvous into the depth-2 **pipeline** that is the actual energy win.
 
 ---
 
+# REVISION 3 — post-Codex round 2 (2026-07-15)
+
+Round 2 CLOSED 7 round-1 findings (F1, F2-sleep, F3-pacer, F10-sig, F11, F12-init, F13); marked
+F4/F5/F8/F9 partial and F6-multicallback/F7-inventory unresolved; added 11 new (6×P0). All
+accepted. Rev-2 left several as "either/or" or "reconcile" — **rev-3 makes the decisions.**
+Supersedes rev-2 where noted.
+
+**D-a. One present per epoch (closes F1/F6 multi-callback).** MAIN presents at most once per epoch,
+at RUN_DONE. Multiple `video_refresh` calls in one `core.run` coalesce into the single credit
+buffer (last wins); outcome = FRAME if ≥1 non-null copy else DUP/NONE. MAIN presents the credit
+buffer for FRAME, or re-presents the MAIN-owned last-presented immutable frame for DUP/NONE. No
+per-callback frame events, no spill buffers — one buffer per credit suffices because there is
+exactly one present per epoch (intermediate sub-frames are never independently shown).
+
+**D-b. CORE execution-phase marker (closes F3, enables F5 routing).** Replace the
+`zero_ftv2_on_core` bool with a CORE-TLS phase enum set at CORE-thread entry and moved by the
+engine: `FCP_BOOTSTRAP_SVC` / `FCP_RUN_EPOCH` / `FCP_RUNTIME_SVC` / `FCP_NONE`. Every frontend
+callback routes by phase: RUN_EPOCH→run stream, *_SVC→service stream, FCP_NONE→legacy direct
+(MAIN menu redraw). Fixes callbacks raised during retro_init/load_game/unserialize that today see
+the bool as 0 and wrongly take the MAIN path.
+
+**D-c. Typed command objects + ownership (F2/F5).** A command crosses as a typed, versioned heap
+object; its pointer rides `fr_event.payload`. CORE deep-copies the libretro payload *including
+nested strings* (SET_VARIABLE key/value) at emit; MAIN applies in ring order in the drain cb and
+frees after apply returns; alloc-failure = drop (droppable) or fail-closed (persistent), per type;
+park/discard/terminal paths free undrained command objects (MAIN owns the free). Emission is
+phase-aware (D-b): RUN via `fc_emit_cmd`, *_SVC via `fr_core_service_emit` — `fc_emit_cmd` during a
+service op would assert (no open epoch), so AV/geometry emitted during unserialize/reset take the
+service path with a service-side barrier wait.
+
+**D-d. Full environment-callback inventory (F9).** rev-3 carries a table: every env callback →
+{owner, copy policy, RUN/SVC route, persistence/barrier, return}. Covers SET_SYSTEM_AV_INFO,
+SET_GEOMETRY, SET_VARIABLE(S), SET_CORE_OPTIONS(_INTL), SET_INPUT_DESCRIPTORS, SET_MESSAGE,
+SHUTDOWN, rumble, … **Rumble is an on→off pulse — a latest-value atomic can erase it**, so rumble
+is an ordered stream command (not a coalescing atomic); MAIN applies to the motor in order. Same-
+epoch geometry/AV ordering is sound via the existing ordered stream (cmd-before-frame applies
+before; cmd-after applies after; AV barrier releases only after MAIN's apply returns).
+
+**D-e. MAIN owns the governor (F4) — amend v2.4 via D-log (D61).** The pure-producer correction
+wins over v2.4's "governor on CORE": MAIN owns GovState + cpufreq application; CORE publishes
+immutable per-epoch work samples into the ring; MAIN derives generation rate from drained RUN_DONE
+and sets the clock. Amended into the contract by a DECISIONS entry at implementation, not left as
+two conflicting contracts.
+
+**D-f. Governor window lifecycle (F8).** gen = drained RUN_DONE that entered retro_run (DUP/NONE
+included — completed runs; queued-canceled grants excluded — no RUN_DONE). Reset/freeze the rate
+window at park, release, and every depth transition (symmetric — no stale history across modes). FF
+comes from each epoch's control snapshot, never live. The depth predicate flips only while
+QUIESCENT inside the depth-change gate.
+
+**D-g. Audio shortfall plumbing (F5) — touches the engine.** CORE-local per-epoch shortfall
+accumulator; the audio callback publishes exactly the accepted prefix, never internally retries the
+rejected suffix, accumulates n−k once, returns 0 promptly after cancellation. frontend_core passes
+the accumulated shortfall to `fr_core_run_done(outcome, shortfall)` (currently hardcoded 0).
+Re-run plain/TSan/ASan after the engine touch.
+
+**D-h. Terminal poweroff flow (F6).** The long-press `before_sleep()→PWR_powerOff()` path
+(api.c:1780) gets its own sequence: park → drain → CORE save/autosave/memory-flush services →
+stop/join (terminal quiescence) → close audio → poweroff. No release, no subsequent grant.
+
+**D-i. State gen G + snapshot V (F7).** G = highest drained RUN_DONE gen that actually entered
+retro_run (include a completed CANCELLED active epoch; exclude canceled queued grants). Freeze V
+(the MAIN-owned last-presented frame's visual gen) after normal park drainage, before any
+serialize-service callback can change presentation. Save the pair (state G, snapshot V) while
+parked; terminal save-and-quit does not release CORE.
+
+**D-j. Frame OOM / runtime growth (F10).** Size credit buffers from validated AV
+`geometry.max_width`/`max_height` + pixel format (not the first frame's size), so well-behaved
+cores never exceed capacity. If a frame still exceeds: do not write/publish stale pixels; drop the
+frame; publish a MAIN resize request (a command); finish the epoch; MAIN parks and resizes the pool
+or falls back to depth-1 via the gate (CORE cannot invoke the gate from inside video_refresh).
+
+**D-k. WP-G signature reopens engine API (round-2 WP-G audit).** `run(ctx, gen, slot, snapshot)`
+requires `fr_core_wait_grant` to also return `slot` → touches framering.{h,c}, frontend_core.{h,c},
+and the harness fake run: a controlled reopening of reviewed engine surface, re-verified under
+plain/TSan/ASan.
+
+**D-l. F23 service inventory is mandatory-before-release (F11).** Codex's refinement accepted:
+prioritizing below F1–F6 is fine for bring-up *sequencing* but is NOT optional — real unsafe paths
+exist (a core reading retro_init/run TLS during serialize; serialize/unserialize emitting video/env
+callbacks, which the v2.4 service contract permits; a disc callback assuming the core thread).
+Complete the service routing (memory flush, disc replace, controller change, save/load/reset,
+callback-emitting services) before the save/load/menu gauntlet and before release.
+
+**Convergence:** round 1 = 13, round 2 = 11 (7 of round-1 closed). Trending like the v2.4 contract
+(5 rounds: 15→7→6→4→0). Round 3 should confirm these decisions close the P0s and attack the
+command-object protocol (D-c), the phase machine (D-b), and the governor-ownership amendment (D-e).
+
+---
+
 # REVISION 2 — post-Codex adversarial review (2026-07-15)
 
 Codex reviewed rev-1 at commit b2858858 and returned 13 findings (8×P0, 5×P1). Spot-checked
