@@ -45,9 +45,11 @@ CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 # Threading v2 (phase 2) — OPT-IN, default OFF. When unset, SOURCE and CFLAGS above are
 # untouched, so the shipped build is byte-for-byte identical. Enable for dev/test with:
 #   make ... ZERO_FRONTEND_THREADING_V2=1
-# The minarch.c integration is NOT yet wired (see docs/threading-v2-phase2b-findings.md —
-# blocked on the old-thread_video-replacement decision); enabling today only compiles the
-# framering + frontend_core engines into the binary (inert until step 3 wires the run loop).
+# Enabling compiles the framering + frontend_core engines AND reroutes minarch's run loop
+# through fc_pump: DEPTH-1 (serial rendezvous, single-thread-equivalent perf) is wired and
+# validated on-device — the CORE thread owns core.run(), MAIN presents (see DECISIONS D52-D59).
+# DEPTH-2 (pipelined, the energy win) is in progress: it needs the per-epoch input snapshot
+# (WP2 — the fc run() signature now delivers it) plus the input-tick move to MAIN.
 ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
 SOURCE += ../common/framering.c ../common/frontend_core.c
 CFLAGS += -DZERO_FRONTEND_THREADING_V2

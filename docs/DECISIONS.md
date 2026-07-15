@@ -898,3 +898,30 @@ async fr_stop while a depth-1 pump is blocked mid-epoch and asserts the pump alw
 120 sessions, ASan 1248, no races); framering/governor/telemetry/forbidden-globals all pass.
 minarch's guard-ON run loop needs NO change — it already calls `fc_pump` once per iteration; it
 simply now paces to real frames, so the governor's gen signal reads true frame rate again.
+
+## D60 — WP2: the run() signature now delivers the per-epoch input snapshot (2026-07-14)
+Depth-1 (D59) is a serial rendezvous: MAIN is blocked in `fc_pump` for the whole epoch, so the
+CORE thread reads the live input globals (`buttons`, `pad.laxis/raxis`) safely — no overlap.
+Depth-2 (pipelined, the actual energy win) breaks that: MAIN captures the NEXT frame's input
+while CORE is still running THIS epoch, so the core must read a STABLE, per-epoch input, not the
+live globals racing underneath it. The framering already carries a 4-word snapshot end-to-end
+(`fr_grant(snapshot)` on MAIN → the ring → `fr_core_wait_grant(&gen, snap)` on CORE); the only
+gap was that the lifecycle engine never handed that snapshot to the core's `run()`. Resolution:
+the fc vtable's `run` is now `void (*run)(void* c, const uint64_t snap[4])` and `fc_core_thread`
+passes the just-received `snap` in. The engine treats the four words as OPAQUE — it makes no
+claim about their meaning; the snapshot's semantics belong to the integrator (the harness for the
+test, minarch's input packing for the device). New harness invariant INV16 proves the pipe is
+faithful: MAIN builds each snapshot as a pure function of the epoch id (`mk_snap`), a CORE-side
+`snap_ok` assert in the fake run fail-fasts at the exact torn epoch if any word is dropped /
+zeroed / spliced from another epoch, and a join-safe atomic coverage counter drives a MAIN-side
+`INV(16)` so the check can never be silently dead. Engine + harness only; frontend_core{,test}
+plain/TSan/ASan all PASS at 16 invariant sites. minarch conforms to the new signature but does
+NOT yet consume `snap` — depth-1 still (correctly) reads input on the CORE thread. Consuming it
+is the depth-2 gate and a genuine re-architecture, NOT a small wire: `input_poll_callback` runs
+INSIDE `core.run()` (i.e. on the CORE thread today) and does far more than read buttons — it
+pumps SDL/PAD, runs `PWR_update` (sleep/power), detects the menu/FF, and calls `core.reset()` /
+`Menu_saveState()` on shortcuts. At depth-2 that entire tick must move to MAIN (SDL/PWR/menu are
+MAIN-affine and `show_menu`/`fast_forward` are MAIN-read), and the core-affecting shortcuts must
+route through the CORE service channel (F23: only CORE ever enters the core) instead of being
+called inline. That work needs on-device iteration and, for its payoff proof (the DKC 3×-energy
+A/B), Dan's demanding-scene save states — so it is deliberately staged behind this contract.
