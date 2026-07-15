@@ -66,10 +66,19 @@ static int zero_ftv2_running; // 0 until fc_boot_finish; gates the frame divert 
 // stays 0, so we present directly instead of asserting "emit outside epoch" (2026-07-14).
 static __thread int zero_ftv2_on_core = 0;
 
+// WP-A depth-2 input. `zero_ftv2_depth2` is set from the ring depth after fc_init (0 while the
+// pipeline is serial depth-1, so ALL of WP-A below is DORMANT and depth-1/guard-OFF behavior is
+// byte-identical). At depth-2: MAIN runs the input tick before the grant and packs the button/
+// analog snapshot; the CORE thread reads it from `zero_ftv2_isnap` (its per-epoch immutable copy,
+// set in zero_ftv2_run) instead of the live globals racing MAIN. (F2 sleep-flow + save/load/reset
+// service routing at depth-2 are the on-device pieces — see input_tick TODO.)
+static int zero_ftv2_depth2 = 0;
+static __thread uint64_t zero_ftv2_isnap[4] = {0};
+
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
 static const char zero_ftv2_fingerprint[] __attribute__((used)) =
-	"threading-v2 S4-WPB (guard-ON; engine foundation WP-G/D-a2/D-g/D-b/D-b2 sanitizer-verified; WP-B frame-pool + MAIN present_frame — depth-1 now presents THROUGH the pool, on-device render validation pending)";
+	"threading-v2 S4-WPB+WPA (guard-ON; engine WP-G/D-a2/D-g/D-b/D-b2 sanitizer-verified; WP-B frame-pool + MAIN present_frame; WP-A input snapshot (depth-2-gated, dormant at depth-1) — on-device render+input validation pending)";
 
 // NOTE (S3.2): the fc handle, filled vtable, and bootstrap entry are defined just
 // before main(), AFTER core/game/State_*/Core_* are declared (they reference those).
@@ -1952,7 +1961,14 @@ static int setFastForward(int enable) {
 
 static uint32_t buttons = 0; // RETRO_DEVICE_ID_JOYPAD_* buttons
 static int ignore_menu = 0;
-static void input_poll_callback(void) {
+// The per-frame input tick: poll hardware, handle power/menu/FF/shortcuts, compute `buttons`.
+// At depth-1 (and guard-OFF) this runs on the CORE thread as the libretro input_poll callback.
+// At depth-2 it runs on MAIN before the grant (WP-A) and only the resulting button/analog
+// snapshot crosses to the core. TODO (on-device, F2/WP-F): at depth-2 the sleep path here
+// (PWR_update -> Menu_beforeSleep -> State_autosave -> core.serialize) and the save/load/reset
+// shortcuts ENTER THE CORE — they must park + route through fc_menu_op(SERIALIZE/UNSERIALIZE/
+// RESET) instead of running on MAIN. Until that lands, depth-2 must not be enabled.
+static void input_tick(void) {
 	PAD_poll();
 
 	int show_setting = 0;
@@ -2082,7 +2098,35 @@ static void input_poll_callback(void) {
 	
 	// if (buttons) LOG_info("buttons: %i\n", buttons);
 }
+
+// The libretro input_poll callback. At depth-2 MAIN already ran input_tick before the grant, so
+// this (on the CORE thread) is a no-op — the epoch reads its snapshot. Depth-1/guard-OFF: runs
+// input_tick here on the CORE thread exactly as before. (DORMANT until depth-2: zero_ftv2_depth2==0.)
+static void input_poll_callback(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_depth2 && zero_ftv2_running && zero_ftv2_on_core) return;
+#endif
+	input_tick();
+}
 static int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned id) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// WP-A: at depth-2 the core reads THIS epoch's immutable input snapshot (packed by MAIN into
+	// snap, delivered via run() -> zero_ftv2_isnap) rather than the live globals racing MAIN.
+	if (zero_ftv2_depth2 && zero_ftv2_on_core) {
+		uint32_t b = (uint32_t)zero_ftv2_isnap[0];
+		if (port==0 && device==RETRO_DEVICE_JOYPAD && index==0) {
+			if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)b;
+			return (b >> id) & 1;
+		}
+		if (port==0 && device==RETRO_DEVICE_ANALOG) {
+			int16_t lx=(int16_t)(zero_ftv2_isnap[1]>>16), ly=(int16_t)(uint16_t)zero_ftv2_isnap[1];
+			int16_t rx=(int16_t)(zero_ftv2_isnap[2]>>16), ry=(int16_t)(uint16_t)zero_ftv2_isnap[2];
+			if (index==RETRO_DEVICE_INDEX_ANALOG_LEFT)  { if(id==RETRO_DEVICE_ID_ANALOG_X) return lx; if(id==RETRO_DEVICE_ID_ANALOG_Y) return ly; }
+			if (index==RETRO_DEVICE_INDEX_ANALOG_RIGHT) { if(id==RETRO_DEVICE_ID_ANALOG_X) return rx; if(id==RETRO_DEVICE_ID_ANALOG_Y) return ry; }
+		}
+		return 0;
+	}
+#endif
 	if (port==0 && device==RETRO_DEVICE_JOYPAD && index==0) {
 		if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return buttons;
 		return (buttons >> id) & 1;
@@ -5271,7 +5315,14 @@ static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer alread
 static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
 
 // --- runtime ---
-static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]) { (void)c; (void)gen; (void)slot; (void)snap; zero_ftv2_on_core = 1; core.run(); /* depth-1: input flows via input_poll on CORE (serial-safe, MAIN blocked in fc_pump). depth-2: WP-A reads `snap` for input; WP-B copies the frame into pool[slot] (gen%depth) and rides the buffer id in the FRAME payload. */ }
+static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]) {
+	(void)c; (void)gen; (void)slot;
+	zero_ftv2_on_core = 1;
+	// WP-A: stash this epoch's input snapshot for input_state_callback (depth-2 reads it here
+	// instead of the live globals). Harmless at depth-1 (input still flows via input_tick on CORE).
+	zero_ftv2_isnap[0]=snap[0]; zero_ftv2_isnap[1]=snap[1]; zero_ftv2_isnap[2]=snap[2]; zero_ftv2_isnap[3]=snap[3];
+	core.run();  // WP-B: video_refresh copies the frame into pool[buf] and emits the buffer id
+}
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
 static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }
@@ -5403,6 +5454,7 @@ int main(int argc , char* argv[]) {
 	// Drive the remaining stages through fc_boot_stage (D57/D58), interleaving MAIN work.
 	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial */);
 	fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
+	zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);  // WP-A gate: 0 at serial depth-1 (dormant), 1 when depth-2 is enabled
 	zero_ftv2_inited = 1;
 	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
 	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
@@ -5525,7 +5577,21 @@ int main(int argc , char* argv[]) {
 			// depth-1: grant one epoch (CORE runs core.run + emits the frame), drain +
 			// present on MAIN. snap={0}: input globals are MAIN-set and read by CORE with
 			// no overlap in serial mode (WP2), so the per-epoch snapshot is unused at depth 1.
-			{ uint64_t snap[4] = {0}; fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL); }
+			{
+				uint64_t snap[4] = {0};
+				if (zero_ftv2_depth2) {
+					// WP-A: at depth-2 MAIN runs the input tick and packs THIS epoch's input
+					// snapshot (buttons + both analog sticks + the FF control flag, F11); the
+					// CORE thread reads it via input_state_callback. Analog packed through
+					// uint16_t casts (shifting a negative signed axis left is UB — F11).
+					input_tick();
+					snap[0] = (uint32_t)buttons;
+					snap[1] = ((uint64_t)(uint16_t)pad.laxis.x << 16) | (uint16_t)pad.laxis.y;
+					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
+					snap[3] = (uint64_t)(uint32_t)fast_forward;
+				}
+				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
+			}
 #else
 			core.run();
 #endif
