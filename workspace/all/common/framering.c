@@ -347,7 +347,7 @@ static int pred_grant(fr_ring* fr) {
 	    || LD(fr->park_req) || LD(fr->stop_req);
 }
 
-fr_rc fr_core_wait_grant(fr_ring* fr, uint64_t* out_gen, uint64_t snap[4]) {
+fr_rc fr_core_wait_grant(fr_ring* fr, uint64_t* out_gen, uint32_t* out_slot, uint64_t snap[4]) {
 	for (;;) {
 		// park checked BEFORE consuming a grant: queued-but-unrun grants stay
 		// cancellable (gate step 2 relies on this ordering). Transitions to
@@ -370,6 +370,11 @@ fr_rc fr_core_wait_grant(fr_ring* fr, uint64_t* out_gen, uint64_t snap[4]) {
 			cur_gen = g;
 			cur_index = 0;
 			if (out_gen) *out_gen = g;
+			// D-k: expose the credit slot (WP-B pool indexing). Slot lifetime = this
+			// grant -> credit return; ownership + snapshot integrity asserted below.
+			assert(slot < fr->depth && "grant slot out of range (D-k)");
+			assert((LD(fr->slot_owned) & (1u << slot)) && "grant slot not owned (D-k)");
+			if (out_slot) *out_slot = slot;
 			memcpy(snap, fr->snap[slot].data, sizeof(fr->snap[slot].data));
 			assert(fr->snap[slot].gen == g && "snapshot slot mutated while owned");
 			return FR_GRANT;
