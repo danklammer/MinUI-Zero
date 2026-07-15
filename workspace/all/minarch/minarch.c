@@ -3187,6 +3187,92 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
 }
+#ifdef ZERO_FRONTEND_THREADING_V2
+// WP-B: the depth-2 frame pool. The CORE thread copies each produced frame into a free
+// buffer and rides its index in the FRAME payload; MAIN presents from it (present_frame) and
+// the D-a2 retirement hook (zero_pool_retire) frees it. Size = depth + spill (D-j2): more
+// than `depth` so a multi-video_refresh epoch has headroom; exhaustion DROPS the frame
+// (never blocks the core). CORE is the sole acquirer (no acquire/acquire race); MAIN only
+// retires. Buffers grow-only (realloc); freed at process exit.
+#define ZERO_FTV2_POOL (FR_MAX_DEPTH + 2)
+typedef struct { uint16_t* px; size_t cap; unsigned w, h; size_t pitch; _Atomic int busy; } zero_fbuf;
+static zero_fbuf zero_pool[ZERO_FTV2_POOL];
+
+static int zero_pool_acquire(unsigned w, unsigned h, size_t pitch) {
+	for (int i=0;i<ZERO_FTV2_POOL;i++) {
+		if (atomic_load_explicit(&zero_pool[i].busy, memory_order_acquire)) continue;
+		size_t need = (size_t)h * pitch;
+		if (zero_pool[i].cap < need) {
+			uint16_t* p = realloc(zero_pool[i].px, need);
+			if (!p) return -1;                 // OOM: treat as exhaustion (drop the frame)
+			zero_pool[i].px = p; zero_pool[i].cap = need;
+		}
+		zero_pool[i].w = w; zero_pool[i].h = h; zero_pool[i].pitch = pitch;
+		atomic_store_explicit(&zero_pool[i].busy, 1, memory_order_release);
+		return i;
+	}
+	return -1;                                 // exhausted (D-j2: drop; runtime demote is later)
+}
+static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-a2 hook
+	(void)ctx;
+	if (payload < ZERO_FTV2_POOL) atomic_store_explicit(&zero_pool[(int)payload].busy, 0, memory_order_release);
+}
+#endif // ZERO_FRONTEND_THREADING_V2
+
+// WP-B: MAIN-only present. Configures the scaler on a size change, blits the debug HUD into
+// `src`, scales to the screen surface, and (optionally) flips. Runs on MAIN for BOTH the v2
+// frame-pool drain and the non-v2 / menu-redraw path — NEVER on the CORE thread (F1: scaler
+// config + GFX_clearAll + the GLES present are MAIN/EGL-affine). Extracted verbatim from the
+// old video_refresh_callback_main back-half (data -> src) so guard-OFF behavior is identical.
+static void present_frame(void* src, unsigned width, unsigned height, size_t pitch, int do_flip) {
+	if (renderer.dst_p==0 || (int)width!=renderer.true_w || (int)height!=renderer.true_h) {
+		int size_changed = ((int)width!=renderer.true_w || (int)height!=renderer.true_h);
+		selectScaler(width, height, pitch);
+		GFX_clearAll();
+		if (size_changed) gov_burst(&gov_state, &gov_profile); // provision before the cost lands
+	}
+	if (show_debug) {
+		int x = 2 + renderer.src_x;
+		int y = 2 + renderer.src_y;
+		char debug_text[128];
+		int scale = renderer.scale;
+		if (scale==-1) scale = 1; // nearest neighbor flag
+		sprintf(debug_text, "%ix%i %ix", renderer.src_w,renderer.src_h, scale);
+		blitBitmapText(debug_text,x,y,(uint16_t*)src,pitch/2, width,height);
+		sprintf(debug_text, "%i,%i %ix%i", renderer.dst_x,renderer.dst_y, renderer.src_w*scale,renderer.src_h*scale);
+		blitBitmapText(debug_text,-x,y,(uint16_t*)src,pitch/2, width,height);
+		static int hud_temp = -1;
+		static uint32_t hud_temp_at = 0;
+		uint32_t hud_now = SDL_GetTicks();
+		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
+		if (thread_video && core.fps > 0) {
+			uint64_t thr_sum = 0;
+			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
+			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
+			int thr_util = thr_n > 0 ? (int)(100.0 * (double)thr_sum / (thr_n * (1000000.0 / core.fps))) : 0;
+			static uint32_t sm_at = 0; static int sm_w0 = 0, sm_o0 = 0; static long sm_u0 = 0;
+			static int sm_d = 0, sm_s = 0, sm_u = 0;
+			uint32_t sm_now = SDL_GetTicks();
+			if (sm_now - sm_at >= 1000) {
+				SND_Stats ss; SND_getStats(&ss);
+				sm_d = mb_dups_total - sm_w0;       sm_w0 = mb_dups_total;
+				sm_s = mb_overwrites_total - sm_o0; sm_o0 = mb_overwrites_total;
+				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
+				sm_at = sm_now;
+			}
+			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
+		}
+		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
+		blitBitmapText(debug_text,x,-y,(uint16_t*)src,pitch/2, width,height);
+		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
+		blitBitmapText(debug_text,-x,-y,(uint16_t*)src,pitch/2, width,height);
+	}
+	renderer.src = src;
+	renderer.dst = screen->pixels;
+	GFX_blitRenderer(&renderer);
+	if (do_flip) GFX_flip(screen);
+}
+
 static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
 	// return;
 	
@@ -3219,86 +3305,27 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	
 	if (downsample) pitch /= 2; // everything expects 16 but we're downsampling from 32
 	
-	// if source has changed size (or forced by dst_p==0)
-	// eg. true src + cropped src + fixed dst + cropped dst
-	if (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h) {
-		// burst only on a TRUE size change — same-size re-inits (SET_GEOMETRY aspect
-		// resyncs, menu returns) fire selectScaler too, and bursting on those pinned
-		// GBC at 1008 instead of its 408 floor (gambatte resyncs periodically; caught
-		// by the 2026-07-09 regression sweep). A real scene switch changes dimensions.
-		int size_changed = (width!=renderer.true_w || height!=renderer.true_h);
-		selectScaler(width, height, pitch);
-		GFX_clearAll();
-		if (size_changed) gov_burst(&gov_state, &gov_profile); // provision before the cost lands
-	}
-	
-	// debug
-	if (show_debug) {
-		int x = 2 + renderer.src_x;
-		int y = 2 + renderer.src_y;
-		char debug_text[128];
-		int scale = renderer.scale;
-		if (scale==-1) scale = 1; // nearest neighbor flag
-		
-		sprintf(debug_text, "%ix%i %ix", renderer.src_w,renderer.src_h, scale);
-		blitBitmapText(debug_text,x,y,(uint16_t*)data,pitch/2, width,height);
-
-		sprintf(debug_text, "%i,%i %ix%i", renderer.dst_x,renderer.dst_y, renderer.src_w*scale,renderer.src_h*scale);
-		blitBitmapText(debug_text,-x,y,(uint16_t*)data,pitch/2, width,height);
-	
-		// governor dashboard: ceiling / temp / generation-vs-target fps / % of total CPU
-		static int hud_temp = -1;
-		static uint32_t hud_temp_at = 0;
-		uint32_t hud_now = SDL_GetTicks();
-		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
-		if (thread_video && core.fps > 0) {
-			// threaded mode: core-thread utilization + LIVE smoothness counters —
-			// D = duplicated frames/s (present starved), S = skipped frames/s (core
-			// overran), U = audio underruns/s. All three should read 0 when smooth.
-			uint64_t thr_sum = 0;
-			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
-			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
-			int thr_util = thr_n > 0 ? (int)(100.0 * (double)thr_sum / (thr_n * (1000000.0 / core.fps))) : 0;
-			static uint32_t sm_at = 0; static int sm_w0 = 0, sm_o0 = 0; static long sm_u0 = 0;
-			static int sm_d = 0, sm_s = 0, sm_u = 0;
-			uint32_t sm_now = SDL_GetTicks();
-			if (sm_now - sm_at >= 1000) {
-				SND_Stats ss; SND_getStats(&ss);
-				sm_d = mb_dups_total - sm_w0;       sm_w0 = mb_dups_total;
-				sm_s = mb_overwrites_total - sm_o0; sm_o0 = mb_overwrites_total;
-				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
-				sm_at = sm_now;
-			}
-			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
-		}
-		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
-		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
-	
-		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
-		blitBitmapText(debug_text,-x,-y,(uint16_t*)data,pitch/2, width,height);
-	}
-	
-	if (downsample) {
-		buffer_downsample(data,width,height,pitch*2);
-		renderer.src = buffer;
-	}
-	else {
-		renderer.src = (void*)data;
-	}
-	renderer.dst = screen->pixels;
-	// LOG_info("video_refresh_callback: %ix%i@%i %ix%i@%i\n",width,height,pitch,screen->w,screen->h,screen->pitch);
-	
+	// WP-B: compute the final RGB565 source (downsample writes the CORE-transient global
+	// `buffer`). Under v2 the CORE thread copies it into a pool buffer and rides the buffer
+	// index in the FRAME payload; MAIN presents it (present_frame) in zero_ftv2_drain and the
+	// D-a2 hook retires it. The scaler config, HUD, and GLES present are ALL MAIN-side now
+	// (F1) — the CORE thread only produces pixels. (downsample under v2 is CORE-serial: the
+	// global `buffer` is written only by the running epoch, then copied into the pool.)
+	void* src = (void*)data;
+	if (downsample) { buffer_downsample(data,width,height,pitch*2); src = buffer; }
 #ifdef ZERO_FRONTEND_THREADING_V2
-	// WP1 (v2): the scaler blit + flip BOTH run on MAIN in zero_ftv2_drain (the GLES present
-	// path is bound to MAIN's EGL context). On the CORE thread we only emit — the `renderer`
-	// globals set above stay valid until the next epoch (depth-1 serial), so the drain reads
-	// them. Do NOT GFX_blitRenderer here under v2.
-	if (zero_ftv2_running && zero_ftv2_on_core) fc_emit_frame(&zero_ftv2, 0); // CORE thread, in-epoch: emit -> MAIN drains+presents
-	else { GFX_blitRenderer(&renderer); GFX_flip(screen); } // MAIN (menu redraw) or non-v2: present directly
-#else
-	GFX_blitRenderer(&renderer);
-	if (!thread_video) GFX_flip(screen);
+	if (zero_ftv2_running && zero_ftv2_on_core) {
+		int buf = zero_pool_acquire(width, height, pitch);
+		if (buf < 0) fc_signal_dup(&zero_ftv2);        // D-j2 pool exhausted: drop; MAIN keeps last frame
+		else {
+			memcpy(zero_pool[buf].px, src, (size_t)height * pitch);
+			fc_emit_frame(&zero_ftv2, (uint64_t)buf);  // MAIN drains -> present_frame(pool[buf])
+		}
+		last_flip_time = SDL_GetTicks();
+		return;
+	}
 #endif
+	present_frame(src, width, height, pitch, !thread_video);  // non-v2 / menu-redraw: present on this (MAIN) thread
 	last_flip_time = SDL_GetTicks();
 }
 static void video_refresh_callback(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -5291,9 +5318,16 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 	// re-run). WP1 fix 2026-07-14: doing the blit on CORE left the screen black (present
 	// no-op'd off-context) while audio ran — Dan's "menu showed the game" confirmed the
 	// frame data was correct, only the on-CORE present failed.
-	if (ev->kind == FR_EV_FRAME) { GFX_blitRenderer(&renderer); GFX_flip(screen); }
-	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in S3.3b; ignoring it is harmless for
-	// a depth-1 first boot on a fixed-geometry SNES title (watch-point).
+	// WP-B: present from the credit-indexed pool buffer named in the FRAME payload. The
+	// scaler config + HUD + flip all happen here on MAIN (present_frame). framering calls
+	// zero_pool_retire(payload) AFTER this returns (D-a2), freeing the buffer.
+	if (ev->kind == FR_EV_FRAME) {
+		int buf = (int)ev->payload;
+		if (buf >= 0 && buf < ZERO_FTV2_POOL)
+			present_frame(zero_pool[buf].px, zero_pool[buf].w, zero_pool[buf].h, zero_pool[buf].pitch, 1);
+	}
+	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in WP-C; ignoring it is harmless for a
+	// depth-1 boot on a fixed-geometry SNES title (watch-point).
 }
 
 // S3.2 entry point: spawns the CORE thread and runs the F31 bootstrap. NOT yet
@@ -5368,6 +5402,7 @@ int main(int argc , char* argv[]) {
 	// info query, lowest TLS risk; the F23-critical init/load/run run on the CORE thread).
 	// Drive the remaining stages through fc_boot_stage (D57/D58), interleaving MAIN work.
 	fc_init(&zero_ftv2, &zero_ftv2_vt, 1 /* depth 1 = serial */);
+	fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
 	zero_ftv2_inited = 1;
 	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
 	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
