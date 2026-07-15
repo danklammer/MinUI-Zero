@@ -7,6 +7,74 @@ depth-1 rendezvous into the depth-2 **pipeline** that is the actual energy win.
 
 ---
 
+# REVISION 6 — post-Codex round 5 (2026-07-15) — PAPER DESIGN CONVERGED
+
+Round 5: 7 findings (2 P0, 5 P1), **no architectural reversal**, UNRESOLVED: none. Codex drew the
+explicit paper-vs-implementation line and audited the shipped cores. These are the final paper
+refinements; with them folded in, the depth-2 design is architecturally converged and the remaining
+risk is Codex's own "implementation/harness should adjudicate" list (below).
+
+- **D-d3′ GET_CURRENT_SOFTWARE_FRAMEBUFFER → return false THROUGHOUT v2 (P0-1), not just depth-2.**
+  PCE Fast probes it with partially-uninitialized output fields and MinArch today returns *true*
+  without populating them (a latent pre-existing bug — uninitialized read). Returning false across
+  all of v2 (depth-1 included) and in every service phase fixes both. **Shipped-core audit (Codex):**
+  fceumm / pcsx_rearmed / mednafen_pce_fast probe it but all carry fallback buffers; no shipped core
+  uses SET_AUDIO_CALLBACK or SET_FRAME_TIME_CALLBACK (only non-shipped fake-08). Leaning out is
+  confirmed safe — it disables only a zero-copy path the frontend never validly implemented.
+
+- **D-d5′ options-snapshot pin/refcount/reclamation (P0-2).** Each immutable options snapshot is
+  **refcounted**: pinned while any outstanding credit (or in-flight service) may still read it; MAIN
+  frees it only when the last referencing credit retires (refcount → 0). Service-phase snapshots are
+  pinned for the service's duration. Same credit-scoped lifetime discipline as the frame buffers —
+  MAIN never frees a snapshot an older credit can still reach.
+
+- **D-a2′ frame-retirement ownership split (P1-3).** Retirement responsibility follows the D-c
+  ownership state: a buffer that never became EVENT_OWNED (pre-publication failure / FR_DROPPED)
+  is retired by **CORE**; an EVENT_OWNED (FR_OK, published) buffer is retired by **MAIN** (on
+  present, DISCARD-skip, stop, or failure). Exactly-once on every path, no path where a buffer is
+  acquired but neither retired party owns it.
+
+- **D-g2′ audio commit unit = a COMPLETE accepted input frame (P1-4).** Commit only whole accepted
+  input frames, including **every resampler output** each input frame generates; never a partial
+  input frame's outputs. This makes ring bytes + write index + resampler `diff`/`prev` + consumed
+  count advance as one transaction per input frame — no "advanced the resampler, published nothing."
+
+- **D-d6′ rumble needs pulse preservation AND synchronization (P1-5).** Atomic latest-value alone
+  still erases an on→off pulse landing between VIB polls. Use a **synchronized ordered FIFO** (or an
+  explicit minimum-pulse state machine) between MAIN and `VIB_thread`. (The `VIB_setStrength`/
+  `VIB_thread` plain-field access is a PRE-EXISTING single-thread race — hardening, sequenced w/ D-l.)
+
+- **D-j2′ runtime depth-1 demotion on steady-state exhaustion (P1-6).** Pool exhaustion is handled
+  not only at qualification: if it occurs post-qualification (steady state), trigger a runtime
+  **demotion to depth-1** via the depth-change gate (log it). Qualification-time exhaustion still
+  disables depth-2 for the session; steady-state exhaustion demotes live.
+
+- **D61-c seqlock odd/even bracketing on the ceiling write (P1-7).** A single version increment can
+  miss an epoch running *during* the write. Bracket the cpufreq ceiling write with an odd/even
+  counter (→odd before the write, →even after); a work sample records the version at start and end
+  and is excluded from the sink estimator if either read is odd or the two differ. Supersedes D61-b's
+  single-increment; fold into DECISIONS.md D61 at implementation.
+
+**Codex's paper-vs-implementation split (accepted as the closure boundary):**
+- *Resolved on paper (this revision):* reject GET_CURRENT_SOFTWARE_FRAMEBUFFER throughout v2; options
+  snapshot pin/refcount/reclamation; frame ownership transitions for FR_OK vs FR_DROPPED; complete-
+  input-frame audio commit unit; synchronized pulse-preserving rumble; runtime pool-exhaustion
+  demotion; odd/even clock bracketing.
+- *Implementation + sanitizer harness adjudicate:* acquired-frame-count == retired-frame-count on
+  every path; snapshot poisoning/refcounts across credits and services; exactly-once cleanup at every
+  F31 state; cancellation with a nearly-full audio ring at every resampling ratio; post-qualification
+  exhaustion + demotion; ceiling writes before/during/after work samples; command routing from every
+  CORE phase.
+
+**Status: the depth-2 integration design is architecturally CONVERGED.** Six review rounds
+(13→11→8→11→7, one architectural error caught and reversed) took it from a 3-WP sketch to an 8-WP
+design-of-record with the CORE-pure-producer principle, ordered frame/command streams, credit-scoped
+buffers with explicit retirement, phase-routed services, refcounted snapshots, a MAIN-owned
+seqlock-versioned governor, and a full decision trail (D-a…D-l, D61). What remains is
+implementation under plain/TSan/ASan and the on-device A/B (gated on the demanding-scene save states).
+
+---
+
 # REVISION 5 — post-Codex round 4 (2026-07-15)
 
 Round 4: 11 findings (5 P0, 6 P1). The count rose from 8 because rev-4's concrete mechanisms could
