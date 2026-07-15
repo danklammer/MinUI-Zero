@@ -5185,10 +5185,32 @@ static void trackFPS(void) {
 			use_double = (use_ticks - last_use_ticks) / last_time / ncores;
 		}
 		last_use_ticks = use_ticks;
+
+		// MEASURE (A/B instrument): objective depth-2 vs depth-1 quality per second.
+		//   d   = 0 v1.3.1 / 1 WP depth-1 / 2 WP depth-2
+		//   fps = REAL frame rate (frames the core produced) — "slow" shows as < core.fps
+		//   cpu = MAIN loop rate (should track fps; a spin shows as huge)
+		//   use = CPU% of the whole quad
+		//   under/s = audio underruns/sec — THE "choppy" signal
+		//   dup/s   = duplicated (present-starved) frames/sec — pacing-quality signal
+		//   ceil = governor clock ceiling (MHz) — the energy signal
+		{
+			int m_depth = 0;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			m_depth = zero_ftv2_depth2 ? 2 : 1;
+#endif
+			SND_Stats ss; SND_getStats(&ss);
+			static long m_u0 = 0; static int m_d0 = 0;
+			int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
+			int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
+			LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
+				m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+		}
+
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
-		
+
 		// LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
 	}
 }
@@ -5601,10 +5623,14 @@ int main(int argc , char* argv[]) {
 					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
 					snap[3] = (uint64_t)(uint32_t)fast_forward;
 				}
-				// D61: depth-2 pacing lives in fc_pump now (block-until-drain-progress) — it
-				// blocks MAIN until a frame presents (vsync-paced) so 1 pump == 1 frame, cool,
-				// overlapped. No minarch-side deadline sleep (that throttled the pipeline).
 				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
+				// D61 depth-2 pacer: fc_pump is non-blocking at depth-2 (a block-in-pump pacer
+				// DEADLOCKS — harness FTV2-STUCK). Pace MAIN with GFX_sync() instead: the proven
+				// scheduled-time pacer (menu/old-threaded loops use it) sleeps to the next frame
+				// deadline and ADAPTS to how long the present already took — so no double-pace
+				// with the vsync flip, no busy-spin (the 4397), and no fc_pump block (no deadlock).
+				// 1 loop == 1 frame again, so the governor's gen reads true. Depth-1: fc_pump D59.
+				if (zero_ftv2_depth2) GFX_sync();
 			}
 #else
 			core.run();
