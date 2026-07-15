@@ -60,6 +60,11 @@
 // State_* are in scope.
 static fc zero_ftv2;          // engine handle (MAIN-side); ring/state live inside it
 static int zero_ftv2_running; // 0 until fc_boot_finish; gates the frame divert (WP1)
+// Per-thread flag (TLS = race-free, unlike a shared int): set only on the CORE thread in
+// zero_ftv2_run. video_refresh emits an epoch frame ONLY when running on the CORE thread;
+// when MAIN calls video_refresh directly (Menu_loop redraws the game behind the menu) it
+// stays 0, so we present directly instead of asserting "emit outside epoch" (2026-07-14).
+static __thread int zero_ftv2_on_core = 0;
 
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
@@ -3288,8 +3293,8 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// path is bound to MAIN's EGL context). On the CORE thread we only emit — the `renderer`
 	// globals set above stay valid until the next epoch (depth-1 serial), so the drain reads
 	// them. Do NOT GFX_blitRenderer here under v2.
-	if (zero_ftv2_running) fc_emit_frame(&zero_ftv2, 0);
-	else { GFX_blitRenderer(&renderer); if (!thread_video) GFX_flip(screen); }
+	if (zero_ftv2_running && zero_ftv2_on_core) fc_emit_frame(&zero_ftv2, 0); // CORE thread, in-epoch: emit -> MAIN drains+presents
+	else { GFX_blitRenderer(&renderer); GFX_flip(screen); } // MAIN (menu redraw) or non-v2: present directly
 #else
 	GFX_blitRenderer(&renderer);
 	if (!thread_video) GFX_flip(screen);
@@ -5239,7 +5244,7 @@ static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer alread
 static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
 
 // --- runtime ---
-static void zero_ftv2_run(void* c)             { (void)c; core.run(); /* video_refresh emits via fc_emit_frame */ }
+static void zero_ftv2_run(void* c)             { (void)c; zero_ftv2_on_core = 1; core.run(); /* video_refresh emits via fc_emit_frame (this thread only) */ }
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
 static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }
