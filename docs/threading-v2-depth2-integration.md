@@ -7,6 +7,76 @@ depth-1 rendezvous into the depth-2 **pipeline** that is the actual energy win.
 
 ---
 
+# REVISION 5 — post-Codex round 4 (2026-07-15)
+
+Round 4: 11 findings (5 P0, 6 P1). The count rose from 8 because rev-4's concrete mechanisms could
+finally be attacked precisely — NOT divergence: round 4 found **zero architectural errors** (unlike
+round 3's D-a), R3-F1/R3-F8 are RESOLVED, and the "sound parts" list grew (ordered frame
+application, DISCARD applies commands, FR_OK/FR_ABORT ownership transfer, slot lifetime, drop-on-
+exhaustion core-safe). Every remaining item is edge-completeness on a now-locked architecture.
+Decisions:
+
+- **D-a2 retirement ≠ presentation (F1, engine).** A frame buffer's return to the pool is an
+  exactly-once RETIREMENT hook, distinct from presentation, invoked for EVERY acquired FR_EV_FRAME
+  buffer: normal present, DISCARD-skip, FR_DROPPED-after-acquire, stop, and every failure path.
+  framering must call it whether or not the frame presents (my rev-4 conflated "don't present" with
+  "don't retire" → the pool leak Codex found).
+- **D-a3 DISCARD/V amendment (F7).** DISCARD suppresses only PENDING, unapplied frames; a frame
+  already presented in-stream stays committed to V even if its RUN_DONE is later canceled. (Epoch
+  staging is rejected — it conflicts with barrier prefix-drain.)
+- **D-d2 phase×command matrix (F3).** Routing = (CORE phase → stream) × (command → payload/barrier
+  class). A command type lists its behavior in EACH phase it can occur. AV_INFO/geometry emitted
+  during a bootstrap/runtime/teardown SERVICE route to the service stream with a drain-driven service
+  ack (a barrier that is NOT park/stop-cancelled mid-service), never `fc_emit_barrier` (which asserts
+  with no open epoch). The Cat-4 "RUN command" classification holds ONLY for FCP_RUN_EPOCH.
+  SET_SYSTEM_AV_INFO is explicitly known to also fire during load_game → it needs the bootstrap-
+  service route, not RUN-only.
+- **D-d3 GET_CURRENT_SOFTWARE_FRAMEBUFFER → return false at depth-2 (F2).** Don't hand the core a
+  zero-copy target it may hold across retro_run; cores fall back to normal video_refresh. Service
+  phases reject it too. Lean.
+- **D-d4 registration callbacks → return false at depth-2 (F9).** SET_FRAME_TIME_CALLBACK and
+  SET_AUDIO_CALLBACK: returning true obligates the frontend to invoke them; we don't wire an
+  invocation model, so return false (don't advertise unimplemented support). Revisit only if a
+  shipped core needs them.
+- **D-d5 option getters from an epoch snapshot (F4).** GET_VARIABLE / GET_VARIABLE_UPDATE answer from
+  an immutable per-epoch options snapshot (a versioned pointer swapped at a grant boundary, like
+  input); CORE never clears the MAIN-owned `config.core.changed` — update-ack via a snapshot
+  generation or a CORE-owned consumed flag. (Runtime SET_VARIABLE otherwise races the getter on the
+  same OptionList.)
+- **D-b2 exactly-once teardown (F5, engine).** ONE terminal path governed by the F31 oracle:
+  callback-emitting unload/deinit run as a drain-driven service (MAIN drains their products to ack),
+  set `cleanup_done`, THEN stop = thread-exit-only. `terminal_cleanup` must NOT re-invoke unload/
+  deinit after stop. Failed-bootstrap cleanup uses the same exactly-once transition.
+- **D-g2 audio transaction includes resampler state (F8, engine).** The commit is transactional over
+  ring bytes + write index + resampler `diff`/`prev` + consumed count + output position. Rule: always
+  commit the processed prefix and return its accepted-input count; never advance resampler state
+  without publishing the matching output (no "process 50, publish nothing, return 0").
+- **D-d6 rumble ordered + atomic to the motor (F6).** Route rumble as an ordered command AND give the
+  VIB layer a minimum-pulse state machine (or atomic/mutex the `queued_strength`/current fields) so an
+  on→off pulse between 17 ms polls still reaches the motor. NOTE: the `VIB_setStrength`/`VIB_thread`
+  plain-field access is a PRE-EXISTING single-thread race — hardening, sequenced with D-l.
+- **D-j2 fixed pool budget + drop-as-event (F10).** Pool = depth + K (fixed small K). Acquire before
+  copy; if none free, drop WITHOUT publishing and do NOT mark the epoch FRAME; record exhaustion
+  telemetry; if exhaustion occurs during depth-2 qualification, invalidate/disable depth-2 (never hide
+  drops from the threading verdict). Drop is core-safe (video_refresh returns void) once D-a2
+  retirement is in place. No claim of a "provably sufficient" spill — exhaustion is a defined event.
+- **D61-b clock-version counter (F11).** Add a clock-version counter; CORE stamps the version at the
+  START and END of each work sample; MAIN excludes any sample whose start≠end version (it spanned a
+  ceiling change) from the sink estimator, and starts a new governor window on the first clean
+  post-transition RUN_DONE. Supersedes D61's looser "effective generation" wording (fold into
+  DECISIONS.md when D61 is implemented).
+
+**Convergence read:** the architecture — CORE pure-producer, ordered frame/command streams,
+credit-scoped buffers with explicit retirement, phase-routed services, MAIN-owned governor — is
+LOCKED (round 4 found no architectural error, only edge-completeness, and several fixes are "return
+false / stay lean"). The accumulating engine touches (retirement hook, exactly-once teardown,
+`out_slot`, run signature, audio shortfall+resampler transaction) mean implementation reopens and
+RE-VERIFIES framering/frontend_core under plain/TSan/ASan — where most remaining edges (retirement
+leak, teardown exact-once, audio transaction, options snapshot) are caught far more decisively than
+in prose. **This is the natural hand-off point from paper review to test-driven implementation.**
+
+---
+
 # REVISION 4 — post-Codex round 3 (2026-07-15)
 
 Round 3 confirmed D-f/D-h/D-i/D-j "implementable as written" (governor lifecycle, terminal
