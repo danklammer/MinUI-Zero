@@ -69,7 +69,7 @@ static __thread int zero_ftv2_on_core = 0;
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
 static const char zero_ftv2_fingerprint[] __attribute__((used)) =
-	"threading-v2 S3.4 (guard-ON; depth-1 rendezvous validated on-device; WP2 run() snapshot-delivery contract landed, depth-2 input-tick pending)";
+	"threading-v2 S4-WPB (guard-ON; engine foundation WP-G/D-a2/D-g/D-b/D-b2 sanitizer-verified; WP-B frame-pool + MAIN present_frame — depth-1 now presents THROUGH the pool, on-device render validation pending)";
 
 // NOTE (S3.2): the fc handle, filled vtable, and bootstrap entry are defined just
 // before main(), AFTER core/game/State_*/Core_* are declared (they reference those).
