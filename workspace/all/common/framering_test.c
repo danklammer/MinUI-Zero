@@ -179,11 +179,12 @@ static void* fake_core(void* arg) {
 			atomic_fetch_add(&h.svc_ops_done, 1);
 			continue;
 		}
-		uint64_t gen = 0;
-		fr_rc rc = fr_core_wait_grant(&h.fr, &gen, snap);
+		uint64_t gen = 0; uint32_t slot = 0xFFFFFFFF;
+		fr_rc rc = fr_core_wait_grant(&h.fr, &gen, &slot, snap);
 		if (rc == FR_STOP) break;
 		if (rc == FR_PARKED) continue;
 		assert(rc == FR_GRANT);
+		assert(slot == gen % h.fr.depth && "wait_grant slot must equal gen % depth (D-k)");
 		atomic_fetch_add(&h.grants_consumed, 1);
 		// INV11: the granted snapshot is exactly what MAIN wrote for this gen —
 		// slot ownership means nothing mutated it while this epoch held the credit

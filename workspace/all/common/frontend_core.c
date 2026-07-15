@@ -93,14 +93,14 @@ static void* fc_core_thread(void* arg) {
 			continue;
 		}
 		// RUNNING
-		uint64_t gen = 0; uint64_t snap[4];
-		fr_rc rc = fr_core_wait_grant(&f->fr, &gen, snap);
+		uint64_t gen = 0; uint32_t slot = 0; uint64_t snap[4];
+		fr_rc rc = fr_core_wait_grant(&f->fr, &gen, &slot, snap);
 		if (rc == FR_STOP) break;
 		if (rc == FR_PARKED) continue;
 		// FR_GRANT
 		if (get_state_core(f) != FC_RUNNING) set_state(f, FC_RUNNING);
 		tl_ep_frames = 0; tl_ep_dup = 0;
-		f->vt.run(f->vt.ctx, snap);   // snap = this epoch's input snapshot; emits via fc_emit_* (from the core's callbacks)
+		f->vt.run(f->vt.ctx, gen, slot, snap);   // gen+slot = this epoch's identity/frame-pool slot; snap = input snapshot; emits via fc_emit_*
 		fr_outcome out = tl_ep_frames ? FR_OUT_FRAME : (tl_ep_dup ? FR_OUT_DUP : FR_OUT_NONE);
 		rc = fr_core_run_done(&f->fr, out, 0);
 		if (rc == FR_STOP) break;

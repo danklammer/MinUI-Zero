@@ -5244,7 +5244,7 @@ static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer alread
 static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
 
 // --- runtime ---
-static void zero_ftv2_run(void* c, const uint64_t snap[4]) { (void)c; (void)snap; zero_ftv2_on_core = 1; core.run(); /* depth-1: input flows via input_poll on CORE (serial-safe, MAIN blocked in fc_pump). depth-2 (WP2) will read `snap` here instead — the input tick moves to MAIN and only the button/analog snapshot crosses. */ }
+static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]) { (void)c; (void)gen; (void)slot; (void)snap; zero_ftv2_on_core = 1; core.run(); /* depth-1: input flows via input_poll on CORE (serial-safe, MAIN blocked in fc_pump). depth-2: WP-A reads `snap` for input; WP-B copies the frame into pool[slot] (gen%depth) and rides the buffer id in the FRAME payload. */ }
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
 static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }

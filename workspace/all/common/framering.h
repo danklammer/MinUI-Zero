@@ -184,7 +184,7 @@ void  fr_service(fr_ring* fr, uint64_t op, fr_drain_cb cb, void* ctx);
 
 // ---- CORE-side API ----------------------------------------------------------
 // Grant/park/stop multiplexer for the RUNNING loop. FR_GRANT: *out_gen/*snap filled.
-fr_rc fr_core_wait_grant(fr_ring* fr, uint64_t* out_gen, uint64_t snap[4]);
+fr_rc fr_core_wait_grant(fr_ring* fr, uint64_t* out_gen, uint32_t* out_slot, uint64_t snap[4]);
 
 // Emit into the current epoch. Frame: blocked+ABORTING => FR_DROPPED (payload loss
 // is legal). Cmd: never lost — blocked+ABORTING goes to the overflow buffer

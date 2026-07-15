@@ -24,6 +24,7 @@
 static pthread_t g_main_tid;
 static int g_tid_ready = 0;
 static _Atomic uint64_t g_snap_checks = 0;  // INV16: epochs whose input snapshot fk_run verified (coverage guard)
+static _Atomic uint64_t g_slot_checks = 0;  // INV17: epochs whose slot==gen%depth fk_run verified (coverage guard)
 static void assert_affinity(int op) {
 	if (!g_tid_ready) return;
 	int on_main = pthread_equal(pthread_self(), g_main_tid);
@@ -102,11 +103,16 @@ static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it
 
 // The adversarial run(): a randomized epoch. Emits 0..N frames (some NULL-dup),
 // geometry commands, an AV_INFO barrier, SET_VARIABLE — the real cross-thread mix.
-static void fk_run(void* c, const uint64_t snap[4]){
+static void fk_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]){
 	fakecore* fk = c;
 	if (g_tid_ready) assert(!pthread_equal(pthread_self(), g_main_tid) && "fk_run must be on CORE (D57)");
 	assert(snap_ok(snap) && "INV16: epoch input snapshot must reach run() intact & coherent");
 	atomic_fetch_add(&g_snap_checks, 1);  // coverage: prove the check actually ran (not dead)
+	// INV17 (WP-G / D-k): the credit slot delivered to run() must identify THIS epoch's
+	// pool slot — slot == gen % depth. Anything else means the frame pool would index the
+	// wrong buffer at depth 2 (aliasing frame N against N+1's storage).
+	assert(slot == gen % fk->f->fr.depth && "INV17: run() slot must equal gen % depth");
+	atomic_fetch_add(&g_slot_checks, 1);
 	if (fk->use_gate){  // D59 cancel test: park inside the epoch until MAIN opens the gate
 		pthread_mutex_lock(&fk->gate_lk);
 		while (!fk->gate_open) pthread_cond_wait(&fk->gate_cv, &fk->gate_lk);
@@ -388,6 +394,8 @@ int main(int argc, char** argv){
 	// exact torn epoch); this MAIN-side site (join HB → atomic is safe) proves the check
 	// was actually exercised across the adversarial sessions, so it can never be dead.
 	INV(16, atomic_load(&g_snap_checks) > 0, "snapshot-fidelity check was never exercised");
+	// INV17 (WP-G / D-k): slot==gen%depth delivered to run() — coverage guard for the same reason.
+	INV(17, atomic_load(&g_slot_checks) > 0, "slot-identity check was never exercised");
 
 	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
 	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);

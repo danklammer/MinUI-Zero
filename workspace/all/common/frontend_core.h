@@ -55,12 +55,14 @@ typedef struct fc_vtable {
 	int  (*resume)(void* c);          // auto-resume unserialize; nonfatal by policy
 
 	// --- runtime ---
-	// one epoch. snap = the 4-word input snapshot MAIN captured for THIS epoch and
-	// handed to fr_grant; the ring delivers it here unmodified so the core reads a
-	// stable, per-epoch input (depth-2 pipelines MAIN's next-frame input capture
-	// against this epoch's run, so run must NOT read live input globals — it reads
-	// snap). Calls fc_emit_* from within.
-	void (*run)(void* c, const uint64_t snap[4]);
+	// one epoch. gen = this epoch's generation id; slot = the credit's frame-pool slot
+	// (WP-B: the core copies its frame into pool[slot] and rides the buffer id in the
+	// FRAME payload — decouples minarch from the gen%depth selection, D-k). snap = the
+	// 4-word input snapshot MAIN captured for THIS epoch and handed to fr_grant; the ring
+	// delivers it here unmodified so the core reads a stable, per-epoch input (depth-2
+	// pipelines MAIN's next-frame input capture against this epoch's run, so run must NOT
+	// read live input globals — it reads snap). Calls fc_emit_* from within.
+	void (*run)(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]);
 	int  (*serialize)(void* c, uint64_t arg);
 	int  (*unserialize)(void* c, uint64_t arg);
 	void (*reset)(void* c);
