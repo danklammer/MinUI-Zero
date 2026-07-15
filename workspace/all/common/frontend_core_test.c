@@ -82,6 +82,10 @@ typedef struct {
 	// (INV18) — a DISCARD-skipped frame that never retired would leave this > 0.
 	_Atomic int pool_outstanding;
 
+	// D-g: this epoch's emitted audio shortfall, published before fr_core_run_done so the
+	// depth-1 pump (which blocks for THIS epoch's RUN_DONE) can cross-check transport fidelity.
+	_Atomic uint32_t last_sf;
+
 	// D59 cancellation sub-test: when use_gate, fk_run blocks on this gate so MAIN can
 	// observe in_run==1, request an async stop, then release it — proving the depth-1
 	// fc_pump block terminates cleanly (never hangs) when stop lands mid-epoch.
@@ -130,6 +134,7 @@ static void fk_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4])
 		atomic_fetch_add(&fk->pool_outstanding, 1);           // D-a2 acquire
 		if (fc_emit_frame(fk->f, 0xF00D) == FR_OK) fk->frames_emitted++;   // one frame, then the epoch closes
 		else atomic_fetch_sub(&fk->pool_outstanding, 1);      // FR_DROPPED: CORE retires
+		atomic_store(&fk->last_sf, 0);                        // D-g: gate epoch emits no shortfall
 		return;
 	}
 	rng_t* r = &fk->run_rng;
@@ -155,6 +160,12 @@ static void fk_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4])
 			struct timespec ts={0,(long)rng_below(r,30000)}; nanosleep(&ts,NULL);
 		}
 	}
+	// D-g: emit this epoch's audio shortfall (sometimes in two pieces to test accumulation),
+	// then publish the total so the depth-1 pump can cross-check RUN_DONE transport (INV20).
+	uint32_t sf_sum = 0, sf = rng_below(r, 4);
+	if (sf)                    { fc_signal_audio_shortfall(fk->f, sf); sf_sum += sf; }
+	if (rng_below(r,3) == 0)   { fc_signal_audio_shortfall(fk->f, 1);  sf_sum += 1;  }
+	atomic_store(&fk->last_sf, sf_sum);
 	(void)emitted;
 }
 static int  fk_serialize  (void* c, uint64_t a){ (void)a; return (rng_below(&((fakecore*)c)->run_rng,20)==0)?-1:0; }
@@ -213,7 +224,7 @@ static int inv_hits[32];
 // consumer drain callback: counts applied events (frame/cmd/rundone ORDER is framering's
 // job, proven in framering_test). With a non-NULL ctx it also records a per-drain tally
 // so the depth-1 serial-rendezvous invariants (D59) can assert one-pump-one-epoch.
-typedef struct { uint64_t frames, rundone, events; } drainrec;
+typedef struct { uint64_t frames, rundone, events; uint32_t shortfall; } drainrec;
 static uint64_t applied_events;
 static void on_ev(void* ctx, const fr_event* ev){
 	applied_events++;
@@ -221,7 +232,7 @@ static void on_ev(void* ctx, const fr_event* ev){
 		drainrec* d = ctx;
 		d->events++;
 		if      (ev->kind == FR_EV_FRAME)    d->frames++;
-		else if (ev->kind == FR_EV_RUN_DONE) d->rundone++;
+		else if (ev->kind == FR_EV_RUN_DONE) { d->rundone++; d->shortfall += ev->shortfall; }
 	}
 }
 
@@ -290,7 +301,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 			int      run_before     = (fr_get_state(&F.fr) == FR_RUNNING);
 			uint32_t credits_before = atomic_load(&F.fr.credits_out);
 			uint64_t gen_before     = atomic_load(&F.fr.gen);
-			drainrec dr = {0,0,0};
+			drainrec dr = {0};
 			uint64_t snap[4]; mk_snap(gen_before+1, snap);   // INV16: coherent per-epoch input snapshot
 			fc_pump(&F, snap, on_ev, &dr);
 			// INV10-13 (D59 serial rendezvous / anti-busy-spin): a depth-1 pump that
@@ -302,6 +313,10 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 				INV(11, atomic_load(&F.fr.credits_out) == 0, "depth-1 pump returned with a credit outstanding");
 				INV(12, dr.rundone == 1, "depth-1 pump did not drain exactly one RUN_DONE epoch");
 				INV(13, atomic_load(&F.fr.gen) == gen_before+1, "depth-1 pump did not advance gen by exactly one");
+				// INV20 (D-g): the shortfall the epoch accumulated reaches MAIN in RUN_DONE
+				// unchanged. depth-1 blocked for exactly THIS epoch's RUN_DONE and CORE is now
+				// parked in wait_grant (no next epoch until the next pump), so last_sf is stable.
+				INV(20, dr.shortfall == atomic_load(&fk.last_sf), "audio shortfall not transported to RUN_DONE (D-g)");
 			}
 			uint32_t roll = rng_below(mr,100);
 			if (roll < 12){ fc_park(&F,on_ev,NULL, roll<4); fc_release(&F); }         // park (some discard)
@@ -341,7 +356,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 static _Atomic int g_pump_returned;
 static void* pump_thread_fn(void* p){
 	fc* f = (fc*)p;
-	drainrec dr = {0,0,0};
+	drainrec dr = {0};
 	uint64_t snap[4]; mk_snap(atomic_load(&f->fr.gen)+1, snap);   // INV16: coherent per-epoch input snapshot
 	fc_pump(f, snap, on_ev, &dr);
 	atomic_store(&g_pump_returned, 1);

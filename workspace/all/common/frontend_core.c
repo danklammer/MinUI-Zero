@@ -15,6 +15,7 @@ static inline fc_state get_state_core(fc* f) {
 // CORE-only per-epoch scratch (never touched by MAIN → no atomics, TSan-clean)
 static _Thread_local uint32_t tl_ep_frames;
 static _Thread_local int      tl_ep_dup;
+static _Thread_local uint32_t tl_ep_shortfall;  // D-g: audio units the SND ring could not accept this epoch
 
 fr_rc fc_emit_frame(fc* f, uint64_t payload) {
 	fr_rc rc = fr_core_emit(&f->fr, FR_EV_FRAME, 0, payload);
@@ -99,10 +100,10 @@ static void* fc_core_thread(void* arg) {
 		if (rc == FR_PARKED) continue;
 		// FR_GRANT
 		if (get_state_core(f) != FC_RUNNING) set_state(f, FC_RUNNING);
-		tl_ep_frames = 0; tl_ep_dup = 0;
+		tl_ep_frames = 0; tl_ep_dup = 0; tl_ep_shortfall = 0;
 		f->vt.run(f->vt.ctx, gen, slot, snap);   // gen+slot = this epoch's identity/frame-pool slot; snap = input snapshot; emits via fc_emit_*
 		fr_outcome out = tl_ep_frames ? FR_OUT_FRAME : (tl_ep_dup ? FR_OUT_DUP : FR_OUT_NONE);
-		rc = fr_core_run_done(&f->fr, out, 0);
+		rc = fr_core_run_done(&f->fr, out, tl_ep_shortfall);   // D-g: report this epoch's audio shortfall to MAIN
 		if (rc == FR_STOP) break;
 	}
 	terminal_cleanup(f);
@@ -112,6 +113,11 @@ static void* fc_core_thread(void* arg) {
 
 // CORE-side hook the fake/real run() can call to mark a NULL duplicate frame.
 void fc_signal_dup(fc* f) { (void)f; tl_ep_dup = 1; }
+
+// CORE-side hook (D-g): the audio path calls this when SND_batchSamples could not accept
+// `units` samples this epoch (cancellation / full ring). Accumulated per epoch, delivered to
+// MAIN in the RUN_DONE outcome so the governor/pacer see the real accepted-audio shortfall.
+void fc_signal_audio_shortfall(fc* f, uint32_t units) { (void)f; tl_ep_shortfall += units; }
 
 // ---- MAIN-side lifecycle ----------------------------------------------------
 
