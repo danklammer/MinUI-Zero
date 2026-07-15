@@ -90,6 +90,11 @@ void fr_init(fr_ring* fr, uint32_t depth) {
 	ST(fr->state, FR_QUIESCENT);
 }
 
+void fr_set_frame_retire_cb(fr_ring* fr, fr_frame_retire_cb cb, void* ctx) {
+	fr->frame_retire_cb = cb;
+	fr->frame_retire_ctx = ctx;
+}
+
 void fr_destroy(fr_ring* fr) {
 	assert(fr_get_state(fr) == FR_STOPPED); // never destroy while a worker may live
 	pthread_mutex_destroy(&fr->lk);
@@ -177,6 +182,11 @@ int fr_drain(fr_ring* fr, fr_drain_cb cb, void* ctx, int mode) {
 				int skip = (mode == FR_DRAIN_DISCARD) && ev.kind == FR_EV_FRAME
 				           && !(ev.flags & FR_EVF_PERSISTENT);
 				if (!skip) { cb(ctx, &ev); applied++; }
+				// D-a2: retire the frame buffer AFTER presenting (or instead of, on skip),
+				// exactly once per published FR_EV_FRAME, on every path — else a DISCARD-
+				// skipped frame's pool buffer is consumed here but never returned (leak).
+				if (ev.kind == FR_EV_FRAME && fr->frame_retire_cb)
+					fr->frame_retire_cb(fr->frame_retire_ctx, ev.payload);
 				if (ev.flags & FR_EVF_BARRIER) {
 					// apply-then-release: barriers are never skipped (persistent
 					// class by construction); CORE's barrier wait releases HERE,
