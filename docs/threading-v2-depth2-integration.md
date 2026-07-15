@@ -7,6 +7,114 @@ depth-1 rendezvous into the depth-2 **pipeline** that is the actual energy win.
 
 ---
 
+# REVISION 4 — post-Codex round 3 (2026-07-15)
+
+Round 3 confirmed D-f/D-h/D-i/D-j "implementable as written" (governor lifecycle, terminal
+poweroff, save-identity, frame OOM — CLOSED). It found the remaining P0s in D-a…D-d, including a
+real architectural error in D-a and an overclaim in D-d (a table I described but never wrote).
+Both accepted. Rev-4 corrects them.
+
+**D-a REVERTED — ordered frame events + bounded pool, NOT coalesce-at-RUN_DONE (fixes R3-F1/R3-F2).**
+Round-3 F1 is correct: presenting once at RUN_DONE breaks the command/frame ordering contract (a
+`SET_GEOMETRY` emitted after a frame would apply, during stream drain, before that frame's deferred
+present). The coalescing shortcut is abandoned. Restore the straightforward v2.4 design: **each
+`video_refresh` emits an ordered `FR_EV_FRAME` carrying its own pool-buffer id; MAIN presents each
+frame IN STREAM ORDER inside the drain callback** (so a command before a frame applies before its
+present, a command after applies after — ordering preserved by construction). Storage: a **bounded
+frame-buffer pool** (`depth` + a small spill for multi-`video_refresh` epochs); each published frame
+owns its buffer until MAIN presents and returns it; pool exhaustion drops the frame (FRAME payload is
+droppable by contract). This also fixes R3-F2 for free: the buffer id rides the FRAME payload (no
+`gen % depth` coupling, no need to carry a slot through RUN_DONE), and **`FR_DRAIN_DISCARD` already
+skips `FR_EV_FRAME`** — so a discard park never presents a canceled frame and never advances the
+last-presented visual gen V. Outcome FRAME/DUP/NONE stays via `tl_ep_frames`/`fc_signal_dup`; NULL
+`video_refresh` routes to `fc_signal_dup` (DUP), and MAIN re-presents the MAIN-owned last-presented
+immutable frame for DUP/NONE. The integration drain callback receives the drain **mode** so it can
+assert it is never asked to present under DISCARD.
+
+**D-b EXTENDED — bootstrap & teardown phases must use REAL drains (fixes R3-F3).** Two gaps: (1)
+`fc_boot_stage` routes CORE service products through `fc_noop_cb` (frontend_core.c:157) — so a typed
+command emitted during `retro_init`/`load_game` (options, input descriptors, geometry) is never
+applied or freed → leak + lost state. Fix: bootstrap stages pass the **real integration drain
+callback**, and Category-3 bootstrap setters route through the bootstrap-service stream. (2) Terminal
+cleanup runs `unload_game`/`deinit` after stop with no phase and no MAIN drain — a callback emitted
+there routes as `FCP_NONE` (wrong direct path) or into a service stream MAIN no longer drains (leak/
+deadlock). Fix: add phase **`FCP_TEARDOWN_SVC`**; run callback-emitting `unload`/`deinit` as
+drain-driven services **before** stop, keep MAIN draining until they ack, then stop → observe
+STOPPED → join. The CORE-TLS phase is set/restored by the engine immediately around every vtable op,
+so it is never stale across the RUN↔SVC↔TEARDOWN boundaries.
+
+**D-c COMMAND OWNERSHIP STATE MACHINE (fixes R3-F4).** `CORE_OWNED → EVENT_OWNED → FREED`:
+- `fr_core_emit` returning **FR_OK transfers ownership** to the ring (EVENT_OWNED).
+- `fr_core_emit` returning **FR_ABORT ALSO transfers ownership** — a persistent command is retained
+  in the CORE-local overflow ledger and flushed to MAIN before RUN_DONE. The wrapper must NOT treat
+  FR_ABORT as failure-and-free (that is the use-after-free + double-free Codex found).
+- CORE frees only on a result that proves no event/overflow entry was created.
+- MAIN frees **exactly once**, after the apply callback returns. Successful park/terminal drainage
+  therefore leaves nothing for a second cleanup sweep (no double-free).
+- Persistent-command allocation failure must **fail-closed / terminate** before CORE proceeds —
+  returning false while silently losing already-applied core state is not acceptable. Fail-closed
+  paths may intentionally leak at process exit (matches the existing contract).
+
+**D-d THE ACTUAL ENVIRONMENT-CALLBACK INVENTORY (fixes R3-F5).** Built from the 36 handled cases in
+minarch.c's `environment_callback`. Grouped by routing rule:
+
+- **Cat-1 Synchronous getters** — answered ON CORE from epoch-stable data (the core blocks on the
+  return, so they can NOT be async-routed to MAIN): `GET_OVERSCAN`, `GET_CAN_DUPE`,
+  `GET_SYSTEM_DIRECTORY`, `GET_SAVE_DIRECTORY`, `GET_VARIABLE`, `GET_VARIABLE_UPDATE`,
+  `GET_LOG_INTERFACE`, `GET_INPUT_DEVICE_CAPABILITIES`, `GET_AUDIO_VIDEO_ENABLE`,
+  `GET_INPUT_BITMASKS`, `GET_CORE_OPTIONS_VERSION`, `GET_DISK_CONTROL_INTERFACE_VERSION`. Rule: read
+  only state immutable during an epoch (paths + option values are fixed at bootstrap/menu, and menu =
+  park, so no mid-epoch mutation). No copy, no command.
+  - **HAZARD `GET_CURRENT_SOFTWARE_FRAMEBUFFER`** — hands the core a render target. At depth-2 it must
+    return a **credit-owned pool buffer**, never the shared `screen`, or CORE renders into a
+    MAIN-owned/aliased surface.
+- **Cat-2 Registration** (bootstrap; store a callback pointer, no MAIN state): `SET_DISK_CONTROL_
+  INTERFACE`, `SET_DISK_CONTROL_EXT_INTERFACE`, `SET_FRAME_TIME_CALLBACK`, `SET_AUDIO_CALLBACK`,
+  `GET_RUMBLE_INTERFACE`. (Our shipped cores don't drive `SET_AUDIO_CALLBACK`; if one did, who invokes
+  it and when is out-of-scope for this bring-up and must be scoped separately.)
+- **Cat-3 Bootstrap setters of MAIN-owned state** — emitted during init/load_game on CORE → route via
+  the **bootstrap-service** stream (D-b), deep-copied, applied+freed on MAIN: `SET_PIXEL_FORMAT`,
+  `SET_INPUT_DESCRIPTORS`, `SET_VARIABLES`, `SET_CORE_OPTIONS`, `SET_CORE_OPTIONS_INTL`,
+  `SET_CONTROLLER_INFO`, `SET_CONTENT_INFO_OVERRIDE`, `SET_SUPPORT_NO_GAME`, `SET_PERFORMANCE_LEVEL`.
+  Deep-copy shape: option definitions carry nested key/value/description strings + arrays → copy the
+  whole tree.
+- **Cat-4 Runtime setters** — emitted during retro_run on CORE → **RUN command** stream, ordered,
+  deep-copied: `SET_GEOMETRY` (ordered, applies at its stream position — the ordering D-a-revert
+  preserves), `SET_SYSTEM_AV_INFO` (RUN command + **BARRIER**: MAIN applies, CORE waits),
+  `SET_MESSAGE` (copy string), `SET_VARIABLE` (copy key/value), `SET_CORE_OPTIONS_DISPLAY`,
+  `SHUTDOWN` (→ quit via atomic/event; terminal, no further grant).
+- **Cat-5 Rumble invocation** — the core calls the registered rumble callback during retro_run →
+  **ordered stream command, NOT a coalescing atomic** (an on→off pulse must survive to the motor);
+  MAIN applies in order.
+
+**D-g AUDIO CANCELLATION EDGE (fixes R3-F6).** Add a per-epoch, acquire-loaded **cancellation token**;
+include it in `SND_batchSamples`' ring-space wait predicate and **wake the SND wait on park/stop**
+(waking framering's producer condvar does NOT wake a separate SND wait — that was the residual park
+stall). Accepted samples are published as **one atomic prefix commit** (bytes written before the
+write index is release-published once); shortfall counts only cancellation-rejected units;
+`fr_core_run_done(outcome, shortfall)` carries it (currently hardcoded 0 — engine touch). A park
+landing mid-copy is safe iff the callback either commits the completed prefix and returns k, or
+publishes nothing and returns 0 — it must never expose written-but-unpublished samples; later batch
+calls after cancellation return 0 without touching the ring.
+
+**D-k SLOT-RETURN ASSERTIONS (from R3-F8).** `fr_core_wait_grant` gains an output-only `out_slot`:
+write it only when returning FR_GRANT (unspecified on PARK/STOP); assign after acquiring the
+published grant; assert `slot < depth`, `slot_owned` contains slot, `snap[slot].gen == gen`; preserve
+slot ownership through the RUN_DONE drain callback; prohibit slot reuse before the callback returns
+and depth resize until every slot is reclaimed. With D-a-revert the frame reaches MAIN via the FRAME
+payload, so RUN_DONE need NOT also carry the slot — `out_slot` serves only CORE's pool indexing.
+
+**D-e status: D61 LANDED** (DECISIONS.md) — MAIN owns the governor (contract-aligned to shipped
+reality; the tick already runs on MAIN, `Gov_start` is init-only), CORE publishes work samples, gen
+from drained RUN_DONE, plus the round-3 governor-window hardening. Resolves R3-F7.
+
+**Convergence:** round 1 = 13, round 2 = 11, round 3 = 8. D-f/D-h/D-i/D-j implementable; D-a…D-d and
+D-g now corrected/specified and D61 landed. Round 4 should confirm the D-a revert closes the ordering
++ discard + slot-transport trio, the ownership FSM is leak/double-free-free across all paths, the env
+table is complete, and the audio cancellation edge is race-free.
+
+---
+
 # REVISION 3 — post-Codex round 2 (2026-07-15)
 
 Round 2 CLOSED 7 round-1 findings (F1, F2-sleep, F3-pacer, F10-sig, F11, F12-init, F13); marked

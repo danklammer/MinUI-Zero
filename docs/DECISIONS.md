@@ -925,3 +925,23 @@ MAIN-affine and `show_menu`/`fast_forward` are MAIN-read), and the core-affectin
 route through the CORE service channel (F23: only CORE ever enters the core) instead of being
 called inline. That work needs on-device iteration and, for its payoff proof (the DKC 3×-energy
 A/B), Dan's demanding-scene save states — so it is deliberately staged behind this contract.
+
+## D61 — MAIN owns the governor under threading v2 (amends the v2.4 contract) (2026-07-15)
+The v2.4 threading contract (`docs/threading-v2-design.md`, "Performance contract") reads as though
+the governor runs on the CORE thread. That never matched the shipped code and it collides with the
+depth-2 "CORE is a pure producer" correction (`threading-v2-depth2-integration.md` rev-2/rev-3):
+the CORE thread must do only run/copy/audio/command work, so it cannot also own cpufreq. Ground
+truth: the governor already runs on **MAIN** today — `Gov_start` (minarch.c:1212) is init-only (no
+thread spawn), and the governor tick is called inline in the MAIN run loop around the present. So
+this decision is a **contract-alignment, not a behavior change**: MAIN owns `GovState` and applies
+the cpufreq ceilings; under depth-2 the CORE thread publishes immutable per-epoch work samples into
+the ring and MAIN derives the generation rate from **drained RUN_DONE** (not loop/pump iterations —
+the D59 lesson, generalized to the non-blocking depth-2 pump). Depth-2 adds up to one epoch of
+actuation delay (MAIN sets the clock one epoch behind the work it measures); that is accepted.
+Governor hardening required for depth-2 (from Codex round-3): start a new rate window on the first
+post-release/post-park RUN_DONE rather than at release wall-time (a window spanning menu/sleep would
+read as a false slowdown); tag ceiling changes with an effective generation; exclude the mixed-
+frequency work samples immediately after a ceiling change from the sink estimator; reset governor
+history symmetrically at every depth transition; and flip the depth predicate only while QUIESCENT
+inside the depth-change gate. Design-of-record; not yet implemented (depth-1 ships governor-on-MAIN
+already, unchanged). The stale v2.4 "governor on CORE" wording is superseded by this entry.
