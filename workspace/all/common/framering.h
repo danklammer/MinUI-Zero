@@ -68,6 +68,15 @@ typedef struct {
 // FR_EV_FRAME payloads (never called for them); everything else always applies.
 typedef void (*fr_drain_cb)(void* ctx, const fr_event* ev);
 
+// Frame-retirement callback (D-a2): invoked EXACTLY ONCE per PUBLISHED FR_EV_FRAME, when it
+// is consumed from the stream, on EVERY drain path — normal present, DISCARD-skip, and
+// park/stop drainage. This is how the integrator's frame-buffer pool returns a buffer whose
+// event was NOT presented (the DISCARD-skip leak: the drain cb never fires for skipped
+// frames). Frames dropped at emit (FR_DROPPED, never published) are retired CORE-side and
+// never reach here (D-a2': CORE retires pre-publication, MAIN retires EVENT_OWNED). payload =
+// the FRAME event's payload = the pool buffer id. NULL (default) = no retirement (legacy).
+typedef void (*fr_frame_retire_cb)(void* ctx, uint64_t payload);
+
 #define FR_DRAIN_NORMAL  0
 #define FR_DRAIN_DISCARD 1  // FF flip / trial depth change: payload only; persistent+cmds apply
 
@@ -144,6 +153,11 @@ typedef struct {
 
 	// fail-closed timeout for drain-driven waits (seconds); test override
 	int failclosed_sec;
+
+	// frame-buffer retirement (D-a2): MAIN-side pool return, fired per published frame on
+	// every drain path so DISCARD-skipped frames don't leak their buffer. Set post-init.
+	fr_frame_retire_cb frame_retire_cb;
+	void* frame_retire_ctx;
 } fr_ring;
 
 // ---- MAIN-side API --------------------------------------------------------
@@ -162,6 +176,9 @@ int   fr_drain(fr_ring* fr, fr_drain_cb cb, void* ctx, int mode);
 // Block until there is something to drain or a producer state change (test/main
 // loop helper; normal integration polls on its pacer tick).
 void  fr_wait_events(fr_ring* fr);
+
+// Register the frame-retirement callback (D-a2). Call once after fr_init, before RUNNING.
+void  fr_set_frame_retire_cb(fr_ring* fr, fr_frame_retire_cb cb, void* ctx);
 
 // Park: gate steps 1-6 (stop grants, cancel queued-unrun grants, abort/finish the
 // active epoch, drain [mode], reclaim every credit, verify slots unowned). The wait

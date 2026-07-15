@@ -25,6 +25,11 @@ static pthread_t g_main_tid;
 static int g_tid_ready = 0;
 static _Atomic uint64_t g_snap_checks = 0;  // INV16: epochs whose input snapshot fk_run verified (coverage guard)
 static _Atomic uint64_t g_slot_checks = 0;  // INV17: epochs whose slot==gen%depth fk_run verified (coverage guard)
+static _Atomic uint64_t g_pool_retires = 0; // INV18/19: frame buffers retired via the D-a2 hook (coverage guard)
+
+// D-a2 MAIN-side retirement: framering calls this once per published frame on every drain
+// path (present, DISCARD-skip, park). Returns the buffer to the (modeled) pool.
+static void fk_retire(void* ctx, uint64_t payload);
 static void assert_affinity(int op) {
 	if (!g_tid_ready) return;
 	int on_main = pthread_equal(pthread_self(), g_main_tid);
@@ -72,6 +77,11 @@ typedef struct {
 	// runtime emit accounting (CORE-only during a session)
 	uint64_t frames_emitted, cmds_emitted, barriers_emitted;
 
+	// D-a2 frame-pool model: CORE acquires a buffer per published frame (++), MAIN retires
+	// via fk_retire (--); an FR_DROPPED frame is retired CORE-side. Must be 0 after teardown
+	// (INV18) — a DISCARD-skipped frame that never retired would leave this > 0.
+	_Atomic int pool_outstanding;
+
 	// D59 cancellation sub-test: when use_gate, fk_run blocks on this gate so MAIN can
 	// observe in_run==1, request an async stop, then release it — proving the depth-1
 	// fc_pump block terminates cleanly (never hangs) when stop lands mid-epoch.
@@ -117,7 +127,9 @@ static void fk_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4])
 		pthread_mutex_lock(&fk->gate_lk);
 		while (!fk->gate_open) pthread_cond_wait(&fk->gate_cv, &fk->gate_lk);
 		pthread_mutex_unlock(&fk->gate_lk);
-		fc_emit_frame(fk->f, 0xF00D); fk->frames_emitted++;   // one frame, then the epoch closes
+		atomic_fetch_add(&fk->pool_outstanding, 1);           // D-a2 acquire
+		if (fc_emit_frame(fk->f, 0xF00D) == FR_OK) fk->frames_emitted++;   // one frame, then the epoch closes
+		else atomic_fetch_sub(&fk->pool_outstanding, 1);      // FR_DROPPED: CORE retires
 		return;
 	}
 	rng_t* r = &fk->run_rng;
@@ -128,7 +140,11 @@ static void fk_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4])
 		uint32_t roll = rng_below(r,100);
 		if (roll < 45){
 			if (rng_below(r,10)==0){ fc_signal_dup(fk->f); }        // NULL dup
-			else if (fc_emit_frame(fk->f, 0xF00D ^ i) == FR_OK){ emitted++; fk->frames_emitted++; }
+			else {
+				atomic_fetch_add(&fk->pool_outstanding, 1);          // D-a2 acquire a pool buffer
+				if (fc_emit_frame(fk->f, 0xF00D ^ i) == FR_OK){ emitted++; fk->frames_emitted++; }
+				else atomic_fetch_sub(&fk->pool_outstanding, 1);     // FR_DROPPED: not published, CORE retires
+			}
 		} else if (roll < 70){
 			if (fc_emit_cmd(fk->f, 0, 0xC0DE ^ i) != FR_DROPPED) fk->cmds_emitted++;  // SET_VARIABLE-ish
 		} else if (roll < 85){
@@ -147,6 +163,11 @@ static void fk_reset      (void* c){ (void)c; }
 static void fk_disarm     (void* c){ fakecore* fk=c; fk->disarm_called=1; }
 static void fk_unload     (void* c){ fakecore* fk=c; fk->unload_called=1; }
 static void fk_deinit     (void* c){ fakecore* fk=c; fk->deinit_called=1; }
+static void fk_retire(void* ctx, uint64_t payload){
+	(void)payload; fakecore* fk = ctx;
+	atomic_fetch_sub(&fk->pool_outstanding, 1);  // MAIN returns the published buffer to the pool
+	atomic_fetch_add(&g_pool_retires, 1);
+}
 
 static void fill_vtable(fc_vtable* vt, fakecore* fk){
 	memset(vt,0,sizeof(*vt));
@@ -237,6 +258,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 	fc F; fk.f=&F;
 	uint32_t depth = (rng_below(mr,2)?2:1);
 	fc_init(&F,&vt,depth);
+	fc_set_frame_retire_cb(&F, fk_retire, &fk);   // D-a2: model the frame pool
 
 	fc_state reached = stage_by_stage ? boot_stage_by_stage(&F) : fc_bootstrap(&F);
 	// RESUME failure is NON-FATAL by policy: that injection completes bootstrap and
@@ -303,6 +325,10 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 	// INV7: unload never without load; deinit never without init (belt over the oracle)
 	INV(7, !(fk.unload_called && at_teardown < FC_CONTENT_LOADED), "unload_game before content loaded");
 	INV(8, !(fk.deinit_called && at_teardown < FC_INITIALIZED), "deinit before init");
+	// INV18 (D-a2): every acquired frame buffer was retired — on present, DISCARD-skip, or
+	// park/stop drainage. teardown joins CORE first, so this read is race-free. A nonzero
+	// value is the DISCARD-skip pool leak (a skipped frame consumed but never retired).
+	INV(18, atomic_load(&fk.pool_outstanding) == 0, "frame-pool leak: acquired != retired (D-a2)");
 }
 
 // ---- D59: deterministic stop-cancel sub-test --------------------------------------
@@ -338,6 +364,7 @@ static void run_cancel_test(rng_t* mr){
 	fc_vtable vt; fill_vtable(&vt,&fk);
 	fc F; fk.f=&F;
 	fc_init(&F,&vt,1);   // depth 1: serial rendezvous
+	fc_set_frame_retire_cb(&F, fk_retire, &fk);   // D-a2: model the frame pool
 	fc_state reached = fc_bootstrap(&F);
 	INV(14, reached==FC_RESUME_APPLIED || reached==FC_RUNNING, "cancel-test bootstrap did not reach RUNNING");
 
@@ -396,6 +423,8 @@ int main(int argc, char** argv){
 	INV(16, atomic_load(&g_snap_checks) > 0, "snapshot-fidelity check was never exercised");
 	// INV17 (WP-G / D-k): slot==gen%depth delivered to run() — coverage guard for the same reason.
 	INV(17, atomic_load(&g_slot_checks) > 0, "slot-identity check was never exercised");
+	// INV19 (D-a2): the retirement hook actually fired (else INV18's balance is trivially 0).
+	INV(19, atomic_load(&g_pool_retires) > 0, "frame-retirement hook was never exercised");
 
 	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
 	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);

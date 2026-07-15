@@ -128,6 +128,11 @@ static inline int fc_boot_failed(const fc* f) {
 // cb receives applied frames/commands in order (MAIN applies them).
 void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx);
 
+// Register the frame-retirement callback (D-a2) on the underlying ring. Call once after
+// fc_init. The integrator's pool returns a buffer here for every published frame, on every
+// drain path (present, DISCARD-skip, park/stop) — so skipped frames never leak.
+void fc_set_frame_retire_cb(fc* f, fr_frame_retire_cb cb, void* ctx);
+
 // Reversible transitions (session + CORE thread survive).
 void fc_park(fc* f, fr_drain_cb cb, void* cbctx, int discard);
 void fc_release(fc* f);

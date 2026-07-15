@@ -221,6 +221,10 @@ void fc_pump(fc* f, const uint64_t snapshot[4], fr_drain_cb cb, void* cbctx) {
 	}
 }
 
+void fc_set_frame_retire_cb(fc* f, fr_frame_retire_cb cb, void* ctx) {
+	fr_set_frame_retire_cb(&f->fr, cb, ctx);
+}
+
 void fc_park(fc* f, fr_drain_cb cb, void* cbctx, int discard) {
 	fr_park(&f->fr, cb_or_noop(cb), cbctx, discard ? FR_DRAIN_DISCARD : FR_DRAIN_NORMAL);
 }
