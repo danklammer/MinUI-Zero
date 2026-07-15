@@ -16,19 +16,40 @@ static inline fc_state get_state_core(fc* f) {
 static _Thread_local uint32_t tl_ep_frames;
 static _Thread_local int      tl_ep_dup;
 static _Thread_local uint32_t tl_ep_shortfall;  // D-g: audio units the SND ring could not accept this epoch
+static _Thread_local fc_phase tl_phase = FCP_NONE;  // D-b: CORE execution phase (set around every vtable op)
 
+fc_phase fc_current_phase(void) { return tl_phase; }
+
+// D-b: frames only exist inside a run epoch — emit to the run stream in RUN_EPOCH, drop
+// otherwise (a frame outside an epoch is meaningless; never assert the caller into fr_core_emit).
 fr_rc fc_emit_frame(fc* f, uint64_t payload) {
+	if (tl_phase != FCP_RUN_EPOCH) return FR_DROPPED;
 	fr_rc rc = fr_core_emit(&f->fr, FR_EV_FRAME, 0, payload);
 	if (rc == FR_OK) tl_ep_frames++;
 	return rc;
 }
+// D-b: commands route by phase. RUN_EPOCH -> the run stream (ordered against this epoch's
+// frames). Every *_SVC phase -> the SERVICE stream (bootstrap/runtime/teardown have no open
+// epoch; the run stream would assert `in_run`). FCP_NONE would be a caller bug — drop it.
 fr_rc fc_emit_cmd(fc* f, uint32_t flags, uint64_t payload) {
-	return fr_core_emit(&f->fr, FR_EV_CMD, flags, payload);
+	if (tl_phase == FCP_RUN_EPOCH) return fr_core_emit(&f->fr, FR_EV_CMD, flags, payload);
+	if (tl_phase == FCP_NONE) return FR_DROPPED;
+	fr_core_service_emit(&f->fr, flags, payload);   // service stream; MAIN drains during the op
+	return FR_OK;
 }
+// D-b: a barrier (AV_INFO/geometry apply-then-wait) also routes by phase, but the wait is
+// uniform — both streams bump barrier_emitted, MAIN's drain bumps barrier_applied.
 fr_rc fc_emit_barrier(fc* f, uint64_t payload) {
-	fr_rc rc = fr_core_emit(&f->fr, FR_EV_CMD, FR_EVF_PERSISTENT | FR_EVF_BARRIER, payload);
-	if (rc == FR_OK) (void)fr_core_barrier_wait(&f->fr);  // FR_ABORT ok: applied before park ack
-	return rc;
+	uint32_t flags = FR_EVF_PERSISTENT | FR_EVF_BARRIER;
+	if (tl_phase == FCP_RUN_EPOCH) {
+		fr_rc rc = fr_core_emit(&f->fr, FR_EV_CMD, flags, payload);
+		if (rc == FR_OK) (void)fr_core_barrier_wait(&f->fr);  // FR_ABORT ok: applied before park ack
+		return rc;
+	}
+	if (tl_phase == FCP_NONE) return FR_DROPPED;
+	fr_core_service_emit(&f->fr, flags, payload);
+	(void)fr_core_barrier_wait(&f->fr);   // service-side barrier: MAIN applies during the op
+	return FR_OK;
 }
 
 // Decode a service op word: low 8 bits = fc_op, high bits = arg.
@@ -43,6 +64,9 @@ static void dispatch_service(fc* f, uint64_t opword) {
 	fc_op op = op_of(opword);
 	uint64_t arg = arg_of(opword);
 	int r = 0;
+	// D-b: bootstrap stages (op < SERIALIZE) vs runtime menu ops route their emitted
+	// commands to the service stream; set the phase around the vtable call.
+	tl_phase = (op >= FC_OP_SERIALIZE) ? FCP_RUNTIME_SVC : FCP_BOOTSTRAP_SVC;
 	switch (op) {
 	case FC_OP_GET_INFO:   r = f->vt.get_system_info(f->vt.ctx); if (!r) set_state(f, FC_INFO_READY); break;
 	case FC_OP_INIT:       r = f->vt.init(f->vt.ctx);            if (!r) set_state(f, FC_INITIALIZED); break;
@@ -60,6 +84,7 @@ static void dispatch_service(fc* f, uint64_t opword) {
 	case FC_OP_RESET:       f->vt.reset(f->vt.ctx);               r = 0; break;
 	default: break;
 	}
+	tl_phase = FCP_NONE;
 	atomic_store_explicit(&f->last_op_result,
 	                      r ? (((uint64_t)op << 8) | (uint64_t)(r & 0xFF)) : 0,
 	                      memory_order_release);
@@ -73,9 +98,11 @@ static void dispatch_service(fc* f, uint64_t opword) {
 // legal from the highest state reached. THIS is what the fake-core harness asserts.
 static void terminal_cleanup(fc* f) {
 	fc_state s = get_state_core(f);
+	tl_phase = FCP_TEARDOWN_SVC;  // D-b: unload/deinit may emit callbacks -> service stream (D-b2)
 	if (s >= FC_MEMORY_READY)   f->vt.disarm_crash(f->vt.ctx);  // armed at MEMORY_READY
 	if (s >= FC_CONTENT_LOADED) f->vt.unload_game(f->vt.ctx);   // load_game succeeded
 	if (s >= FC_INITIALIZED)    f->vt.deinit(f->vt.ctx);        // retro_init succeeded
+	tl_phase = FCP_NONE;
 	// below FC_INITIALIZED: get_system_info / thread-create only → no libretro cleanup
 }
 
@@ -101,7 +128,9 @@ static void* fc_core_thread(void* arg) {
 		// FR_GRANT
 		if (get_state_core(f) != FC_RUNNING) set_state(f, FC_RUNNING);
 		tl_ep_frames = 0; tl_ep_dup = 0; tl_ep_shortfall = 0;
+		tl_phase = FCP_RUN_EPOCH;
 		f->vt.run(f->vt.ctx, gen, slot, snap);   // gen+slot = this epoch's identity/frame-pool slot; snap = input snapshot; emits via fc_emit_*
+		tl_phase = FCP_NONE;
 		fr_outcome out = tl_ep_frames ? FR_OUT_FRAME : (tl_ep_dup ? FR_OUT_DUP : FR_OUT_NONE);
 		rc = fr_core_run_done(&f->fr, out, tl_ep_shortfall);   // D-g: report this epoch's audio shortfall to MAIN
 		if (rc == FR_STOP) break;

@@ -26,6 +26,7 @@ static int g_tid_ready = 0;
 static _Atomic uint64_t g_snap_checks = 0;  // INV16: epochs whose input snapshot fk_run verified (coverage guard)
 static _Atomic uint64_t g_slot_checks = 0;  // INV17: epochs whose slot==gen%depth fk_run verified (coverage guard)
 static _Atomic uint64_t g_pool_retires = 0; // INV18/19: frame buffers retired via the D-a2 hook (coverage guard)
+static _Atomic uint64_t g_svc_cmd_emitted = 0; // INV21: commands/barriers emitted from a bootstrap service (D-b routing)
 
 // D-a2 MAIN-side retirement: framering calls this once per published frame on every drain
 // path (present, DISCARD-skip, park). Returns the buffer to the (modeled) pool.
@@ -103,7 +104,20 @@ static int stage_rc(fakecore* fk, int op) {
 static int fk_get_info (void* c){ return stage_rc((fakecore*)c, FC_OP_GET_INFO); }
 static int fk_init     (void* c){ return stage_rc((fakecore*)c, FC_OP_INIT); }
 static int fk_open     (void* c){ return stage_rc((fakecore*)c, FC_OP_OPEN); }
-static int fk_load     (void* c){ return stage_rc((fakecore*)c, FC_OP_LOAD); }
+static int fk_load     (void* c){
+	fakecore* fk = c;
+	int r = stage_rc(fk, FC_OP_LOAD);
+	if (!r) {
+		// D-b: a real core can emit env callbacks (SET_VARIABLES / SET_SYSTEM_AV_INFO)
+		// during load_game. These run in FCP_BOOTSTRAP_SVC, so they MUST route to the
+		// service stream — routing them to the run stream asserts `in_run` (no open epoch),
+		// and a broken service-barrier would hang here (fail-closed abort). Exercise both.
+		fc_emit_cmd(fk->f, FR_EVF_PERSISTENT, 0xB007);   // SET_VARIABLES-like
+		fc_emit_barrier(fk->f, 0xA71F);                   // SET_SYSTEM_AV_INFO-like (apply-then-wait)
+		atomic_fetch_add(&g_svc_cmd_emitted, 1);
+	}
+	return r;
+}
 static int fk_memory   (void* c){ return stage_rc((fakecore*)c, FC_OP_MEMORY); }
 static int fk_armcrash (void* c){ fakecore* fk=c; int r=stage_rc(fk,FC_OP_ARM_CRASH); if(!r) fk->crash_armed=1; return r; }
 static int fk_av       (void* c){ return stage_rc((fakecore*)c, FC_OP_AV); }
@@ -440,6 +454,10 @@ int main(int argc, char** argv){
 	INV(17, atomic_load(&g_slot_checks) > 0, "slot-identity check was never exercised");
 	// INV19 (D-a2): the retirement hook actually fired (else INV18's balance is trivially 0).
 	INV(19, atomic_load(&g_pool_retires) > 0, "frame-retirement hook was never exercised");
+	// INV21 (D-b): a bootstrap-service command+barrier was emitted and routed to the service
+	// stream. Correctness is proven by the RUN of these tests NOT aborting on fr_core_emit's
+	// `in_run` assert (mis-route) and NOT hanging (broken service barrier); this is coverage.
+	INV(21, atomic_load(&g_svc_cmd_emitted) > 0, "bootstrap-service command routing never exercised");
 
 	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
 	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);
