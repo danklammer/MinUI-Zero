@@ -157,5 +157,6 @@ fr_rc fc_emit_frame(fc* f, uint64_t payload);
 fr_rc fc_emit_cmd(fc* f, uint32_t flags, uint64_t payload);   // flags: FR_EVF_*
 fr_rc fc_emit_barrier(fc* f, uint64_t payload);               // AV_INFO: cmd+persistent+barrier, then wait
 void  fc_signal_dup(fc* f);                                   // NULL duplicate frame this epoch
+void  fc_signal_audio_shortfall(fc* f, uint32_t units);      // D-g: audio units rejected this epoch (accumulates -> RUN_DONE)
 
 #endif
