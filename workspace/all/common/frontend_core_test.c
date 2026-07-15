@@ -23,6 +23,7 @@
 // bootstrap/runtime stage MUST run on the CORE thread. Captured in main() before fc_init.
 static pthread_t g_main_tid;
 static int g_tid_ready = 0;
+static _Atomic uint64_t g_snap_checks = 0;  // INV16: epochs whose input snapshot fk_run verified (coverage guard)
 static void assert_affinity(int op) {
 	if (!g_tid_ready) return;
 	int on_main = pthread_equal(pthread_self(), g_main_tid);
@@ -35,6 +36,23 @@ static void assert_affinity(int op) {
 typedef struct { uint64_t s; } rng_t;
 static uint64_t rng_next(rng_t* r){ uint64_t x=r->s; x^=x<<13; x^=x>>7; x^=x<<17; return r->s=x; }
 static uint32_t rng_below(rng_t* r, uint32_t n){ return (uint32_t)(rng_next(r)%n); }
+
+// INV16 (WP2 snapshot pipe): the 4-word per-epoch input snapshot MAIN grants must reach
+// run() intact and coherent — the ring is a faithful pipe for input, never zeroing,
+// truncating, or splicing another epoch's words. MAIN builds each snapshot as a pure
+// function of the epoch id E (mk_snap); fk_run (on CORE) asserts the relations still hold
+// (snap_ok). A dropped/reordered/torn snapshot word fails the check. The engine treats
+// snap as opaque (policy-free) — this coherence contract lives entirely in the harness,
+// which owns the snapshot's meaning, mirroring how minarch will pack real input into it.
+static void mk_snap(uint64_t E, uint64_t out[4]){
+	out[0]=E;
+	out[1]=~E;
+	out[2]=E*0x9E3779B97F4A7C15ull;
+	out[3]=E^0xA5A5A5A5A5A5A5A5ull;
+}
+static int snap_ok(const uint64_t s[4]){
+	return s[1]==~s[0] && s[2]==s[0]*0x9E3779B97F4A7C15ull && s[3]==(s[0]^0xA5A5A5A5A5A5A5A5ull);
+}
 
 // ---- the fake core ---------------------------------------------------------------
 typedef struct {
@@ -84,9 +102,11 @@ static int fk_resume   (void* c){ // resume failure is NON-FATAL — exercise it
 
 // The adversarial run(): a randomized epoch. Emits 0..N frames (some NULL-dup),
 // geometry commands, an AV_INFO barrier, SET_VARIABLE — the real cross-thread mix.
-static void fk_run(void* c){
+static void fk_run(void* c, const uint64_t snap[4]){
 	fakecore* fk = c;
 	if (g_tid_ready) assert(!pthread_equal(pthread_self(), g_main_tid) && "fk_run must be on CORE (D57)");
+	assert(snap_ok(snap) && "INV16: epoch input snapshot must reach run() intact & coherent");
+	atomic_fetch_add(&g_snap_checks, 1);  // coverage: prove the check actually ran (not dead)
 	if (fk->use_gate){  // D59 cancel test: park inside the epoch until MAIN opens the gate
 		pthread_mutex_lock(&fk->gate_lk);
 		while (!fk->gate_open) pthread_cond_wait(&fk->gate_cv, &fk->gate_lk);
@@ -243,7 +263,7 @@ static void run_session(int fail_op, int fail_kind, rng_t* mr, int stage_by_stag
 			uint32_t credits_before = atomic_load(&F.fr.credits_out);
 			uint64_t gen_before     = atomic_load(&F.fr.gen);
 			drainrec dr = {0,0,0};
-			uint64_t snap[4] = { gen_before+1, rng_next(mr), rng_next(mr), 0 };
+			uint64_t snap[4]; mk_snap(gen_before+1, snap);   // INV16: coherent per-epoch input snapshot
 			fc_pump(&F, snap, on_ev, &dr);
 			// INV10-13 (D59 serial rendezvous / anti-busy-spin): a depth-1 pump that
 			// issued a grant must have BLOCKED until exactly one epoch drained — no credit
@@ -290,7 +310,7 @@ static _Atomic int g_pump_returned;
 static void* pump_thread_fn(void* p){
 	fc* f = (fc*)p;
 	drainrec dr = {0,0,0};
-	uint64_t snap[4] = { atomic_load(&f->fr.gen)+1, 0, 0, 0 };
+	uint64_t snap[4]; mk_snap(atomic_load(&f->fr.gen)+1, snap);   // INV16: coherent per-epoch input snapshot
 	fc_pump(f, snap, on_ev, &dr);
 	atomic_store(&g_pump_returned, 1);
 	return NULL;
@@ -362,6 +382,12 @@ int main(int argc, char** argv){
 			sessions += 2;
 		}
 	}
+
+	// INV16 (WP2 snapshot pipe): the per-epoch input snapshot reaches run() intact &
+	// coherent. The fail-fast is the CORE-side snap_ok() assert in fk_run (aborts at the
+	// exact torn epoch); this MAIN-side site (join HB → atomic is safe) proves the check
+	// was actually exercised across the adversarial sessions, so it can never be dead.
+	INV(16, atomic_load(&g_snap_checks) > 0, "snapshot-fidelity check was never exercised");
 
 	int sites=0; for(int i=0;i<32;i++) if(inv_hits[i]) sites++;
 	printf("sessions=%" PRIu64 " applied_events=%" PRIu64 "\n", sessions, applied_events);

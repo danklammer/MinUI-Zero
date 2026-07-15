@@ -69,7 +69,7 @@ static __thread int zero_ftv2_on_core = 0;
 // Build fingerprint as a real string literal (a comment never reaches the binary):
 // `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
 static const char zero_ftv2_fingerprint[] __attribute__((used)) =
-	"threading-v2 S3.3 (guard-ON; run loop rerouted through fc_pump; depth-1 candidate for device bring-up)";
+	"threading-v2 S3.4 (guard-ON; depth-1 rendezvous validated on-device; WP2 run() snapshot-delivery contract landed, depth-2 input-tick pending)";
 
 // NOTE (S3.2): the fc handle, filled vtable, and bootstrap entry are defined just
 // before main(), AFTER core/game/State_*/Core_* are declared (they reference those).
@@ -5244,7 +5244,7 @@ static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer alread
 static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
 
 // --- runtime ---
-static void zero_ftv2_run(void* c)             { (void)c; zero_ftv2_on_core = 1; core.run(); /* video_refresh emits via fc_emit_frame (this thread only) */ }
+static void zero_ftv2_run(void* c, const uint64_t snap[4]) { (void)c; (void)snap; zero_ftv2_on_core = 1; core.run(); /* depth-1: input flows via input_poll on CORE (serial-safe, MAIN blocked in fc_pump). depth-2 (WP2) will read `snap` here instead — the input tick moves to MAIN and only the button/analog snapshot crosses. */ }
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
 static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }

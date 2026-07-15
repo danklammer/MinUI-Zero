@@ -100,7 +100,7 @@ static void* fc_core_thread(void* arg) {
 		// FR_GRANT
 		if (get_state_core(f) != FC_RUNNING) set_state(f, FC_RUNNING);
 		tl_ep_frames = 0; tl_ep_dup = 0;
-		f->vt.run(f->vt.ctx);   // emits via fc_emit_* (from the core's callbacks)
+		f->vt.run(f->vt.ctx, snap);   // snap = this epoch's input snapshot; emits via fc_emit_* (from the core's callbacks)
 		fr_outcome out = tl_ep_frames ? FR_OUT_FRAME : (tl_ep_dup ? FR_OUT_DUP : FR_OUT_NONE);
 		rc = fr_core_run_done(&f->fr, out, 0);
 		if (rc == FR_STOP) break;
