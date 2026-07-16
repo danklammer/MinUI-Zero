@@ -1965,6 +1965,32 @@ static int setFastForward(int enable) {
 
 static uint32_t buttons = 0; // RETRO_DEVICE_ID_JOYPAD_* buttons
 static int ignore_menu = 0;
+
+// F2 fix: depth-2 MAIN-side core entry (sleep autosave, Save/Load/Reset shortcuts). At depth-2 the
+// CORE thread may be mid core.run() when MAIN touches core state (serialize/unserialize/reset/SRAM);
+// park it first so the op can't corrupt state. fr_park is NOT counted, so park+release ONLY when the
+// ring is actually RUNNING — a menu-context caller already parked (ring QUIESCENT) and an unbalanced
+// release would unpark it mid-menu. Depth-1 / guard-OFF: no-op (no CORE thread; serial already safe).
+#ifdef ZERO_FRONTEND_THREADING_V2
+static void zero_ftv2_drain(void* ctx, const fr_event* ev); // defined near the run loop; used by the park helper
+#endif
+static int zero_ftv2_core_enter(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_running && fr_get_state(&zero_ftv2.fr) == FR_RUNNING) {
+		fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+		return 1;
+	}
+#endif
+	return 0;
+}
+static void zero_ftv2_core_leave(int parked) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (parked) fc_release(&zero_ftv2);
+#else
+	(void)parked;
+#endif
+}
+
 // The per-frame input tick: poll hardware, handle power/menu/FF/shortcuts, compute `buttons`.
 // At depth-1 (and guard-OFF) this runs on the CORE thread as the libretro input_poll callback.
 // At depth-2 it runs on MAIN before the grant (WP-A) and only the resulting button/analog
@@ -2033,13 +2059,18 @@ static void input_tick(void) {
 			}
 			else if (PAD_justPressed(btn)) {
 				switch (i) {
-					case SHORTCUT_SAVE_STATE: Menu_saveState(); break;
-					case SHORTCUT_LOAD_STATE: Menu_loadState(); break;
-					case SHORTCUT_RESET_GAME: core.reset(); break;
-					case SHORTCUT_SAVE_QUIT:
+					// depth-2: these enter the core on MAIN (serialize/unserialize/reset) — park the
+					// CORE thread around each so it can't race core.run() (no-op at depth-1/guard-OFF).
+					case SHORTCUT_SAVE_STATE: { int p=zero_ftv2_core_enter(); Menu_saveState(); zero_ftv2_core_leave(p); break; }
+					case SHORTCUT_LOAD_STATE: { int p=zero_ftv2_core_enter(); Menu_loadState(); zero_ftv2_core_leave(p); break; }
+					case SHORTCUT_RESET_GAME: { int p=zero_ftv2_core_enter(); core.reset();      zero_ftv2_core_leave(p); break; }
+					case SHORTCUT_SAVE_QUIT: {
+						int p=zero_ftv2_core_enter();
 						Menu_saveState();
+						zero_ftv2_core_leave(p);
 						quit = 1;
 						break;
+					}
 					case SHORTCUT_CYCLE_SCALE:
 						screen_scaling += 1;
 						int count = config.frontend.options[FE_OPT_SCALING].count;
@@ -3685,9 +3716,14 @@ void Menu_quit(void) {
 }
 void Menu_beforeSleep(void) {
 	// LOG_info("beforeSleep\n");
+	// depth-2: SRAM_write/RTC_write/State_autosave all read/serialize core state — park the CORE
+	// thread first so they can't race an in-flight core.run() (no-op at depth-1/guard-OFF, and no-op
+	// when already parked in a menu-context sleep). See zero_ftv2_core_enter.
+	int ftv2_parked = zero_ftv2_core_enter();
 	SRAM_write();
 	RTC_write();
 	State_autosave();
+	zero_ftv2_core_leave(ftv2_parked);
 	putFile(AUTO_RESUME_PATH, game.path + strlen(SDCARD_PATH));
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
 }
