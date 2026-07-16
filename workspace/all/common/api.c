@@ -228,6 +228,11 @@ int GFX_didOverrun(void) {
 static int SND_ringLow(void); // defined after the snd context (audio-priority catch-up)
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
+// Depth-2 (threading v2) pacing: disable the audio catch-up vsync-skip so the present ALWAYS
+// vsyncs — the present's vsync is depth-2's sole, reliable 60fps pacer (it also overlaps the
+// CORE's next epoch), and a skipped vsync there drops MAIN into a busy-spin. Set by minarch.
+static int gfx_no_catchup = 0;
+void GFX_setNoCatchup(int on) { gfx_no_catchup = on; }
 void GFX_flip(SDL_Surface* screen) {
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
@@ -241,7 +246,7 @@ void GFX_flip(SDL_Surface* screen) {
 	// never the problem), skip this vsync wait so the core immediately produces the next
 	// frame: a brief burst refills the ring. An occasional unpaced video frame during
 	// already-choppy FMV is imperceptible; an audio gap is not. (BR2 saga, 2026-07-08)
-	if (should_vsync && SND_ringLow()) should_vsync = 0; // ring below 25%: catch up
+	if (should_vsync && !gfx_no_catchup && SND_ringLow()) should_vsync = 0; // ring below 25%: catch up
 	uint64_t flip_t0 = getMicroseconds();
 	PLAT_flip(screen, should_vsync);
 	gfx_flip_wait_us = (uint32_t)(getMicroseconds() - flip_t0); // how long the flip blocked (vsync-bound signal)
