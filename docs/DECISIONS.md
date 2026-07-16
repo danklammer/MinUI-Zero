@@ -996,3 +996,62 @@ remains open but is no longer release-gating; the presentation-drop defends the 
 decode-side headroom is pursued on its own schedule. Lesson recorded: a mechanism verified
 as dead code is a defect in the feature that needed it, not a curiosity — the "no measured
 claim depended on it" framing hid a live user-facing bug for five days.
+
+## D62 — Threading v2 depth-2 SHIPS for PS1: pacing recipe, zero-overhead gating, parking, canary (2026-07-16)
+Depth-2 (pipelined emulation: CORE runs frame N+1 while MAIN presents N) went from losing on-device
+(57-59fps, 7-13 underruns/s, governor oscillating) to shipping, via four fixes with receipts:
+1. **Vsync-present as the SOLE pacer** — GFX_sync double-paced to 57-59fps (starved audio, held the
+   governor high); the present's vsync blocks MAIN, which IS the overlap. After the v1.3.1 merge the
+   never-skip guarantee comes from the GFX_flip/GFX_flipGame split (depth-2 + menu present via
+   GFX_flip; serial game via GFX_flipGame so presentation-drop catch-up still works there).
+2. **Spin-killer** — 500us nanosleep when no frame was presented this tick (MAIN was busy-spinning
+   4500 loops/s). 3. **Governor reads fps_double at depth-2** (real frames; cpu_double is the MAIN
+   loop rate — meaningless under pipelining). 4. **Engine gated on depth>=2 at runtime** — the
+   always-engine depth-1 path cost ~8pp CPU vs serial (fc_pump rendezvous; Dr. Mario 30% vs 22%);
+   now depth<2 runs the plain serial path (init/load/run/quit all on MAIN) so the guard compiles
+   into ONE binary for all systems at zero cost, and only PS.pak opts into depth-2.
+**The measured win (BR2 st9 fight, same-scene fresh-reload method):** depth-2 holds 60fps/0-under
+at ~1608MHz; serial (v1.3.1, WITH its catch-up) holds 60fps-CORE only by dropping presents, pegged
+at 1800. Cooler by ~200MHz + every frame presented, no OC. Floor sweep: 1416 holds-with-dips
+(fps_min 56.8), 1200 breaks — bracket shipped {1008,1608}. Light games (SNES/DKC): exact parity.
+GBA: a free-running A/B first showed "45%" — RETRACTED, scene variance + low-battery contamination;
+the lesson is the same-scene pin-OPP method or nothing.
+**Safety:** review caught depth-2's MAIN-side core entries (sleep-autosave + save/load/reset
+shortcuts calling core.serialize/unserialize/reset against a live core.run) — fixed by parking the
+CORE thread around them (state-gated: park only when RUNNING, so a menu-context sleep never
+unbalances the menu's own park). Sleep->autosave->resume validated on-device by Dan. Plus a crash
+canary: a depth-2 session that ends without reaching a known-good point (clean exit, or the parked
+sleep/poweroff autosave — Menu_beforeSleep is the choke point for both) leaves a marker; the next
+launch of that game runs serial once, clears it, and retries depth-2. Fails safe by construction.
+**Launch design:** no frontend option, no runtime Auto — the per-pak defaults ARE the auto, each
+backed by measurement (per-game cfg override is YAGNI until a real misbehaving game appears). HUD
+shows T2 + fps_double when the pipeline is live (absent tag = canary fell back to serial).
+
+## D63 — Zero-copy pool render for depth-2 (built; opt-in pending device A/B) (2026-07-16)
+At depth-2 the CORE thread memcpy'd every frame into the pool — PS1 640x480x2 = 614KB @60 =
+~37MB/s on the emu-critical thread. minarch's GET_CURRENT_SOFTWARE_FRAMEBUFFER stub is now a real
+implementation: at depth-2 the env callback acquires a pool buffer and hands it to the core;
+video_refresh recognizes the pointer and emits the index with NO memcpy; an epoch-end guard in
+zero_ftv2_run releases an unconsumed grant (duped frame), and the env callback itself reclaims a
+stale grant (mid-frame mode-change re-request). pcsx_rearmed patched to re-request every frame
+(set_vout_fb() at vout_flip start — the libretro contract says the buffer may change per frame;
+stock pcsx only re-requested on mode change, which would corrupt a rotating pool). Patch
+regenerated; verify-source green. Cores that actually call the env: pcsx, fceumm, pce_fast (the
+8-bit two are at the 408 floor — no benefit). Gated ZERO_FTV2_ZEROCOPY=1 until the BR2 visual
+check + floor sweep (unvalidated frame-path code must not ride the default); expectation: the
+1416 floor becomes comfortable. Bonus fix: the old stub fell through to return-true with the
+struct UNFILLED — cores survived only because they zero-init fb and format 0 fails their check.
+
+## D64 — Audio threading for light systems: NO (architecture + physics); their lever is work deletion (2026-07-16)
+Asked directly ("move audio to another thread for lower-end systems?"): SDL already drains the ring
+on its own audio thread; what remains on the emu thread is core-internal synthesis (that IS the
+emulation) plus SND's cheap linear/nearest resample. Offloading cannot help floor-dwellers: the
+A133P is a single clock/voltage domain (moving work sideways lowers no clock unless the source
+core pinned it — 8-bit systems idle 35-65% at the 408 OPP floor), and race-to-idle (D14/D21/D22)
+plus the keymon wakeup lesson (65->0/s) say extra cross-thread wakeups are a straight battery loss.
+The light-system lever is DELETING work so they idle deeper at the floor: the unpriced-option audit
+(gambatte's locked-on sinc resampler is the first target — the D25 method already yielded 400MHz
+from one cfg line) and LTO for the cores shipping without it (gpsp, mgba). Ranked plan:
+.notes/optimization-master-hunt.md; threading census for VB/MGBA/supafaust in
+.notes/threading-other-systems-survey.md — depth-2 extends to a system only if it has at-the-edge
+games (pins f_max or slips), which is what made PS1 the win and makes 8-bit a non-candidate.
