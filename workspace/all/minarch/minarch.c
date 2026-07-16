@@ -3348,6 +3348,13 @@ static void present_frame(void* src, unsigned width, unsigned height, size_t pit
 			}
 			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
 		}
+#ifdef ZERO_FRONTEND_THREADING_V2
+		else if (zero_ftv2_depth2)
+			// T2 = threading v2 depth-2 live (pipelined). Show fps_double (frames the core actually
+			// produced — what the governor watches at depth-2), not cpu_double (the MAIN loop rate,
+			// jittery and meaningless under pipelining).
+			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% T2", gov_state.ceil_khz/1000, hud_temp, fps_double, core.fps, (int)use_double);
+#endif
 		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)src,pitch/2, width,height);
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
