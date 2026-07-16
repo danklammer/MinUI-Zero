@@ -204,6 +204,51 @@ static void test_converges_to_lowest_stable(void) {
 }
 
 // ---- scenario 5: gov_tick I/O path smoke test (temp sensor absent -> -1) ----
+// ---- futile-climb memory: a scene that dips at EVERY clock (authentic engine slowdown,
+// Battletoads/Contra class) must not pin f_max forever. After GOV_FUTILE_TICKS of slipping AT
+// f_max, the ceiling returns to the episode's origin and slips hold for GOV_FUTILE_HOLD. ----
+static void test_futile_climb_stands_down(void) {
+	printf("[futile] unfixable slip returns to origin and holds (no f_max camping)\n");
+	const GovProfile* p = &GOV_P_8BIT; // {408, 1008}
+	GovState st; gov_init(&st, p);
+	// settle at a mid ceiling first (slack sinks from f_max)
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c);
+	int settled = st.ceil_khz;
+	CHECK(settled < p->f_max, "expected a settled ceiling below f_max, got %d", settled);
+	// now the scene dips REGARDLESS of clock: slip every tick, forever
+	int at_max_ticks = 0, held_at_origin = 0;
+	for (int i = 0; i < 60; i++) {
+		int khz = gov_step(&st, p, 45, GOV_SIGNAL_SLIP);
+		if (khz == p->f_max) at_max_ticks++;
+		if (khz == settled && st.futile_hold > 0) held_at_origin++;
+	}
+	CHECK(at_max_ticks > 0, "climb should have been attempted (reached f_max)");
+	CHECK(at_max_ticks <= 6, "f_max camping: %d ticks at max (futile never engaged; GOV_FUTILE_TICKS=4)", at_max_ticks);
+	CHECK(held_at_origin > 40, "expected a long hold at the origin ceiling %d, held %d ticks", settled, held_at_origin);
+	CHECK(st.ceil_khz == settled, "ceiling should rest at the origin %d, got %d", settled, st.ceil_khz);
+}
+
+// ---- and the mirror: a slip that a higher clock DOES fix must climb and stay fixed —
+// the futile detector must not fire on clock-curable slips. ----
+static void test_curable_slip_still_climbs(void) {
+	printf("[futile] clock-curable slip climbs to f_max and stays (detector must not fire)\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c); // settle low
+	// scene now genuinely needs f_max: slips below it, clean at it
+	int fixed_ticks = 0;
+	for (int i = 0; i < 40; i++) {
+		int slipping = (st.ceil_khz < p->f_max);
+		int khz = gov_step(&st, p, 45, slipping ? GOV_SIGNAL_SLIP : GOV_SIGNAL_BUSY);
+		if (khz == p->f_max) fixed_ticks++;
+	}
+	CHECK(st.futile_hold == 0, "futile hold engaged on a curable slip (hold=%d)", st.futile_hold);
+	CHECK(st.ceil_khz == p->f_max, "curable slip should rest at f_max, got %d", st.ceil_khz);
+	CHECK(fixed_ticks > 30, "should have spent the trace fixed at f_max, got %d", fixed_ticks);
+}
+
 static void test_tick_io(void) {
 	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
@@ -310,6 +355,8 @@ int main(void) {
 	test_boundary_no_limit_cycle();
 	test_predictive_sink_gate();
 	test_converges_to_lowest_stable();
+	test_futile_climb_stands_down();
+	test_curable_slip_still_climbs();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	if (g_fail) { printf("%d check(s) failed\n", g_fail); return 1; }

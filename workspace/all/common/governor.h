@@ -35,6 +35,13 @@ typedef struct {
 	int fail_streak; // consecutive re-probes that slipped again — escalates fail_hold (repeat offender)
 	int presink_khz; // ceiling before the most recent sink — restored in one tick if the probe slips
 	int since_sink;  // ticks since the most recent sink (saturates; small = a probe just happened)
+	int slip_origin_khz; // ceiling when the current slip episode began (before any climb) — 0 = no episode
+	int max_slip_run;    // consecutive slip ticks spent AT f_max this episode (futile-climb detector)
+	int futile_hold;     // ticks left of "a full climb to f_max did not cure the slip — stop chasing":
+	                     // ceiling restored to slip_origin_khz and slips don't climb until this expires.
+	                     // The scene dips at EVERY clock (authentic engine slowdown — Battletoads/Contra
+	                     // class), so burning f_max on it is pure heat; audio is protected regardless
+	                     // by the presentation-drop catch-up. Cleared by gov_burst (scene change).
 } GovState;
 
 // Named brackets from docs/thermal-governor-design.md (ASSUMED — verify the OPP ladder and

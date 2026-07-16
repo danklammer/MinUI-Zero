@@ -25,6 +25,10 @@ void PLAT_setCPUVoltForCeil(int khz);
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
                                // -> 600 slip -> ... = periodic slowdown bursts; Contra 2026-07-01)
+#define GOV_FUTILE_TICKS 4     // slip ticks AT f_max (~2s) before declaring the climb futile: the
+                               // scene dips at every clock (authentic slowdown), so f_max is pure heat
+#define GOV_FUTILE_HOLD  120   // ticks (~60s) of not chasing that scene (slips hold instead of climb);
+                               // expiry re-tests honestly, gov_burst (scene change) clears immediately
 
 // CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
@@ -57,6 +61,9 @@ void gov_init(GovState* st, const GovProfile* p) {
 	st->fail_streak = 0;
 	st->presink_khz = 0;
 	st->since_sink = 255;
+	st->slip_origin_khz = 0;
+	st->max_slip_run = 0;
+	st->futile_hold = 0;
 }
 
 int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
@@ -72,6 +79,7 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	// lightened). fail_khz itself is kept: if the re-probe slips again it's a repeat offense
 	// and the hold escalates (see the slip branch) instead of limit-cycling every ~60s.
 	if (st->fail_hold > 0) --st->fail_hold;
+	if (st->futile_hold > 0) --st->futile_hold;
 	if (st->since_sink < 255) st->since_sink++;
 
 	if (frame_overrun == GOV_SIGNAL_BUSY) {
@@ -85,6 +93,32 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		st->slip_run = 0;
 	}
 	else if (frame_overrun) {
+		// Futile-climb hold: this scene already proved a full climb to f_max does not cure its
+		// slip (authentic engine slowdown — the game dips at EVERY clock). Chasing it again is
+		// pure heat: hold the restored ceiling, skip the climb AND the fail-memory arming (60s of
+		// held slips would otherwise poison fail_khz and block legitimate later sinking). Expiry
+		// or a scene change (gov_burst) re-tests honestly. Audio: presentation-drop covers dips.
+		if (st->futile_hold > 0) {
+			st->slack_run = 0;
+			return st->ceil_khz;
+		}
+		// Episode origin: remember the settled ceiling this slip episode started from — if the
+		// climb turns out futile, this is what we restore (the clock the scene actually needs).
+		if (st->slip_run == 0 && st->ceil_khz < p->f_max)
+			st->slip_origin_khz = st->ceil_khz;
+		// Futile detector: slipping AT f_max means the climb already happened and didn't cure it.
+		if (st->ceil_khz >= p->f_max) {
+			if (++st->max_slip_run >= GOV_FUTILE_TICKS && st->slip_origin_khz > 0
+			    && st->slip_origin_khz < p->f_max) {
+				st->ceil_khz = st->slip_origin_khz;  // stand down to what the scene actually needs
+				st->futile_hold = GOV_FUTILE_HOLD;
+				st->max_slip_run = 0;
+				st->slip_run = 0;
+				st->slack_run = 0;
+				return st->ceil_khz;
+			}
+		}
+		else st->max_slip_run = 0;
 		// 2) need more performance — climb fast, and remember the ceiling that proved too low.
 		// A slip at/below a ceiling that already failed is a repeat offense: escalate the hold
 		// (60s -> 2m -> 4m -> 8m) so known-bad probes become rare instead of periodic
@@ -126,6 +160,8 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		//    back into a ceiling that recently slipped (see GOV_FAIL_HOLD)
 		st->slack_run++;
 		st->slip_run = 0;
+		st->max_slip_run = 0;   // slack = the slip episode ended (scene recovered on its own)
+		st->slip_origin_khz = 0;
 		int cool_enough = (temp_c < 0) || (temp_c <= GOV_T_TARGET_C);
 		int next_khz = st->ceil_khz - GOV_STEP_KHZ;
 		if (next_khz < p->f_min) next_khz = p->f_min;
@@ -182,6 +218,9 @@ void gov_burst(GovState* st, const GovProfile* p) {
 	st->fail_streak = 0;
 	st->presink_khz = 0;
 	st->since_sink = 255; // not a probe: a slip here must not "undo" to a stale ceiling
+	st->slip_origin_khz = 0;
+	st->max_slip_run = 0;
+	st->futile_hold = 0;  // new scene: the futile verdict belonged to the old one — re-test honestly
 	PLAT_setCPUMaxFreq(st->ceil_khz);
 }
 
