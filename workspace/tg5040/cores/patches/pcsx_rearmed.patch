@@ -1,8 +1,8 @@
-diff --git forkSrcPrefix/Makefile.libretro forkDstPrefix/Makefile.libretro
-index 7b9618e1ccfc63982be50b82fda498d75e307fdc..f314adcbea17f05f473e1cbafc8711ab8ea0c5f1 100644
---- forkSrcPrefix/Makefile.libretro
-+++ forkDstPrefix/Makefile.libretro
-@@ -391,6 +391,25 @@ else ifeq ($(platform), rpi4_64)
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 59c67b12..06ae52f0 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -504,6 +504,25 @@ else ifeq ($(platform), rpi4_64)
          fpic := -fPIC
          CFLAGS += -march=armv8-a+crc+simd -mtune=cortex-a72 -ftree-vectorize
  
@@ -28,6 +28,23 @@ index 7b9618e1ccfc63982be50b82fda498d75e307fdc..f314adcbea17f05f473e1cbafc8711ab
  # Classic Platforms ####################
  # Platform affix = classic_<ISA>_<µARCH>
  # Help at https://modmyclassic.com/comp
+diff --git a/frontend/libretro.c b/frontend/libretro.c
+index 0bd28239..582967e6 100644
+--- a/frontend/libretro.c
++++ b/frontend/libretro.c
+@@ -415,6 +415,12 @@ static void CrosshairDimensions(int port, struct CrosshairInfo *info) {
+ static void vout_flip(const void *vram_, int vram_ofs, int bgr24,
+       int x, int y, int w, int h, int dims_changed)
+ {
++   /* MinUI-Zero: re-request the frontend framebuffer EVERY frame (the libretro contract for
++    * GET_CURRENT_SOFTWARE_FRAMEBUFFER — the buffer may change per frame). The frontend's
++    * threaded pipeline hands out a rotating pool buffer, so this frame's blit lands DIRECTLY
++    * in the present pipeline with no frontend memcpy. When the frontend declines (serial
++    * mode), set_vout_fb falls back to the internal vout_buf exactly as before. */
++   set_vout_fb();
+    int bytes_pp = (current_fmt == RETRO_PIXEL_FORMAT_XRGB8888) ? 4 : 2;
+    bgr_to_fb_func *bgr_to_fb = pl_rearmed_cbs.cspace_blit;
+    int bytes_pp_s = bgr24 ? 3 : 2;
 diff --git a/libpcsxcore/mdec.c b/libpcsxcore/mdec.c
 index 18b85666..9718a146 100644
 --- a/libpcsxcore/mdec.c

@@ -81,6 +81,44 @@ static __thread uint64_t zero_ftv2_isnap[4] = {0};
 // clears the canary — one safe session, then depth-2 retries. Self-healing, no UI, no user action.
 static char zero_ftv2_canary[MAX_PATH];
 static int  zero_ftv2_canary_armed = 0;
+
+// WP-B: the depth-2 frame pool. The CORE thread copies each produced frame into a free
+// buffer and rides its index in the FRAME payload; MAIN presents from it (present_frame) and
+// the D-a2 retirement hook (zero_pool_retire) frees it. Size = depth + spill (D-j2): more
+// than `depth` so a multi-video_refresh epoch has headroom; exhaustion DROPS the frame
+// (never blocks the core). CORE is the sole acquirer (no acquire/acquire race); MAIN only
+// retires. Buffers grow-only (realloc); freed at process exit. (Lives up here so the zero-copy
+// env callback — GET_CURRENT_SOFTWARE_FRAMEBUFFER, defined below in environment_callback —
+// can acquire from it.)
+#define ZERO_FTV2_POOL (FR_MAX_DEPTH + 2)
+typedef struct { uint16_t* px; size_t cap; unsigned w, h; size_t pitch; _Atomic int busy; } zero_fbuf;
+static zero_fbuf zero_pool[ZERO_FTV2_POOL];
+
+static int zero_pool_acquire(unsigned w, unsigned h, size_t pitch) {
+	for (int i=0;i<ZERO_FTV2_POOL;i++) {
+		if (atomic_load_explicit(&zero_pool[i].busy, memory_order_acquire)) continue;
+		size_t need = (size_t)h * pitch;
+		if (zero_pool[i].cap < need) {
+			uint16_t* p = realloc(zero_pool[i].px, need);
+			if (!p) return -1;                 // OOM: treat as exhaustion (drop the frame)
+			zero_pool[i].px = p; zero_pool[i].cap = need;
+		}
+		zero_pool[i].w = w; zero_pool[i].h = h; zero_pool[i].pitch = pitch;
+		atomic_store_explicit(&zero_pool[i].busy, 1, memory_order_release);
+		return i;
+	}
+	return -1;                                 // exhausted (D-j2: drop; runtime demote is later)
+}
+static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-a2 hook
+	(void)ctx;
+	if (payload < ZERO_FTV2_POOL) atomic_store_explicit(&zero_pool[(int)payload].busy, 0, memory_order_release);
+}
+
+// Zero-copy (depth-2): the pool buffer handed to the core via GET_CURRENT_SOFTWARE_FRAMEBUFFER
+// this epoch, or -1. CORE-thread-only between acquire (env cb) and consume (video_refresh emits
+// it with NO memcpy); the epoch-end guard in zero_ftv2_run releases an unconsumed one (dupe
+// frame / mid-frame mode change re-request reclaims via the env cb itself).
+static __thread int zero_ftv2_zc_buf = -1;
 // D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
 // depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
 // for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
@@ -2410,8 +2448,41 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 	// RETRO_ENVIRONMENT_SET_MEMORY_MAPS (36 | RETRO_ENVIRONMENT_EXPERIMENTAL)
 	// RETRO_ENVIRONMENT_GET_LANGUAGE 39
 	case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER: { /* (40 | RETRO_ENVIRONMENT_EXPERIMENTAL) */
-		// puts("RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER");
-		break;
+		// Zero-copy pool render (depth-2 only): hand the core a pool buffer so it renders the
+		// frame DIRECTLY where the pipeline needs it — video_refresh recognizes the pointer and
+		// emits the buffer index with NO memcpy (was ~614KB/frame of CORE-thread memory traffic
+		// for PS1). pcsx is patched to re-request every frame (vout_flip start — the libretro
+		// contract), so the pool rotates as designed. Anything else — serial, guard-off intent,
+		// 32bpp downsample cores, pool exhausted — returns false and the core uses its own
+		// buffer via the existing paths (direct present at depth-1, pool memcpy at depth-2).
+		// This also fixes the old stub, which fell through to `return true` with the struct
+		// UNFILLED — cores only survived that because they zero-init fb and format 0 fails
+		// their own check.
+#ifdef ZERO_FRONTEND_THREADING_V2
+		// Opt-in until the on-device A/B lands (ZERO_FTV2_ZEROCOPY=1): unvalidated frame-path
+		// code must not ride the default depth-2 path. Flip the default after BR2 visual check
+		// + floor sweep shows the win (then this comment moves to the receipts).
+		static int zc_enabled = -1;
+		if (zc_enabled < 0) { const char* e = getenv("ZERO_FTV2_ZEROCOPY"); zc_enabled = (e && e[0] && e[0] != '0') ? 1 : 0; }
+		struct retro_framebuffer* fb = (struct retro_framebuffer*)data;
+		if (zc_enabled && zero_ftv2_depth2 && zero_ftv2_running && zero_ftv2_on_core && !downsample
+		    && fb && fb->width > 0 && fb->height > 0) {
+			if (zero_ftv2_zc_buf >= 0) { // unconsumed grant (mid-frame mode-change re-request): reclaim it
+				zero_pool_retire(NULL, (uint64_t)zero_ftv2_zc_buf);
+				zero_ftv2_zc_buf = -1;
+			}
+			int buf = zero_pool_acquire(fb->width, fb->height, (size_t)fb->width * 2);
+			if (buf >= 0) {
+				fb->data         = zero_pool[buf].px;
+				fb->pitch        = (size_t)fb->width * 2;
+				fb->format       = RETRO_PIXEL_FORMAT_RGB565;
+				fb->memory_flags = 0;
+				zero_ftv2_zc_buf = buf;
+				return true;
+			}
+		}
+#endif
+		return false;
 	}
 	
 	case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: {
@@ -3273,37 +3344,8 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
 }
-#ifdef ZERO_FRONTEND_THREADING_V2
-// WP-B: the depth-2 frame pool. The CORE thread copies each produced frame into a free
-// buffer and rides its index in the FRAME payload; MAIN presents from it (present_frame) and
-// the D-a2 retirement hook (zero_pool_retire) frees it. Size = depth + spill (D-j2): more
-// than `depth` so a multi-video_refresh epoch has headroom; exhaustion DROPS the frame
-// (never blocks the core). CORE is the sole acquirer (no acquire/acquire race); MAIN only
-// retires. Buffers grow-only (realloc); freed at process exit.
-#define ZERO_FTV2_POOL (FR_MAX_DEPTH + 2)
-typedef struct { uint16_t* px; size_t cap; unsigned w, h; size_t pitch; _Atomic int busy; } zero_fbuf;
-static zero_fbuf zero_pool[ZERO_FTV2_POOL];
-
-static int zero_pool_acquire(unsigned w, unsigned h, size_t pitch) {
-	for (int i=0;i<ZERO_FTV2_POOL;i++) {
-		if (atomic_load_explicit(&zero_pool[i].busy, memory_order_acquire)) continue;
-		size_t need = (size_t)h * pitch;
-		if (zero_pool[i].cap < need) {
-			uint16_t* p = realloc(zero_pool[i].px, need);
-			if (!p) return -1;                 // OOM: treat as exhaustion (drop the frame)
-			zero_pool[i].px = p; zero_pool[i].cap = need;
-		}
-		zero_pool[i].w = w; zero_pool[i].h = h; zero_pool[i].pitch = pitch;
-		atomic_store_explicit(&zero_pool[i].busy, 1, memory_order_release);
-		return i;
-	}
-	return -1;                                 // exhausted (D-j2: drop; runtime demote is later)
-}
-static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-a2 hook
-	(void)ctx;
-	if (payload < ZERO_FTV2_POOL) atomic_store_explicit(&zero_pool[(int)payload].busy, 0, memory_order_release);
-}
-#endif // ZERO_FRONTEND_THREADING_V2
+// WP-B frame pool: moved to the guard-block globals near the top of the file — the zero-copy
+// env callback (GET_CURRENT_SOFTWARE_FRAMEBUFFER, which sits ABOVE this point) acquires from it.
 
 // WP-B: MAIN-only present. Configures the scaler on a size change, blits the debug HUD into
 // `src`, scales to the screen surface, and (optionally) flips. Runs on MAIN for BOTH the v2
@@ -3419,11 +3461,21 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	if (downsample) { buffer_downsample(data,width,height,pitch*2); src = buffer; }
 #ifdef ZERO_FRONTEND_THREADING_V2
 	if (zero_ftv2_running && zero_ftv2_on_core) {
-		int buf = zero_pool_acquire(width, height, pitch);
-		if (buf < 0) fc_signal_dup(&zero_ftv2);        // D-j2 pool exhausted: drop; MAIN keeps last frame
+		if (zero_ftv2_zc_buf >= 0 && src == (void*)zero_pool[zero_ftv2_zc_buf].px) {
+			// Zero-copy: the core rendered DIRECTLY into the pool buffer we handed it via
+			// GET_CURRENT_SOFTWARE_FRAMEBUFFER — no memcpy, just refresh the dims (the core's
+			// reported geometry is authoritative; pitch is what we advertised) and emit.
+			int buf = zero_ftv2_zc_buf; zero_ftv2_zc_buf = -1;
+			zero_pool[buf].w = width; zero_pool[buf].h = height; zero_pool[buf].pitch = pitch;
+			fc_emit_frame(&zero_ftv2, (uint64_t)buf);      // MAIN drains -> present_frame(pool[buf])
+		}
 		else {
-			memcpy(zero_pool[buf].px, src, (size_t)height * pitch);
-			fc_emit_frame(&zero_ftv2, (uint64_t)buf);  // MAIN drains -> present_frame(pool[buf])
+			int buf = zero_pool_acquire(width, height, pitch);
+			if (buf < 0) fc_signal_dup(&zero_ftv2);        // D-j2 pool exhausted: drop; MAIN keeps last frame
+			else {
+				memcpy(zero_pool[buf].px, src, (size_t)height * pitch);
+				fc_emit_frame(&zero_ftv2, (uint64_t)buf);  // MAIN drains -> present_frame(pool[buf])
+			}
 		}
 		last_flip_time = SDL_GetTicks();
 		return;
@@ -5420,7 +5472,14 @@ static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t s
 	// WP-A: stash this epoch's input snapshot for input_state_callback (depth-2 reads it here
 	// instead of the live globals). Harmless at depth-1 (input still flows via input_tick on CORE).
 	zero_ftv2_isnap[0]=snap[0]; zero_ftv2_isnap[1]=snap[1]; zero_ftv2_isnap[2]=snap[2]; zero_ftv2_isnap[3]=snap[3];
-	core.run();  // WP-B: video_refresh copies the frame into pool[buf] and emits the buffer id
+	core.run();  // WP-B: video_refresh emits the frame (zero-copy pool render, or memcpy fallback)
+	// Zero-copy leak guard: the core requested a pool buffer this epoch but never presented it
+	// (duped/skipped frame) — video_refresh didn't consume it, so release it here or the pool
+	// bleeds one buffer per dupe until exhaustion (which would demote every frame to a drop).
+	if (zero_ftv2_zc_buf >= 0) {
+		zero_pool_retire(NULL, (uint64_t)zero_ftv2_zc_buf);
+		zero_ftv2_zc_buf = -1;
+	}
 }
 static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; State_write(); return 0; }
 static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; State_read();  return 0; }
