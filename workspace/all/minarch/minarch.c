@@ -3318,7 +3318,18 @@ static void present_frame(void* src, unsigned width, unsigned height, size_t pit
 	renderer.src = src;
 	renderer.dst = screen->pixels;
 	GFX_blitRenderer(&renderer);
-	if (do_flip) GFX_flip(screen);
+	if (do_flip) {
+		// Route the present by context (v1.3.1 GFX_flip/GFX_flipGame split): a serial game-loop
+		// present may skip under presentation-drop catch-up (GFX_flipGame); a menu redraw (Menu_loop
+		// repaints the paused frame — show_menu) must NEVER skip or the menu goes invisible; and the
+		// depth-2 present IS the vsync pacer, also never-skip. Both of the latter take GFX_flip.
+		int never_skip = show_menu;
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) never_skip = 1;
+#endif
+		if (never_skip) GFX_flip(screen);
+		else            GFX_flipGame(screen);
+	}
 }
 
 static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -5496,8 +5507,8 @@ int main(int argc , char* argv[]) {
 		// done in Core_open above). Drive the remaining stages through fc_boot_stage (D57/D58).
 		fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
 		fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
-		zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);
-		if (zero_ftv2_depth2) GFX_setNoCatchup(1);     // D61: the present's vsync is depth-2's pacer
+		zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);  // present_frame routes depth-2 through the
+		                                               // never-skip GFX_flip (the vsync is the pacer)
 		LOG_info("threading v2: depth=%u (PIPELINED)\n", zero_ftv2.fr.depth);
 		zero_ftv2_inited = 1;
 		fc_boot_stage(&zero_ftv2, FC_OP_INIT);
@@ -5630,8 +5641,8 @@ int main(int argc , char* argv[]) {
 				// sticks + the FF control flag, F11; analog via uint16_t casts — shifting a negative
 				// signed axis is UB), the CORE thread runs core.run() concurrently and reads the
 				// snapshot via input_state_callback, MAIN drains + presents. The present's vsync is
-				// the SOLE pacer (GFX_setNoCatchup at bootstrap) — it blocks MAIN, overlapping the
-				// CORE's next epoch (the concurrency win). fc_pump stays non-blocking (block=DEADLOCK).
+				// the SOLE pacer (present_frame routes depth-2 through the never-skip GFX_flip) — it
+				// blocks MAIN, overlapping the CORE's next epoch. fc_pump non-blocking (block=DEADLOCK).
 				uint64_t snap[4];
 				input_tick();
 				snap[0] = (uint32_t)buttons;
@@ -5678,7 +5689,7 @@ int main(int argc , char* argv[]) {
 			pthread_mutex_unlock(&core_mx);
 			if (frame) {
 				video_refresh_callback_main(frame->pixels,frame->w,frame->h,frame->pitch);
-				GFX_flip(screen);
+				GFX_flipGame(screen); // game path — skippable (see invisible-menu fix)
 				mb_flips_total++;
 				static uint64_t last_flip_us = 0;
 				uint64_t now_us = getMicroseconds();
