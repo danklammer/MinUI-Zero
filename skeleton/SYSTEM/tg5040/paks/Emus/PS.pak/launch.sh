@@ -10,6 +10,13 @@ mkdir -p "$BIOS_PATH/$EMU_TAG"
 mkdir -p "$SAVES_PATH/$EMU_TAG"
 HOME="$USERDATA_PATH"
 cd "$HOME"
+# Threading v2 depth-2 ON by default for PS1: emulation and present run on separate cores, so the
+# hardest PS1 games hold 60 at stock where serial can't. PROVEN on BR2 (Bloody Roar II, the hardest
+# case): depth-2 = 60fps/clean @ ~1608 vs serial = 51fps/choppy pegged at 1800 — no overclock
+# (DECISIONS D52-D61, 2026-07-15). The engine is zero-overhead unless depth-2 is set, so only PS1
+# pays for it. Fall back to serial with ZERO_FTV2_DEPTH=1 if a specific game misbehaves.
+export ZERO_FTV2_DEPTH="${ZERO_FTV2_DEPTH:-2}"
+
 # closed-loop governor clock bracket (kHz); see docs/thermal-governor-design.md
 if [ "${ZERO_FTV2_DEPTH:-1}" -ge 2 ] 2>/dev/null; then
 	# Threading v2 depth-2: emulation and present run concurrently, so the CORE holds 60 at a
