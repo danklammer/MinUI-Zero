@@ -42,14 +42,16 @@ BUILD_DATE!=date +%Y.%m.%d
 BUILD_HASH!=cat ../../hash.txt
 CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 
-# Threading v2 (phase 2) — OPT-IN, default OFF. When unset, SOURCE and CFLAGS above are
-# untouched, so the shipped build is byte-for-byte identical. Enable for dev/test with:
-#   make ... ZERO_FRONTEND_THREADING_V2=1
-# Enabling compiles the framering + frontend_core engines AND reroutes minarch's run loop
-# through fc_pump: DEPTH-1 (serial rendezvous, single-thread-equivalent perf) is wired and
-# validated on-device — the CORE thread owns core.run(), MAIN presents (see DECISIONS D52-D59).
-# DEPTH-2 (pipelined, the energy win) is in progress: it needs the per-epoch input snapshot
-# (WP2 — the fc run() signature now delivers it) plus the input-tick move to MAIN.
+# Threading v2 (phase 2) — default ON for tg5040 (the shipping platform). The engine (framering +
+# frontend_core) is compiled in but USED ONLY at depth-2 (the pipelined energy win, opted in per-pak
+# via ZERO_FTV2_DEPTH — PS.pak sets it). At depth<2 (every other system) minarch runs the plain
+# serial path with ZERO engine overhead: validated on-device 2026-07-15 — guard-on-depth-1 matches
+# guard-off serial exactly (Dr. Mario 21-22% use both ways; the old always-engine depth-1 cost ~8pp
+# more). DEPTH-2 proven on BR2 (holds 60 @ stock where serial drops to 51; DECISIONS D52-D61).
+# Build the pure-serial binary with: make ... ZERO_FRONTEND_THREADING_V2=0
+ifeq ($(PLATFORM),tg5040)
+ZERO_FRONTEND_THREADING_V2 ?= 1
+endif
 ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
 SOURCE += ../common/framering.c ../common/frontend_core.c
 CFLAGS += -DZERO_FRONTEND_THREADING_V2

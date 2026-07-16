@@ -5475,26 +5475,37 @@ int main(int argc , char* argv[]) {
 	setOverclock(overclock);
 	GFX_setVsync(prevent_tearing);
 
+	// Threading v2's engine (CORE thread + ring) is used ONLY at depth-2 (the pipelined energy
+	// win). At depth<2 (default, or ZERO_FTV2_DEPTH unset/1) we take the plain serial path — the
+	// SAME code a guard-off build runs (init/load/run/present/quit all on MAIN, F23-consistent) —
+	// so compiling the engine in adds ZERO overhead unless depth-2 is actually requested. When the
+	// guard is compiled out, use_ftv2 is a const 0 and every engine branch below folds away.
+	// (Measured: guard-on-depth-1 via the OLD always-engine path cost ~8pp more CPU than serial —
+	// the fc_pump rendezvous — so gating the engine on depth-2 is what makes a global ship free.)
 #ifdef ZERO_FRONTEND_THREADING_V2
-	// v2 bootstrap: Core_open (above) did dlopen/dlsym/get_info/paths/register on MAIN
-	// (get_system_info on MAIN is the one F23 deviation for depth-1 first boot — read-only
-	// info query, lowest TLS risk; the F23-critical init/load/run run on the CORE thread).
-	// Drive the remaining stages through fc_boot_stage (D57/D58), interleaving MAIN work.
-	// Depth bring-up (design Stage 1): ZERO_FTV2_DEPTH=2 forces the pipelined ring; default 1
-	// (serial). Capped at 2 (v1.4 ships <=2). This is the env switch for the depth-2 smoke test.
 	int ftv2_depth = 1;
 	{ const char* e = getenv("ZERO_FTV2_DEPTH"); if (e && atoi(e) >= 2) ftv2_depth = 2; }
-	fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
-	fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
-	zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);  // WP-A gate: 0 at serial depth-1 (dormant), 1 when depth-2 is enabled
-	if (zero_ftv2_depth2) GFX_setNoCatchup(1);     // D61: the present's vsync is depth-2's pacer — keep it reliable
-	LOG_info("threading v2: depth=%u (%s)\n", zero_ftv2.fr.depth, zero_ftv2_depth2 ? "PIPELINED" : "serial");
-	zero_ftv2_inited = 1;
-	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
-	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+	const int use_ftv2 = (ftv2_depth >= 2);
 #else
-	Core_init();
+	const int use_ftv2 = 0;
 #endif
+
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		// F23: init/load/run run on the CORE thread (get_system_info was the one MAIN deviation,
+		// done in Core_open above). Drive the remaining stages through fc_boot_stage (D57/D58).
+		fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
+		fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
+		zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);
+		if (zero_ftv2_depth2) GFX_setNoCatchup(1);     // D61: the present's vsync is depth-2's pacer
+		LOG_info("threading v2: depth=%u (PIPELINED)\n", zero_ftv2.fr.depth);
+		zero_ftv2_inited = 1;
+		fc_boot_stage(&zero_ftv2, FC_OP_INIT);
+		if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+#endif
+	} else {
+		Core_init();
+	}
 	
 	// TODO: find a better place to do this
 	// mixing static and loaded data is messy
@@ -5502,24 +5513,26 @@ int main(int argc , char* argv[]) {
 	// ah, because it's defined before options_menu...
 	options_menu.items[1].desc = (char*)core.version;
 	
+	if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
-	fc_boot_stage(&zero_ftv2, FC_OP_LOAD);   // load_game returns -1 on failure (fc_boot_failed set)
-	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
-	fc_boot_stage(&zero_ftv2, FC_OP_MEMORY);      // SRAM_read + RTC_read
-	fc_boot_stage(&zero_ftv2, FC_OP_ARM_CRASH);   // Crash_install (pointers valid now)
-	fc_boot_stage(&zero_ftv2, FC_OP_AV);          // get_system_av_info -> core.fps/sample_rate/aspect
-	fc_boot_stage(&zero_ftv2, FC_OP_CONTROLLER);  // set_controller_port_device (after av, matches Core_load order)
-	if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
-#else
-	if (!Core_load()) {
-		// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
-		// run, but an initialized core still owes retro_deinit before dlclose: call it
-		// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
-		core.deinit();
-		core.initialized = 0;
-		goto finish;
-	}
+		fc_boot_stage(&zero_ftv2, FC_OP_LOAD);   // load_game returns -1 on failure (fc_boot_failed set)
+		if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
+		fc_boot_stage(&zero_ftv2, FC_OP_MEMORY);      // SRAM_read + RTC_read
+		fc_boot_stage(&zero_ftv2, FC_OP_ARM_CRASH);   // Crash_install (pointers valid now)
+		fc_boot_stage(&zero_ftv2, FC_OP_AV);          // get_system_av_info -> core.fps/sample_rate/aspect
+		fc_boot_stage(&zero_ftv2, FC_OP_CONTROLLER);  // set_controller_port_device (after av, matches Core_load order)
+		if (fc_boot_failed(&zero_ftv2)) { fc_teardown(&zero_ftv2); goto finish; }
 #endif
+	} else {
+		if (!Core_load()) {
+			// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
+			// run, but an initialized core still owes retro_deinit before dlclose: call it
+			// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
+			core.deinit();
+			core.initialized = 0;
+			goto finish;
+		}
+	}
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
@@ -5533,21 +5546,25 @@ int main(int argc , char* argv[]) {
 #endif
 	Config_free();
 
+	if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
-	fc_boot_stage(&zero_ftv2, FC_OP_AUDIO);    // = SND_init MAIN-side, D57 (sample_rate ready from AV)
-	fc_boot_stage(&zero_ftv2, FC_OP_RENDERER); // MAIN-side no-op on this platform (SDL renderer already up)
-#else
-	SND_init(core.sample_rate, core.fps);
+		fc_boot_stage(&zero_ftv2, FC_OP_AUDIO);    // = SND_init MAIN-side, D57 (sample_rate ready from AV)
+		fc_boot_stage(&zero_ftv2, FC_OP_RENDERER); // MAIN-side no-op on this platform (SDL renderer already up)
 #endif
+	} else {
+		SND_init(core.sample_rate, core.fps);
+	}
 	InitSettings(); // after we initialize audio
 	Menu_init();
+	if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
-	fc_boot_stage(&zero_ftv2, FC_OP_RESUME);   // = State_resume (nonfatal)
-	fc_boot_finish(&zero_ftv2);                // QUIESCENT -> RUNNING; grants may now flow
-	zero_ftv2_running = 1;
-#else
-	State_resume();
+		fc_boot_stage(&zero_ftv2, FC_OP_RESUME);   // = State_resume (nonfatal)
+		fc_boot_finish(&zero_ftv2);                // QUIESCENT -> RUNNING; grants may now flow
+		zero_ftv2_running = 1;
 #endif
+	} else {
+		State_resume();
+	}
 	Menu_initState(); // make ready for state shortcuts
 	
 	{
@@ -5607,43 +5624,34 @@ int main(int argc , char* argv[]) {
 		GFX_startFrame();
 		
 		if (!thread_video) {
+			if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
-			// depth-1: grant one epoch (CORE runs core.run + emits the frame), drain +
-			// present on MAIN. snap={0}: input globals are MAIN-set and read by CORE with
-			// no overlap in serial mode (WP2), so the per-epoch snapshot is unused at depth 1.
-			{
-				uint64_t snap[4] = {0};
-				if (zero_ftv2_depth2) {
-					// WP-A: at depth-2 MAIN runs the input tick and packs THIS epoch's input
-					// snapshot (buttons + both analog sticks + the FF control flag, F11); the
-					// CORE thread reads it via input_state_callback. Analog packed through
-					// uint16_t casts (shifting a negative signed axis left is UB — F11).
-					input_tick();
-					snap[0] = (uint32_t)buttons;
-					snap[1] = ((uint64_t)(uint16_t)pad.laxis.x << 16) | (uint16_t)pad.laxis.y;
-					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
-					snap[3] = (uint64_t)(uint32_t)fast_forward;
-				}
-				// D61 depth-2 pacer: the present's vsync (zero_ftv2_drain -> present_frame ->
-				// GFX_flip) is the SOLE 60fps pacer — it blocks MAIN, which OVERLAPS the CORE's
-				// next epoch (the depth-2 concurrency win), and paces cleanly at exactly 60. Kept
-				// reliable by GFX_setNoCatchup(1) at bootstrap (no audio-catch-up vsync-skip -> no
-				// spin). No GFX_sync (it double-paced to 57-59fps, which starved audio + made the
-				// governor hold high). fc_pump stays non-blocking (a block-in-pump pacer deadlocks).
+				// depth-2 pipelined: MAIN packs THIS epoch's input snapshot (buttons + both analog
+				// sticks + the FF control flag, F11; analog via uint16_t casts — shifting a negative
+				// signed axis is UB), the CORE thread runs core.run() concurrently and reads the
+				// snapshot via input_state_callback, MAIN drains + presents. The present's vsync is
+				// the SOLE pacer (GFX_setNoCatchup at bootstrap) — it blocks MAIN, overlapping the
+				// CORE's next epoch (the concurrency win). fc_pump stays non-blocking (block=DEADLOCK).
+				uint64_t snap[4];
+				input_tick();
+				snap[0] = (uint32_t)buttons;
+				snap[1] = ((uint64_t)(uint16_t)pad.laxis.x << 16) | (uint16_t)pad.laxis.y;
+				snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
+				snap[3] = (uint64_t)(uint32_t)fast_forward;
 				uint64_t ftv2_p0 = zero_ftv2_presented;
 				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
-				// If no frame was ready to present this tick (the CORE at its floor has no headroom
-				// to buffer ahead), briefly idle instead of tight-spinning until it is. 500us is
-				// short enough to add no perceptible latency; the vsync present still paces the real
-				// frames at 60. This takes MAIN off the ~4500/s spin -> lower CPU, cooler.
-				if (zero_ftv2_depth2 && zero_ftv2_presented == ftv2_p0) {
+				// No frame ready this tick (CORE at its floor, no headroom to buffer ahead): briefly
+				// idle instead of tight-spinning. 500us adds no perceptible latency; the vsync present
+				// still paces the real frames at 60. Takes MAIN off the ~4500/s spin -> lower CPU.
+				if (zero_ftv2_presented == ftv2_p0) {
 					struct timespec ts = {0, 500000};
 					nanosleep(&ts, NULL);
 				}
-			}
-#else
-			core.run();
 #endif
+			} else {
+				core.run();  // depth<2 (and every guard-off build): plain serial, video_refresh
+				             // presents inline on MAIN — zero engine overhead (F23-consistent).
+			}
 			limitFF();
 			trackFPS();
 		}
