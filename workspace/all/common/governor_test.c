@@ -249,6 +249,29 @@ static void test_curable_slip_still_climbs(void) {
 	CHECK(fixed_ticks > 30, "should have spent the trace fixed at f_max, got %d", fixed_ticks);
 }
 
+// ---- FF slips (unreachable-by-design targets) must climb to f_max and STAY — the futile
+// detector must never fire on them, even from inside an active futile hold. ----
+static void test_ff_slip_bypasses_futile(void) {
+	printf("[futile] FF slips climb to f_max and stay (no stand-down, even inside a hold)\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c); // settle low
+	int settled = st.ceil_khz;
+	// first: engage a futile hold via an unfixable NORMAL slip
+	for (int i = 0; i < 12; i++) gov_step(&st, p, 45, GOV_SIGNAL_SLIP);
+	CHECK(st.futile_hold > 0, "setup: futile hold should be engaged (hold=%d)", st.futile_hold);
+	CHECK(st.ceil_khz == settled, "setup: standing down to origin %d, got %d", settled, st.ceil_khz);
+	// user hits fast-forward DURING the hold: FF must climb to f_max immediately and stay
+	int at_max = 0;
+	for (int i = 0; i < 40; i++) {
+		int khz = gov_step(&st, p, 45, GOV_SIGNAL_FFSLIP);
+		if (khz == p->f_max) at_max++;
+	}
+	CHECK(at_max >= 39, "FF must hold f_max through the trace, held %d/40", at_max);
+	CHECK(st.ceil_khz == p->f_max, "FF should rest at f_max, got %d", st.ceil_khz);
+}
+
 static void test_tick_io(void) {
 	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
@@ -357,6 +380,7 @@ int main(void) {
 	test_converges_to_lowest_stable();
 	test_futile_climb_stands_down();
 	test_curable_slip_still_climbs();
+	test_ff_slip_bypasses_futile();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	if (g_fail) { printf("%d check(s) failed\n", g_fail); return 1; }

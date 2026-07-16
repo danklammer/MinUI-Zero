@@ -93,32 +93,39 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		st->slip_run = 0;
 	}
 	else if (frame_overrun) {
+		// Fast-forward slips (GOV_SIGNAL_FFSLIP) are unreachable-by-design targets: they must
+		// climb like BIGSLIP but NEVER touch the futile machinery — not the hold (FF must climb
+		// even during one), not the origin, not the at-max counter (else FF reads as "unfixable"
+		// after 4 ticks and stands down, collapsing FF speed — review 2026-07-16).
+		int ff = (frame_overrun == GOV_SIGNAL_FFSLIP);
 		// Futile-climb hold: this scene already proved a full climb to f_max does not cure its
 		// slip (authentic engine slowdown — the game dips at EVERY clock). Chasing it again is
 		// pure heat: hold the restored ceiling, skip the climb AND the fail-memory arming (60s of
 		// held slips would otherwise poison fail_khz and block legitimate later sinking). Expiry
 		// or a scene change (gov_burst) re-tests honestly. Audio: presentation-drop covers dips.
-		if (st->futile_hold > 0) {
+		if (st->futile_hold > 0 && !ff) {
 			st->slack_run = 0;
 			return st->ceil_khz;
 		}
-		// Episode origin: remember the settled ceiling this slip episode started from — if the
-		// climb turns out futile, this is what we restore (the clock the scene actually needs).
-		if (st->slip_run == 0 && st->ceil_khz < p->f_max)
-			st->slip_origin_khz = st->ceil_khz;
-		// Futile detector: slipping AT f_max means the climb already happened and didn't cure it.
-		if (st->ceil_khz >= p->f_max) {
-			if (++st->max_slip_run >= GOV_FUTILE_TICKS && st->slip_origin_khz > 0
-			    && st->slip_origin_khz < p->f_max) {
-				st->ceil_khz = st->slip_origin_khz;  // stand down to what the scene actually needs
-				st->futile_hold = GOV_FUTILE_HOLD;
-				st->max_slip_run = 0;
-				st->slip_run = 0;
-				st->slack_run = 0;
-				return st->ceil_khz;
+		if (!ff) {
+			// Episode origin: remember the settled ceiling this slip episode started from — if the
+			// climb turns out futile, this is what we restore (the clock the scene actually needs).
+			if (st->slip_run == 0 && st->ceil_khz < p->f_max)
+				st->slip_origin_khz = st->ceil_khz;
+			// Futile detector: slipping AT f_max means the climb already happened and didn't cure it.
+			if (st->ceil_khz >= p->f_max) {
+				if (++st->max_slip_run >= GOV_FUTILE_TICKS && st->slip_origin_khz > 0
+				    && st->slip_origin_khz < p->f_max) {
+					st->ceil_khz = st->slip_origin_khz;  // stand down to what the scene actually needs
+					st->futile_hold = GOV_FUTILE_HOLD;
+					st->max_slip_run = 0;
+					st->slip_run = 0;
+					st->slack_run = 0;
+					return st->ceil_khz;
+				}
 			}
+			else st->max_slip_run = 0;
 		}
-		else st->max_slip_run = 0;
 		// 2) need more performance — climb fast, and remember the ceiling that proved too low.
 		// A slip at/below a ceiling that already failed is a repeat offense: escalate the hold
 		// (60s -> 2m -> 4m -> 8m) so known-bad probes become rare instead of periodic
@@ -145,9 +152,10 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 			//    tick by restoring the pre-sink ceiling;
 			// 2) big deficit (>=10% under target) -> jump straight to f_max;
 			// 3) small deficit -> one step, then f_max if it survives a second tick.
-			if (frame_overrun == GOV_SIGNAL_BIGSLIP)
+			if (frame_overrun == GOV_SIGNAL_BIGSLIP || frame_overrun == GOV_SIGNAL_FFSLIP)
 				st->ceil_khz = p->f_max; // severity outranks probe-undo: a deep deficit
 				                         // restored to a too-low pre-sink ceiling pays twice
+				                         // (FF: the target is unreachable by design — max now)
 			else if (st->since_sink < 8 && st->presink_khz > st->ceil_khz)
 				st->ceil_khz = st->presink_khz;
 			else if (st->slip_run >= 2)

@@ -6011,7 +6011,11 @@ int main(int argc , char* argv[]) {
 					int fps_gross = (gov_gen > 0 && gov_target_fps > 0 && gov_gen < gov_target_fps * 0.90);
 					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
-					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
+					if ((fps_gross || fps_short) && fast_forward) frame_overrun = GOV_SIGNAL_FFSLIP;
+					// ^ FF slips are unreachable-by-design targets: climb to max, but NEVER feed the
+					//   futile-climb detector (it would read FF as "unfixable" and stand the clock
+					//   down, collapsing FF speed — review 2026-07-16)
+					else if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
 					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
 					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
 					// the per-frame work measurement is unreliable while presentation is skipping,

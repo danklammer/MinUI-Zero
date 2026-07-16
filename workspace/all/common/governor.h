@@ -62,6 +62,10 @@ void gov_init(GovState* st, const GovProfile* p);
 #define GOV_SIGNAL_SLIP  1 // NOT holding frame rate -> climb + remember the failed ceiling
 #define GOV_SIGNAL_BUSY  2 // holding, but saturated (no idle headroom) -> hold, don't probe lower
 #define GOV_SIGNAL_BIGSLIP 3 // >=10% under target -> jump straight to f_max (the audible case)
+#define GOV_SIGNAL_FFSLIP  4 // fast-forward slip: the target is unreachable BY DESIGN (fps x mult),
+                             // so it must climb to f_max like BIGSLIP but must NEVER arm or obey the
+                             // futile-climb stand-down — FF wants max clock for as long as it's held
+                             // (review 2026-07-16: futile+FF interaction collapsed FF toward 1x)
 
 // Pure controller step. No I/O.
 //   temp_c        : current temperature in Celsius, or <0 if unknown/unavailable.
