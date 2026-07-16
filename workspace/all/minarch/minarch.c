@@ -74,6 +74,13 @@ static __thread int zero_ftv2_on_core = 0;
 // service routing at depth-2 are the on-device pieces — see input_tick TODO.)
 static int zero_ftv2_depth2 = 0;
 static __thread uint64_t zero_ftv2_isnap[4] = {0};
+// Crash canary (depth-2 auto-fallback): armed on the way into a depth-2 session, cleared at every
+// known-good point — clean exit, and the parked sleep/poweroff autosave (Menu_beforeSleep is the
+// choke point for BOTH; re-armed on wake). If the previous depth-2 session of this game ended
+// without reaching one (crash / freeze / hard power-off mid-play), the next launch runs SERIAL and
+// clears the canary — one safe session, then depth-2 retries. Self-healing, no UI, no user action.
+static char zero_ftv2_canary[MAX_PATH];
+static int  zero_ftv2_canary_armed = 0;
 // D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
 // depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
 // for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
@@ -3724,12 +3731,24 @@ void Menu_beforeSleep(void) {
 	RTC_write();
 	State_autosave();
 	zero_ftv2_core_leave(ftv2_parked);
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Known-good point: everything is saved. Clear the depth-2 crash canary so a poweroff from
+	// here (the quicksave flow never returns) doesn't read as a bad exit. Re-armed on wake.
+	if (zero_ftv2_canary_armed) { unlink(zero_ftv2_canary); zero_ftv2_canary_armed = 0; }
+#endif
 	putFile(AUTO_RESUME_PATH, game.path + strlen(SDCARD_PATH));
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
 }
 void Menu_afterSleep(void) {
 	// LOG_info("beforeSleep\n");
 	unlink(AUTO_RESUME_PATH);
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Woke back into a live depth-2 session: re-arm the crash canary (cleared by Menu_beforeSleep).
+	if (zero_ftv2_depth2 && zero_ftv2_canary[0] && !zero_ftv2_canary_armed) {
+		putFile(zero_ftv2_canary, "armed\n");
+		zero_ftv2_canary_armed = 1;
+	}
+#endif
 	setOverclock(overclock);
 }
 
@@ -5532,6 +5551,20 @@ int main(int argc , char* argv[]) {
 #ifdef ZERO_FRONTEND_THREADING_V2
 	int ftv2_depth = 1;
 	{ const char* e = getenv("ZERO_FTV2_DEPTH"); if (e && atoi(e) >= 2) ftv2_depth = 2; }
+	if (ftv2_depth >= 2) {
+		// Crash canary (see decl): a leftover canary means the last depth-2 session of THIS game
+		// ended uncleanly — run serial this once and clear it (depth-2 retries next launch).
+		sprintf(zero_ftv2_canary, "%s/%s.ftv2boot", core.states_dir, game.name);
+		if (exists(zero_ftv2_canary)) {
+			LOG_info("threading v2: previous depth-2 session ended uncleanly — running SERIAL this session (auto-retry next launch)\n");
+			unlink(zero_ftv2_canary);
+			ftv2_depth = 1;
+		}
+		else {
+			putFile(zero_ftv2_canary, "armed\n");
+			zero_ftv2_canary_armed = 1;
+		}
+	}
 	const int use_ftv2 = (ftv2_depth >= 2);
 #else
 	const int use_ftv2 = 0;
@@ -6138,6 +6171,9 @@ finish:
 	// (the D52 dlclose-SIGSEGV class). Core_close (dlclose) stays on MAIN.
 	if (zero_ftv2_inited) fc_teardown(&zero_ftv2);
 	else Core_quit();
+	// Clean exit = known-good: disarm the depth-2 crash canary (see decl). A crash/freeze never
+	// reaches here, leaving the canary in place -> next launch of this game runs serial once.
+	if (zero_ftv2_canary_armed) { unlink(zero_ftv2_canary); zero_ftv2_canary_armed = 0; }
 #else
 	Core_quit();
 #endif
