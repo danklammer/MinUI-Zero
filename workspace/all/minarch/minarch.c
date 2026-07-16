@@ -119,6 +119,11 @@ static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-
 // it with NO memcpy); the epoch-end guard in zero_ftv2_run releases an unconsumed one (dupe
 // frame / mid-frame mode change re-request reclaims via the env cb itself).
 static __thread int zero_ftv2_zc_buf = -1;
+// Depth-2 per-thread HUD telemetry (racy plain reads by design, like cpu_double): last epoch's
+// emulation time on CORE and last present's cost on MAIN. Together they SHOW the pipeline
+// working: serial would pay C+P per frame; depth-2 pays max(C,P) — visible at a glance.
+static uint32_t zero_ftv2_emu_us = 0;      // CORE: core.run() duration for the last epoch
+static uint32_t zero_ftv2_present_us = 0;  // MAIN: blit+flip duration for the last present (incl vsync wait)
 // D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
 // depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
 // for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
@@ -3401,9 +3406,30 @@ static void present_frame(void* src, unsigned width, unsigned height, size_t pit
 		blitBitmapText(debug_text,x,-y,(uint16_t*)src,pitch/2, width,height);
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
 		blitBitmapText(debug_text,-x,-y,(uint16_t*)src,pitch/2, width,height);
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) {
+			// Line 2 (depth-2 only): the two threads, in ms. C = CORE emulation time/epoch,
+			// P = MAIN present time (blit+flip incl. W = the vsync wait inside it). Serial would
+			// pay C+(P-W) per frame; the pipeline pays max() — when C and P-W are both fat and
+			// fps holds 60, you are LOOKING at the threading win.
+			sprintf(debug_text, "C%.1f P%.1f W%.1f", zero_ftv2_emu_us/1000.0, zero_ftv2_present_us/1000.0, GFX_getFlipWaitUs()/1000.0);
+			blitBitmapText(debug_text,x,-(y+CHAR_HEIGHT+3),(uint16_t*)src,pitch/2, width,height);
+		}
+#endif
 	}
 	renderer.src = src;
 	renderer.dst = screen->pixels;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_depth2 && do_flip) {
+		// Depth-2 present is ALWAYS the never-skip GFX_flip (same choice the routing below makes:
+		// never_skip is unconditionally 1 at depth-2) — duplicated here only to time it for HUD line 2.
+		uint64_t p_t0 = getMicroseconds();
+		GFX_blitRenderer(&renderer);
+		GFX_flip(screen);
+		zero_ftv2_present_us = (uint32_t)(getMicroseconds() - p_t0);
+		return;
+	}
+#endif
 	GFX_blitRenderer(&renderer);
 	if (do_flip) {
 		// Route the present by context (v1.3.1 GFX_flip/GFX_flipGame split): a serial game-loop
@@ -5479,7 +5505,9 @@ static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t s
 	// WP-A: stash this epoch's input snapshot for input_state_callback (depth-2 reads it here
 	// instead of the live globals). Harmless at depth-1 (input still flows via input_tick on CORE).
 	zero_ftv2_isnap[0]=snap[0]; zero_ftv2_isnap[1]=snap[1]; zero_ftv2_isnap[2]=snap[2]; zero_ftv2_isnap[3]=snap[3];
+	uint64_t emu_t0 = getMicroseconds();
 	core.run();  // WP-B: video_refresh emits the frame (zero-copy pool render, or memcpy fallback)
+	zero_ftv2_emu_us = (uint32_t)(getMicroseconds() - emu_t0);  // HUD line 2 (racy read on MAIN, fine)
 	// Zero-copy leak guard: the core requested a pool buffer this epoch but never presented it
 	// (duped/skipped frame) — video_refresh didn't consume it, so release it here or the pool
 	// bleeds one buffer per dupe until exhaustion (which would demote every frame to a drop).
