@@ -1055,3 +1055,21 @@ from one cfg line) and LTO for the cores shipping without it (gpsp, mgba). Ranke
 .notes/optimization-master-hunt.md; threading census for VB/MGBA/supafaust in
 .notes/threading-other-systems-survey.md — depth-2 extends to a system only if it has at-the-edge
 games (pins f_max or slips), which is what made PS1 the win and makes 8-bit a non-candidate.
+## D56 — FF with sound (2026-07-14, feat/ff-audio)
+Fast-forward was silent since forever: `audio_sample*_callback` dropped audio when
+`fast_forward` (the old `// sound must be disabled for fast forward to work` note). The
+real reason is `SND_batchSamples` BLOCKS the emulation thread when the ring is full
+(SDL_Delay retry) — that block is what audio-paces normal play to real time, so feeding
+4x audio during FF throttled FF back to 1x. Fix (lean, no time-stretch): during FF the
+ring feeds NON-BLOCKING — `SND_setFastForward(1)` makes `SND_batchSamples` drop-on-full
+instead of block. The DAC plays the samples that land at 1x = the game audio temporally
+compressed (the expected sped-up/chipmunk FF sound); FF speed stays governed by
+`limitFF()`. On by default (`ff_audio=1`, no menu; set 0 for classic silent FF).
+NextUI parity confirmed against their tree: `ma_audio.c` gates on `(!fast_forward ||
+ff_audio)` and routes FF through `SND_batchSamples_fixed_rate` — an occupancy-adaptive
+non-blocking resampler (ON_TIME/LATE/VERY_LATE mode machine). Ours is the minimal
+equivalent: same non-blocking-drop principle, no adaptive resampler (chipmunk is the
+desired FF cue, not hi-fi). Interaction with the v1.3.1 presentation-drop catch-up is
+benign BY CONSTRUCTION: FF floods the ring, `SND_ringPct` rides high, catch-up (engages
+< 50%) never fires during FF — FF is never audio-starved. Device ear-test + engage=0
+confirmation pending (Brick asleep at implementation time).
