@@ -160,6 +160,7 @@ int GFX_hdmiChanged(void);
 
 void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen);
+void GFX_setNoCatchup(int on); // depth-2: always vsync (disable audio catch-up skip) — the present's vsync IS the pacer
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
 void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)

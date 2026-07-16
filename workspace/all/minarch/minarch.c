@@ -5487,6 +5487,7 @@ int main(int argc , char* argv[]) {
 	fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
 	fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);  // WP-B/D-a2: return pool buffers after present
 	zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);  // WP-A gate: 0 at serial depth-1 (dormant), 1 when depth-2 is enabled
+	if (zero_ftv2_depth2) GFX_setNoCatchup(1);     // D61: the present's vsync is depth-2's pacer — keep it reliable
 	LOG_info("threading v2: depth=%u (%s)\n", zero_ftv2.fr.depth, zero_ftv2_depth2 ? "PIPELINED" : "serial");
 	zero_ftv2_inited = 1;
 	fc_boot_stage(&zero_ftv2, FC_OP_INIT);
@@ -5623,14 +5624,22 @@ int main(int argc , char* argv[]) {
 					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
 					snap[3] = (uint64_t)(uint32_t)fast_forward;
 				}
+				// D61 depth-2 pacer: the present's vsync (zero_ftv2_drain -> present_frame ->
+				// GFX_flip) is the SOLE 60fps pacer — it blocks MAIN, which OVERLAPS the CORE's
+				// next epoch (the depth-2 concurrency win), and paces cleanly at exactly 60. Kept
+				// reliable by GFX_setNoCatchup(1) at bootstrap (no audio-catch-up vsync-skip -> no
+				// spin). No GFX_sync (it double-paced to 57-59fps, which starved audio + made the
+				// governor hold high). fc_pump stays non-blocking (a block-in-pump pacer deadlocks).
+				uint64_t ftv2_p0 = zero_ftv2_presented;
 				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
-				// D61 depth-2 pacer: fc_pump is non-blocking at depth-2 (a block-in-pump pacer
-				// DEADLOCKS — harness FTV2-STUCK). Pace MAIN with GFX_sync() instead: the proven
-				// scheduled-time pacer (menu/old-threaded loops use it) sleeps to the next frame
-				// deadline and ADAPTS to how long the present already took — so no double-pace
-				// with the vsync flip, no busy-spin (the 4397), and no fc_pump block (no deadlock).
-				// 1 loop == 1 frame again, so the governor's gen reads true. Depth-1: fc_pump D59.
-				if (zero_ftv2_depth2) GFX_sync();
+				// If no frame was ready to present this tick (the CORE at its floor has no headroom
+				// to buffer ahead), briefly idle instead of tight-spinning until it is. 500us is
+				// short enough to add no perceptible latency; the vsync present still paces the real
+				// frames at 60. This takes MAIN off the ~4500/s spin -> lower CPU, cooler.
+				if (zero_ftv2_depth2 && zero_ftv2_presented == ftv2_p0) {
+					struct timespec ts = {0, 500000};
+					nanosleep(&ts, NULL);
+				}
 			}
 #else
 			core.run();
@@ -5791,8 +5800,18 @@ int main(int argc , char* argv[]) {
 					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? (max_ff_speed + 1) : 1000) : 1);
-					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
-					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
+					// D61: at depth-2 the MAIN loop rate (cpu_double) is GFX_sync-jittery and does NOT
+					// reflect the CORE's real frame production, so judging slip off it makes the governor
+					// oscillate (600<->1416). Use fps_double (frames the core actually produced) — clean
+					// ~60, dips only on a REAL slip — so the governor sinks to the TRUE depth-2 floor
+					// (the CORE gets the whole frame for emulation instead of frame-minus-present = a
+					// lower floor than depth-1). Depth-1 keeps cpu_double (1 loop == 1 frame; proven).
+					double gov_gen = cpu_double;
+#ifdef ZERO_FRONTEND_THREADING_V2
+					if (zero_ftv2_depth2) gov_gen = fps_double;
+#endif
+					int fps_short = (gov_gen > 0 && gov_target_fps > 0 && gov_gen < gov_target_fps * 0.975);
+					int fps_gross = (gov_gen > 0 && gov_target_fps > 0 && gov_gen < gov_target_fps * 0.90);
 					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
 					int frame_overrun;
 					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
