@@ -5320,16 +5320,23 @@ static void trackFPS(void) {
 		//   dup/s   = duplicated (present-starved) frames/sec — pacing-quality signal
 		//   ceil = governor clock ceiling (MHz) — the energy signal
 		{
-			int m_depth = 0;
+			// Bench instrument, OPT-IN (ZERO_MEASURE=1): a log line every second is a file write
+			// to the SD card every second of EVERY session — I/O, wakeups, and card wear for data
+			// nobody is reading outside an A/B. The bench scripts export the env.
+			static int m_on = -1;
+			if (m_on < 0) { const char* e = getenv("ZERO_MEASURE"); m_on = (e && e[0] && e[0] != '0') ? 1 : 0; }
+			if (m_on) {
+				int m_depth = 0;
 #ifdef ZERO_FRONTEND_THREADING_V2
-			m_depth = zero_ftv2_depth2 ? 2 : 1;
+				m_depth = zero_ftv2_depth2 ? 2 : 1;
 #endif
-			SND_Stats ss; SND_getStats(&ss);
-			static long m_u0 = 0; static int m_d0 = 0;
-			int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
-			int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
-			LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
-				m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+				SND_Stats ss; SND_getStats(&ss);
+				static long m_u0 = 0; static int m_d0 = 0;
+				int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
+				int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
+				LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
+					m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+			}
 		}
 
 		sec_start = now;
