@@ -961,3 +961,17 @@ prefix-load stays (bounded read into a state_size buffer, v1.3.1's de-facto sema
 fail-closed stance is kept for every other failure class (truncation, short reads, publish
 failures). Also closed by review: test-save-io added to release-checks CI; the stale -8 release
 zip (embedded pre-commit hash) discarded — release artifacts must embed the tagged HEAD's hash.
+
+## D60 — Fractional fast-forward speeds: 1.25x / 1.5x / 1.75x (2026-07-17, v1.4)
+FF speeds were integer-multiplier by construction (`index+1` in the pacer budget) — a harmless
+simplification in the silent-FF era, when 1.25x video was indistinguishable from 1x. FF-with-sound
+(D56) + measured-rate smoothing (D59) change the calculus twice over: (1) speech stays intelligible
+at 1.25-1.75x, making them the "watchable" band for RPG/text play; (2) heavy PS1 games cannot reach
+the old 2x minimum (no CPU headroom above ~1.1x at stock — user-reported as "FF does nothing"), but
+CAN reach the fractional band, making PS1 fast-forward real for the first time. This was a v1.3.1
+limitation, not a regression — audible FF merely exposed it. Implementation: a multiplier table
+(`max_ff_mults`, index-aligned with the labels) replaces `index+1` at the two math sites (limitFF
+budget, governor FF target); "None"=0 stays uncapped and divide-guarded. Config compatibility is
+free by construction: cfgs persist the LABEL STRING and resolve by string match, so inserting
+entries cannot remap a saved speed; the in-code default index moves 3->6 to keep the 4x default.
+Device gate: pacing feel + FF-audio ear check at each fractional speed, PS1 (heavy title) included.
