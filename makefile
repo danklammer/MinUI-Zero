@@ -19,7 +19,7 @@ endif
 ###########################################################
 
 BUILD_HASH:=$(shell git rev-parse --short HEAD)
-ZERO_VERSION=v1.3.1
+ZERO_VERSION=v1.4.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
