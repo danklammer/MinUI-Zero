@@ -119,11 +119,41 @@ static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-
 // it with NO memcpy); the epoch-end guard in zero_ftv2_run releases an unconsumed one (dupe
 // frame / mid-frame mode change re-request reclaims via the env cb itself).
 static __thread int zero_ftv2_zc_buf = -1;
-// Depth-2 per-thread HUD telemetry (racy plain reads by design, like cpu_double): last epoch's
-// emulation time on CORE and last present's cost on MAIN. Together they SHOW the pipeline
-// working: serial would pay C+P per frame; depth-2 pays max(C,P) — visible at a glance.
-static uint32_t zero_ftv2_emu_us = 0;      // CORE: core.run() duration for the last epoch
+// Depth-2 per-thread HUD telemetry: last epoch's emulation time on CORE (atomic relaxed —
+// CORE writes, MAIN reads; plain cross-thread ints are UB under -O3/-flto, Codex #12) and
+// last present's cost on MAIN (MAIN-only, plain). Together they SHOW the pipeline working:
+// serial would pay C+P per frame; depth-2 pays max(C,P) — visible at a glance.
+static _Atomic uint32_t zero_ftv2_emu_us = 0; // CORE: core.run() duration for the last epoch
 static uint32_t zero_ftv2_present_us = 0;  // MAIN: blit+flip duration for the last present (incl vsync wait)
+// Depth-2 generation telemetry (Codex #5): epochs completed, counted on MAIN from non-cancelled
+// FR_EV_RUN_DONE events in the drain — the TRUE generation rate (duped frames count; a 30fps-
+// internal game generating 60 epochs/s reads 60, not 30). Replaces the old cross-thread
+// fps_ticks read at depth-2 (CORE-incremented, MAIN-reset = data race + wrong semantics).
+static uint32_t zero_ftv2_gen_ticks = 0;   // MAIN-only: read+reset by trackFPS
+// Per-epoch FF snapshot (Codex #6): CORE-side callbacks must not read the live `fast_forward`
+// global MAIN mutates — zero_ftv2_run stores this epoch's snap[3] here (CORE TLS).
+static __thread int zero_ftv2_ff_snap = 0;
+// Ordered CORE->MAIN state commands (Codex #3): SET_GEOMETRY / SET_SYSTEM_AV_INFO arrive on the
+// CORE thread mid-epoch; writing core.aspect_ratio/core.fps/renderer.dst_p there races MAIN's
+// present. Route them through FR_EV_CMD (never dropped, applied by the drain on MAIN in global
+// order against frames). Payload: op in the top byte, an IEEE-754 float's bits in the low 32.
+#define ZERO_CMD_ASPECT 1
+#define ZERO_CMD_FPS    2
+#define ZERO_CMD_SRATE  3
+static uint64_t zero_cmd_pack(int op, float v) {
+	uint32_t bits; memcpy(&bits, &v, 4);
+	return ((uint64_t)op << 56) | bits;
+}
+// Durable canary write (Codex #11): putFile ignores failures and never syncs — a full card or
+// instant power cut could leave no marker and the next launch would wrongly retry depth-2.
+// Only report armed on a synced, complete write.
+static int zero_ftv2_canary_write(const char* path) {
+	int fd = open(path, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+	if (fd < 0) return -1;
+	int ok = (write(fd, "armed\n", 6) == 6) && (fsync(fd) == 0);
+	close(fd);
+	return ok ? 0 : -1;
+}
 // D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
 // depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
 // for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
@@ -707,6 +737,20 @@ static struct {
 static void Crash_handler(int sig) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
 	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Codex #4: only the thread that OWNS core execution may emergency-save. At depth-2 a
+	// MAIN-side fault (present path) can fire while CORE is mid-mutation of emulated memory —
+	// writing the cached SRAM/RTC pointers then would atomically rename a TORN snapshot over
+	// the last good save. Non-core faults restore volts and die; the on-disk save stays good.
+	// (zero_ftv2_on_core is the faulting thread's own TLS — async-signal-safe to read.)
+	if (zero_ftv2_depth2 && zero_ftv2_running && !zero_ftv2_on_core) {
+		static const char skip[] = "minarch: fatal signal on non-core thread — skipping emergency save (torn-write guard)\n";
+		write(STDERR_FILENO, skip, sizeof(skip)-1);
+		PLAT_emergencyRestoreCPUVolt();
+		raise(sig);
+		return;
+	}
+#endif
 	static const char msg[] = "minarch: fatal signal — emergency-saving SRAM/RTC\n";
 	write(STDERR_FILENO, msg, sizeof(msg)-1);
 	for (int i=0; i<2; i++) {
@@ -2639,10 +2683,22 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		// an SND re-init, left for if a real core needs it.)
 		const struct retro_system_av_info *info = (const struct retro_system_av_info *)data;
 		if (info) {
-			core.fps = info->timing.fps;
-			core.sample_rate = info->timing.sample_rate;
 			double a = info->geometry.aspect_ratio;
 			if (a<=0) a = (double)info->geometry.base_width / info->geometry.base_height;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// Codex #3: at depth-2 this arrives ON THE CORE THREAD mid-epoch; writing the shared
+			// fields here races MAIN's in-flight present (torn double, lost scaler reset). Route
+			// through FR_EV_CMD — never dropped, applied by the drain on MAIN in global order
+			// against the frames, so the new geometry lands BEFORE the frame that uses it.
+			if (zero_ftv2_depth2 && zero_ftv2_running && zero_ftv2_on_core) {
+				fc_emit_cmd(&zero_ftv2, 0, zero_cmd_pack(ZERO_CMD_FPS,    (float)info->timing.fps));
+				fc_emit_cmd(&zero_ftv2, 0, zero_cmd_pack(ZERO_CMD_SRATE,  (float)info->timing.sample_rate));
+				fc_emit_cmd(&zero_ftv2, 0, zero_cmd_pack(ZERO_CMD_ASPECT, (float)a));
+				break;
+			}
+#endif
+			core.fps = info->timing.fps;
+			core.sample_rate = info->timing.sample_rate;
 			core.aspect_ratio = a;
 			renderer.dst_p = 0; // force selectScaler() on the next frame (see :2837)
 		}
@@ -2655,6 +2711,14 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		if (geom) {
 			double a = geom->aspect_ratio;
 			if (a<=0) a = (double)geom->base_width / geom->base_height;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// Codex #3: pcsx fires this on every PS1 resolution switch — on the CORE thread at
+			// depth-2. Ordered-command routing (see SET_SYSTEM_AV_INFO above for the rationale).
+			if (zero_ftv2_depth2 && zero_ftv2_running && zero_ftv2_on_core) {
+				fc_emit_cmd(&zero_ftv2, 0, zero_cmd_pack(ZERO_CMD_ASPECT, (float)a));
+				break;
+			}
+#endif
 			core.aspect_ratio = a;
 			renderer.dst_p = 0;
 		}
@@ -3458,12 +3522,18 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// if ((tmp_frameskip++)%2) return;
 	
 	static uint32_t last_flip_time = 0;
-	
+
+	// Codex #6: on the CORE thread at depth-2 the live `fast_forward` global is MAIN-mutated —
+	// read this epoch's snapshot instead (delivered via snap[3], stored in CORE TLS).
+	int ff_now = fast_forward;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_running && zero_ftv2_on_core) ff_now = zero_ftv2_ff_snap;
+#endif
 	// 10 seems to be the sweet spot that allows 2x in NES and SNES and 8x in GB at 60fps
 	// 14 will let GB hit 10x but NES and SNES will drop to 1.5x at 30fps (not sure why)
 	// but 10 hurts PS...
 	// TODO: 10 was based on rg35xx, probably different results on other supported platforms
-	if (fast_forward && SDL_GetTicks()-last_flip_time<10) return;
+	if (ff_now && SDL_GetTicks()-last_flip_time<10) return;
 	
 	// FFVII menus 
 	// 16: 30/200
@@ -3477,7 +3547,14 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	
 	if (!data) return;
 
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Codex #5: at depth-2 this runs on CORE while MAIN reads/resets fps_ticks — a data race
+	// with wrong semantics anyway (dupes don't count). Generation is counted on MAIN from
+	// RUN_DONE events instead (zero_ftv2_gen_ticks in the drain); serial keeps fps_ticks.
+	if (!(zero_ftv2_running && zero_ftv2_on_core)) fps_ticks += 1;
+#else
 	fps_ticks += 1;
+#endif
 	
 	if (downsample) pitch /= 2; // everything expects 16 but we're downsampling from 32
 	
@@ -3552,11 +3629,18 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 // forwarding — you hear sped-up/chipmunk audio and know exactly when a cutscene ends.
 // FF speed stays governed by limitFF(). ff_audio=0 restores the classic silent FF.
 // (ff_audio is declared with the other FF globals near the top.)
+// Codex #6: on the CORE thread at depth-2, read this epoch's FF snapshot, not the live global.
+static inline int zero_ff_now(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_running && zero_ftv2_on_core) return zero_ftv2_ff_snap;
+#endif
+	return fast_forward;
+}
 static void audio_sample_callback(int16_t left, int16_t right) {
-	if (!fast_forward || ff_audio) SND_batchSamples(&(const SND_Frame){left,right}, 1);
+	if (!zero_ff_now() || ff_audio) SND_batchSamples(&(const SND_Frame){left,right}, 1);
 }
 static size_t audio_sample_batch_callback(const int16_t *data, size_t frames) {
-	if (!fast_forward || ff_audio) return SND_batchSamples((const SND_Frame*)data, frames);
+	if (!zero_ff_now() || ff_audio) return SND_batchSamples((const SND_Frame*)data, frames);
 	else return frames;
 };
 
@@ -3838,8 +3922,10 @@ void Menu_afterSleep(void) {
 #ifdef ZERO_FRONTEND_THREADING_V2
 	// Woke back into a live depth-2 session: re-arm the crash canary (cleared by Menu_beforeSleep).
 	if (zero_ftv2_depth2 && zero_ftv2_canary[0] && !zero_ftv2_canary_armed) {
-		putFile(zero_ftv2_canary, "armed\n");
-		zero_ftv2_canary_armed = 1;
+		if (zero_ftv2_canary_write(zero_ftv2_canary) == 0)
+			zero_ftv2_canary_armed = 1;   // Codex #11: only on a synced, complete write
+		// (write failure: continue unprotected-but-running — the session was already depth-2;
+		// the next launch's arm attempt will fall back to serial if the card is still bad)
 	}
 #endif
 	setOverclock(overclock);
@@ -5332,6 +5418,14 @@ static void trackFPS(void) {
 	if (now - sec_start>=1000) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) {
+			// Codex #5: depth-2 generation = epochs completed, counted on MAIN in the drain
+			// (non-cancelled RUN_DONE). No cross-thread counter, dupes count as generated.
+			fps_double = zero_ftv2_gen_ticks / last_time;
+			zero_ftv2_gen_ticks = 0;
+		}
+#endif
 		cpu_double = cpu_ticks / last_time;
 
 		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line.
@@ -5513,9 +5607,10 @@ static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t s
 	// WP-A: stash this epoch's input snapshot for input_state_callback (depth-2 reads it here
 	// instead of the live globals). Harmless at depth-1 (input still flows via input_tick on CORE).
 	zero_ftv2_isnap[0]=snap[0]; zero_ftv2_isnap[1]=snap[1]; zero_ftv2_isnap[2]=snap[2]; zero_ftv2_isnap[3]=snap[3];
+	zero_ftv2_ff_snap = (int)(snap[3] & 1);  // Codex #6: CORE callbacks read THIS, not the live global
 	uint64_t emu_t0 = getMicroseconds();
 	core.run();  // WP-B: video_refresh emits the frame (zero-copy pool render, or memcpy fallback)
-	zero_ftv2_emu_us = (uint32_t)(getMicroseconds() - emu_t0);  // HUD line 2 (racy read on MAIN, fine)
+	atomic_store_explicit(&zero_ftv2_emu_us, (uint32_t)(getMicroseconds() - emu_t0), memory_order_relaxed);  // HUD line 2
 	// Zero-copy leak guard: the core requested a pool buffer this epoch but never presented it
 	// (duped/skipped frame) — video_refresh didn't consume it, so release it here or the pool
 	// bleeds one buffer per dupe until exhaustion (which would demote every frame to a drop).
@@ -5580,8 +5675,25 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 			zero_ftv2_presented++;  // D61 pacer: a frame reached the screen (vsync-paced) this tick
 		}
 	}
-	// FR_EV_CMD (SET_GEOMETRY/AV_INFO) applies here in WP-C; ignoring it is harmless for a
-	// depth-1 boot on a fixed-geometry SNES title (watch-point).
+	else if (ev->kind == FR_EV_CMD) {
+		// Codex #3: ordered CORE->MAIN state commands (SET_GEOMETRY / SET_SYSTEM_AV_INFO).
+		// Applied HERE on MAIN, in global order against frames — the shared fields are only
+		// ever written on the thread that reads them for presenting.
+		int op = (int)(ev->payload >> 56);
+		uint32_t bits = (uint32_t)(ev->payload & 0xFFFFFFFFu);
+		float v; memcpy(&v, &bits, 4);
+		switch (op) {
+			case ZERO_CMD_ASPECT: core.aspect_ratio = v; renderer.dst_p = 0; break;
+			case ZERO_CMD_FPS:    core.fps = v;          renderer.dst_p = 0; break;
+			case ZERO_CMD_SRATE:  core.sample_rate = v;  break;
+		}
+	}
+	else if (ev->kind == FR_EV_RUN_DONE && !ev->cancelled) {
+		// Codex #5: the TRUE depth-2 generation rate — epochs the core completed, counted on
+		// MAIN (no cross-thread fps_ticks race; duped/undisplayed frames count as generated,
+		// so internally-low-fps games don't read as slipping). trackFPS reads+resets this.
+		zero_ftv2_gen_ticks++;
+	}
 }
 
 // S3.2 entry point: spawns the CORE thread and runs the F31 bootstrap. NOT yet
@@ -5669,9 +5781,14 @@ int main(int argc , char* argv[]) {
 			unlink(zero_ftv2_canary);
 			ftv2_depth = 1;
 		}
+		else if (zero_ftv2_canary_write(zero_ftv2_canary) == 0) {
+			zero_ftv2_canary_armed = 1;   // Codex #11: armed ONLY on a synced, complete write
+		}
 		else {
-			putFile(zero_ftv2_canary, "armed\n");
-			zero_ftv2_canary_armed = 1;
+			// Canary can't be persisted (full/RO card): running depth-2 without the net would
+			// mean a crash retries depth-2 forever. Run serial instead — fail SAFE.
+			LOG_info("threading v2: cannot arm crash canary (write failed) — running SERIAL this session\n");
+			ftv2_depth = 1;
 		}
 	}
 	const int use_ftv2 = (ftv2_depth >= 2);
@@ -6221,7 +6338,14 @@ int main(int argc , char* argv[]) {
 						drc_log_at = dl_now;
 					}
 				}
-				if (thread_video) { drc_ppm = prev; } // threaded: telemetry-only for now —
+				int drc_threaded = thread_video;
+#ifdef ZERO_FRONTEND_THREADING_V2
+				// Codex #9: depth-2 is a threaded mode too — applying DRC here would mutate the
+				// resampler on MAIN while CORE is inside SND_batchSamples (race), and re-enable
+				// the PS1 DRC path already ear-verified as choppy. Telemetry-only, like legacy.
+				drc_threaded = drc_threaded || zero_ftv2_depth2;
+#endif
+				if (drc_threaded) { drc_ppm = prev; } // threaded: telemetry-only for now —
 				// applying ppm chopped audio (ear-verified A/B 2026-07-08); the panel-beat
 				// question returns with an eyes-on session
 				if (drc_ppm != prev) {
@@ -6275,19 +6399,38 @@ finish:
 
 	tlm_quit(); // benchmark: flush + close the CSV (no-op unless enabled)
 
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited) {
+		// Exit ordering (Codex v1.4 final #1/#2). The run loop's LAST iteration can have
+		// granted one more epoch after quit was set — CORE may still be inside core.run().
+		// 1) PARK first: waits out any in-flight epoch + drains (the proven menu pattern),
+		//    leaving CORE quiescent while audio and game memory are still alive.
+		// 2) Terminal SRAM/RTC flush: the v2 vtable unload deliberately does NOT flush
+		//    (serial Core_quit does) — without this, Save&Quit loses battery-backed saves.
+		//    Safe here: core parked, pointers valid, audio untouched.
+		// 3) fc_teardown: unload_game + deinit on the CORE thread, then JOIN — before
+		//    Game_close/Core_unload(SND_quit) can free anything CORE might still touch.
+		if (zero_ftv2_running) {
+			fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+			SRAM_write();
+			RTC_write();
+		}
+		fc_teardown(&zero_ftv2);
+		// Clean exit = known-good: disarm the depth-2 crash canary (see decl). A crash/freeze
+		// never reaches here, leaving the canary in place -> next launch runs serial once.
+		if (zero_ftv2_canary_armed) { unlink(zero_ftv2_canary); zero_ftv2_canary_armed = 0; }
+		Game_close();
+		Core_unload();
+	}
+	else {
+		// engine never came up (depth<2, or pre-init exit): stock serial ordering, untouched
+		Game_close();
+		Core_unload();
+		Core_quit();
+	}
+#else
 	Game_close();
 	Core_unload();
-
-#ifdef ZERO_FRONTEND_THREADING_V2
-	// v2 teardown: fc_teardown runs unload_game + deinit on the CORE thread (state-keyed
-	// cleanup oracle) then joins it — replacing Core_quit, which would call them from MAIN
-	// (the D52 dlclose-SIGSEGV class). Core_close (dlclose) stays on MAIN.
-	if (zero_ftv2_inited) fc_teardown(&zero_ftv2);
-	else Core_quit();
-	// Clean exit = known-good: disarm the depth-2 crash canary (see decl). A crash/freeze never
-	// reaches here, leaving the canary in place -> next launch of this game runs serial once.
-	if (zero_ftv2_canary_armed) { unlink(zero_ftv2_canary); zero_ftv2_canary_armed = 0; }
-#else
 	Core_quit();
 #endif
 	Core_close();
