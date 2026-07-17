@@ -207,8 +207,24 @@ static void test_converges_to_lowest_stable(void) {
 // ---- futile-climb memory: a scene that dips at EVERY clock (authentic engine slowdown,
 // Battletoads/Contra class) must not pin f_max forever. After GOV_FUTILE_TICKS of slipping AT
 // f_max, the ceiling returns to the episode's origin and slips hold for GOV_FUTILE_HOLD. ----
+// The futile-climb machinery ships DEFAULT-OFF (live false-positive on heavy-scene transitions,
+// RC3 smoke 2026-07-17); these tests enable it explicitly. gov_futile_enabled() is uncached, so
+// setenv here takes effect immediately.
+static void test_futile_default_off_camps_at_max(void) {
+	printf("[futile] DEFAULT (gate off): unfixable slip camps at f_max — the v1.4 shipping behavior\n");
+	unsetenv("ZERO_GOV_FUTILE");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c);
+	for (int i = 0; i < 60; i++) gov_step(&st, p, 45, GOV_SIGNAL_SLIP);
+	CHECK(st.futile_hold == 0, "gate off: futile must never engage (hold=%d)", st.futile_hold);
+	CHECK(st.ceil_khz == p->f_max, "gate off: continuous slip rests at f_max, got %d", st.ceil_khz);
+}
+
 static void test_futile_climb_stands_down(void) {
 	printf("[futile] unfixable slip returns to origin and holds (no f_max camping)\n");
+	setenv("ZERO_GOV_FUTILE", "1", 1);
 	const GovProfile* p = &GOV_P_8BIT; // {408, 1008}
 	GovState st; gov_init(&st, p);
 	// settle at a mid ceiling first (slack sinks from f_max)
@@ -232,6 +248,7 @@ static void test_futile_climb_stands_down(void) {
 // ---- and the mirror: a slip that a higher clock DOES fix must climb and stay fixed —
 // the futile detector must not fire on clock-curable slips. ----
 static void test_curable_slip_still_climbs(void) {
+	setenv("ZERO_GOV_FUTILE", "1", 1);
 	printf("[futile] clock-curable slip climbs to f_max and stays (detector must not fire)\n");
 	const GovProfile* p = &GOV_P_8BIT;
 	GovState st; gov_init(&st, p);
@@ -252,6 +269,7 @@ static void test_curable_slip_still_climbs(void) {
 // ---- FF slips (unreachable-by-design targets) must climb to f_max and STAY — the futile
 // detector must never fire on them, even from inside an active futile hold. ----
 static void test_ff_slip_bypasses_futile(void) {
+	setenv("ZERO_GOV_FUTILE", "1", 1);
 	printf("[futile] FF slips climb to f_max and stay (no stand-down, even inside a hold)\n");
 	const GovProfile* p = &GOV_P_8BIT;
 	GovState st; gov_init(&st, p);
@@ -275,6 +293,7 @@ static void test_ff_slip_bypasses_futile(void) {
 // ---- Codex #7a: non-consecutive slips (slip/BUSY alternation at f_max) are a scene the
 // climb IS curing between hiccups — they must never accumulate into a futile verdict. ----
 static void test_busy_ends_futile_episode(void) {
+	setenv("ZERO_GOV_FUTILE", "1", 1);
 	printf("[futile] slip/BUSY alternation at f_max never accumulates to a stand-down\n");
 	const GovProfile* p = &GOV_P_8BIT;
 	GovState st; gov_init(&st, p);
@@ -289,6 +308,7 @@ static void test_busy_ends_futile_episode(void) {
 // ---- Codex #7b: a hold survives BURSTY BIGSLIPs (authentic slowdown) but breaks on a
 // SUSTAINED run of them (a genuinely new heavy scene must not stay starved). ----
 static void test_hold_breaks_on_sustained_bigslip(void) {
+	setenv("ZERO_GOV_FUTILE", "1", 1);
 	printf("[futile] hold survives bursty BIGSLIP, breaks on sustained BIGSLIP\n");
 	const GovProfile* p = &GOV_P_8BIT;
 	GovState st; gov_init(&st, p);
@@ -424,6 +444,7 @@ int main(void) {
 	test_boundary_no_limit_cycle();
 	test_predictive_sink_gate();
 	test_converges_to_lowest_stable();
+	test_futile_default_off_camps_at_max();
 	test_futile_climb_stands_down();
 	test_curable_slip_still_climbs();
 	test_ff_slip_bypasses_futile();
