@@ -828,6 +828,7 @@ enum {
 	FE_OPT_THREAD,
 	FE_OPT_DEBUG,
 	FE_OPT_MAXFF,
+	FE_OPT_FF_AUDIO,
 	FE_OPT_COUNT,
 };
 
@@ -1092,6 +1093,16 @@ static struct Config {
 				.values = max_ff_labels,
 				.labels = max_ff_labels,
 			},
+			[FE_OPT_FF_AUDIO] = {
+				.key	= "minarch_ff_audio",
+				.name	= "Fast-forward Audio",
+				.desc	= "Play sped-up audio while fast-forwarding.\nTurn off for silent fast-forward.",
+				.default_value = 1,
+				.value = 1,
+				.count = 2,
+				.values = onoff_labels,
+				.labels = onoff_labels,
+			},
 			[FE_OPT_COUNT] = {NULL}
 		}
 	},
@@ -1251,6 +1262,11 @@ static void Config_syncFrontend(char* key, int value) {
 	else if (exactMatch(key,config.frontend.options[FE_OPT_MAXFF].key)) {
 		max_ff_speed = value;
 		i = FE_OPT_MAXFF;
+	}
+	else if (exactMatch(key,config.frontend.options[FE_OPT_FF_AUDIO].key)) {
+		ff_audio = value;
+		SND_setFastForward(fast_forward, ff_audio);
+		i = FE_OPT_FF_AUDIO;
 	}
 	if (i==-1) return;
 	Option* option = &config.frontend.options[i];
@@ -1954,9 +1970,9 @@ static int setFastForward(int enable) {
 	// PS1's presentation-drop catch-up protects normal-play audio, but deliberately
 	// outrunning presentation during FF must not be mistaken for a delivery underrun.
 	if (changed && presentation_drop_supported) GFX_setPresentationDrop(!enable);
-	// FF-with-sound: put the audio ring in non-blocking mode while fast-forwarding so
-	// feeding audio can't throttle FF back to real time (drop-on-full instead of block).
-	SND_setFastForward(enable && ff_audio);
+	// Match the audio reduction to the speed the core actually achieves. Ring-full writes
+	// remain non-blocking so audio can never throttle fast-forward back toward real time.
+	SND_setFastForward(enable, ff_audio);
 	return enable;
 }
 
@@ -3339,12 +3355,9 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 }
 ///////////////////////////////
 
-// FF-with-sound (ff_audio, on by default): historically FF muted because feeding 4x audio
-// into the blocking ring throttled emulation back to 1x. SND now feeds non-blocking during
-// FF (SND_setFastForward, hooked in setFastForward), so we CAN feed audio while fast-
-// forwarding — you hear sped-up/chipmunk audio and know exactly when a cutscene ends.
-// FF speed stays governed by limitFF(). ff_audio=0 restores the classic silent FF.
-// (ff_audio is declared with the other FF globals near the top.)
+// FF-with-sound (ff_audio, on by default): SND measures the actual FF production rate and
+// evenly resamples to the DAC rate, with non-blocking overflow only as a convergence
+// fallback. FF speed stays governed by limitFF(); ff_audio=0 restores silent FF.
 static void audio_sample_callback(int16_t left, int16_t right) {
 	if (!fast_forward || ff_audio) SND_batchSamples(&(const SND_Frame){left,right}, 1);
 }
