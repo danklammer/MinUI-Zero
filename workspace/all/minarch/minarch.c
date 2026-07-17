@@ -5182,6 +5182,7 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
+	GFX_setPresentationDrop(exactMatch((char*)core.tag, "PS"));
 	Game_open(rom_path); // nes tries to load gamegenie setting before this returns ffs
 	if (!game.is_open) goto finish;
 	
