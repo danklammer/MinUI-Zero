@@ -162,8 +162,16 @@ void fc_init(fc* f, const fc_vtable* vt, uint32_t depth) {
 	fr_init(&f->fr, depth ? depth : 1);
 	f->fr.failclosed_sec = 60;
 	atomic_store(&f->state, (int)FC_NONE);
-	pthread_create(&f->core_thread, NULL, fc_core_thread, f);
-	f->thread_started = 1;
+	// Codex v1.4 #8: an unchecked pthread_create left thread_started=1 with no thread — the
+	// first fc_boot_stage's fr_service then waited forever. On failure: no thread, boot_failed
+	// set, so fc_boot_stage no-ops, fc_boot_failed() reports it, the caller's existing fail
+	// path (fc_teardown — a no-op without thread_started — then bail) exits cleanly.
+	if (pthread_create(&f->core_thread, NULL, fc_core_thread, f) == 0) {
+		f->thread_started = 1;
+	} else {
+		f->thread_started = 0;
+		atomic_store_explicit(&f->boot_failed, 1, memory_order_release);
+	}
 }
 
 // Drive ONE bootstrap stage. Used both by fc_bootstrap (the monolithic loop) and by
