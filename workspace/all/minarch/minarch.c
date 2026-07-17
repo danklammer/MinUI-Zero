@@ -2275,8 +2275,11 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 	// RETRO_ENVIRONMENT_SET_MEMORY_MAPS (36 | RETRO_ENVIRONMENT_EXPERIMENTAL)
 	// RETRO_ENVIRONMENT_GET_LANGUAGE 39
 	case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER: { /* (40 | RETRO_ENVIRONMENT_EXPERIMENTAL) */
-		// puts("RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER");
-		break;
+		// v1.4 audit fix: this stub fell through to `return true` with the retro_framebuffer
+		// UNFILLED — claiming support while handing the core garbage. Cores only survived it
+		// because they zero-init the struct and format 0 fails their own check (pcsx/fceumm/
+		// pce_fast all verified). Decline honestly; the core uses its own buffer.
+		return false;
 	}
 	
 	case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: {
