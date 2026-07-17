@@ -630,6 +630,13 @@ static void Crash_install(void) { // call after core.load_game + SRAM_read (poin
 	signal(SIGFPE,  Crash_handler);
 	signal(SIGABRT, Crash_handler);
 }
+static void Crash_uninstall(void) {
+	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
+	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL);
+	memset(crash_save, 0, sizeof(crash_save));
+	if (crash_save_dir_fd >= 0) close(crash_save_dir_fd);
+	crash_save_dir_fd = -1;
+}
 
 ///////////////////////////////////////
 
@@ -637,9 +644,10 @@ static int state_slot = 0;
 static void State_getPath(char* filename) {
 	sprintf(filename, "%s/%s.st%i", core.states_dir, game.name, state_slot);
 }
-static void State_read(void) { // from picoarch
+static int State_read(void) { // from picoarch
 	size_t state_size = core.serialize_size();
-	if (!state_size) return;
+	if (!state_size) return 0;
+	int result = 0;
 
 	int was_ff = fast_forward;
 	fast_forward = 0;
@@ -677,15 +685,18 @@ static void State_read(void) { // from picoarch
 		LOG_error("Error restoring save state: %s\n", filename);
 		goto error;
 	}
+	result = 1;
 
 error:
 	if (state) free(state);
 	
 	fast_forward = was_ff;
+	return result;
 }
-static void State_write(void) { // from picoarch
+static int State_write(void) { // from picoarch
 	size_t state_size = core.serialize_size();
-	if (!state_size) return;
+	if (!state_size) return 0;
+	int result = 0;
 	
 	int was_ff = fast_forward;
 	fast_forward = 0;
@@ -706,18 +717,22 @@ static void State_write(void) { // from picoarch
 
 	if (save_write_atomic(filename, state, state_size)) {
 		LOG_error("Error writing state data: %s (%s)\n", filename, strerror(errno));
+		goto error;
 	}
+	result = 1;
 
 error:
 	if (state) free(state);
 
 	fast_forward = was_ff;
+	return result;
 }
-static void State_autosave(void) {
+static int State_autosave(void) {
 	int last_state_slot = state_slot;
 	state_slot = AUTO_RESUME_SLOT;
-	State_write();
+	int result = State_write();
 	state_slot = last_state_slot;
+	return result;
 }
 static void State_resume(void) {
 	if (!exists(RESUME_SLOT_PATH)) return;
@@ -1591,17 +1606,23 @@ static void Config_write(int override) {
 }
 static void Config_restore(void) {
 	char path[MAX_PATH];
+	int remove_config = 0;
 	if (config.loaded==CONFIG_GAME) {
 		if (config.device_tag) sprintf(path, "%s/%s-%s.cfg", core.config_dir, game.name, config.device_tag);
 		else sprintf(path, "%s/%s.cfg", core.config_dir, game.name);
-		unlink(path);
-		LOG_info("deleted game config: %s\n", path);
+		remove_config = 1;
 	}
 	else if (config.loaded==CONFIG_CONSOLE) {
 		if (config.device_tag) sprintf(path, "%s/minarch-%s.cfg", core.config_dir, config.device_tag);
 		else sprintf(path, "%s/minarch.cfg", core.config_dir);
-		unlink(path);
-		LOG_info("deleted console config: %s\n", path);
+		remove_config = 1;
+	}
+	if (remove_config) {
+		if (save_remove_file(path)) {
+			LOG_error("Error removing config: %s (%s)\n", path, strerror(errno));
+			return;
+		}
+		LOG_info("deleted config: %s\n", path);
 	}
 	config.loaded = CONFIG_NONE;
 	
@@ -1908,8 +1929,8 @@ static void OptionList_setOptionValue(OptionList* list, const char* key, const c
 static void Menu_beforeSleep(void);
 static void Menu_afterSleep(void);
 
-static void Menu_saveState(void);
-static void Menu_loadState(void);
+static int Menu_saveState(void);
+static int Menu_loadState(void);
 
 static int setFastForward(int enable) {
 	int changed = (fast_forward != enable);
@@ -2006,8 +2027,7 @@ static void input_poll_callback(void) {
 					case SHORTCUT_LOAD_STATE: Menu_loadState(); break;
 					case SHORTCUT_RESET_GAME: core.reset(); break;
 					case SHORTCUT_SAVE_QUIT:
-						Menu_saveState();
-						quit = 1;
+						if (Menu_saveState()) quit = 1;
 						break;
 					case SHORTCUT_CYCLE_SCALE:
 						screen_scaling += 1;
@@ -3472,6 +3492,8 @@ void Core_quit(void) {
 	if (core.initialized) {
 		SRAM_write();
 		RTC_write();
+		// SRAM/RTC are durable now. Disarm pointers before unload/deinit invalidates them.
+		Crash_uninstall();
 		core.unload_game();
 		core.deinit();
 		core.initialized = 0;
@@ -3515,6 +3537,7 @@ static struct {
 	char base_path[256];
 	char bmp_path[256];
 	char txt_path[256];
+	char txn_path[MAX_PATH+8];
 	int disc;
 	int total_discs;
 	int slot;
@@ -3591,13 +3614,22 @@ void Menu_beforeSleep(void) {
 	// LOG_info("beforeSleep\n");
 	SRAM_write();
 	RTC_write();
-	State_autosave();
-	putFile(AUTO_RESUME_PATH, game.path + strlen(SDCARD_PATH));
+	const char* resume_path = game.path + strlen(SDCARD_PATH);
+	int state_saved = State_autosave();
+	int marker_saved = state_saved
+		&& !save_write_atomic(AUTO_RESUME_PATH, resume_path, strlen(resume_path));
+	if (!marker_saved) {
+		if (!state_saved) LOG_error("Error creating auto-resume state\n");
+		else LOG_error("Error publishing auto-resume marker (%s)\n", strerror(errno));
+		if (save_remove_file(AUTO_RESUME_PATH))
+			LOG_error("Error clearing failed auto-resume marker (%s)\n", strerror(errno));
+	}
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
 }
 void Menu_afterSleep(void) {
 	// LOG_info("beforeSleep\n");
-	unlink(AUTO_RESUME_PATH);
+	if (save_remove_file(AUTO_RESUME_PATH))
+		LOG_error("Error clearing auto-resume marker (%s)\n", strerror(errno));
 	setOverclock(overclock);
 }
 
@@ -4596,67 +4628,143 @@ static void Menu_updateState(void) {
 	int last_slot = state_slot;
 	state_slot = menu.slot;
 
-	char save_path[256];
+	char save_path[MAX_PATH];
 	State_getPath(save_path);
 
 	state_slot = last_slot;
 
 	sprintf(menu.bmp_path, "%s/%s.%d.bmp", menu.minui_dir, game.name, menu.slot);
 	sprintf(menu.txt_path, "%s/%s.%d.txt", menu.minui_dir, game.name, menu.slot);
+	snprintf(menu.txn_path, sizeof(menu.txn_path), "%s.txn", save_path);
 	
-	menu.save_exists = exists(save_path);
+	menu.save_exists = exists(save_path) && !exists(menu.txn_path);
 	menu.preview_exists = menu.save_exists && exists(menu.bmp_path);
 
 	// LOG_info("save_path: %s (%i)\n", save_path, menu.save_exists);
 	// LOG_info("bmp_path: %s txt_path: %s (%i)\n", menu.bmp_path, menu.txt_path, menu.preview_exists);
 }
-static void Menu_saveState(void) {
+static int Menu_saveState(void) {
 	// LOG_info("Menu_saveState\n");
 
 	Menu_updateState();
-	
+	int transaction_started = 0;
+	int result = 0;
+
+	if (menu.total_discs) {
+		if (menu.disc < 0 || menu.disc >= menu.total_discs) {
+			LOG_error("Cannot save state: current disc is unknown\n");
+			return 0;
+		}
+		// A durable marker makes a power cut between the state and disc sidecar fail closed.
+		// The slot becomes visible again only after both files are durable.
+		if (save_write_atomic(menu.txn_path, NULL, 0)) {
+			LOG_error("Error starting state transaction: %s (%s)\n", menu.txn_path, strerror(errno));
+			transaction_started = exists(menu.txn_path);
+			goto done;
+		}
+		transaction_started = 1;
+	}
+
+	state_slot = menu.slot;
+	if (!State_write()) goto done;
+
 	if (menu.total_discs) {
 		char* disc_path = menu.disc_paths[menu.disc];
-		putFile(menu.txt_path, disc_path + strlen(menu.base_path));
+		const char* relative_path = disc_path + strlen(menu.base_path);
+		if (save_write_atomic(menu.txt_path, relative_path, strlen(relative_path))) {
+			LOG_error("Error writing state disc identity: %s (%s)\n", menu.txt_path, strerror(errno));
+			goto done;
+		}
+		if (save_remove_file(menu.txn_path)) {
+			LOG_error("Error completing state transaction: %s (%s)\n", menu.txn_path, strerror(errno));
+			goto done;
+		}
+		transaction_started = 0;
 	}
-	
+	result = 1;
+
+	// Preview failure is cosmetic; the state and any disc identity are already durable.
 	SDL_Surface* bitmap = menu.bitmap;
 	if (!bitmap) bitmap = SDL_CreateRGBSurfaceFrom(renderer.src, renderer.true_w, renderer.true_h, FIXED_DEPTH, renderer.src_p, RGBA_MASK_565);
-	SDL_RWops* out = SDL_RWFromFile(menu.bmp_path, "wb");
-	SDL_SaveBMP_RW(bitmap, out, 1);
-	
-	// LOG_info("%s %ix%i\n", menu.bmp_path, bitmap->w,bitmap->h);
-	
-	if (bitmap!=menu.bitmap) SDL_FreeSurface(bitmap);
-	
-	state_slot = menu.slot;
+	if (bitmap) {
+		SDL_RWops* out = SDL_RWFromFile(menu.bmp_path, "wb");
+		if (!out || SDL_SaveBMP_RW(bitmap, out, 1))
+			LOG_error("Error writing state preview: %s (%s)\n", menu.bmp_path, SDL_GetError());
+		if (bitmap!=menu.bitmap) SDL_FreeSurface(bitmap);
+	}
+	else LOG_error("Error creating state preview (%s)\n", SDL_GetError());
 	putInt(menu.slot_path, menu.slot);
-	State_write();
+
+done:
+	if (!result && transaction_started && exists(menu.txn_path))
+		LOG_error("State slot left unavailable until a successful retry: %s\n", menu.txn_path);
+	Menu_updateState();
+	return result;
 }
-static void Menu_loadState(void) {
+static int Menu_loadState(void) {
 	// LOG_info("Menu_loadState\n");
 
 	Menu_updateState();
-	
-	if (menu.save_exists) {
-		if (menu.total_discs) {
-			char slot_disc_name[256];
-			getFile(menu.txt_path, slot_disc_name, 256);
-		
-			char slot_disc_path[256];
-			if (slot_disc_name[0]=='/') strcpy(slot_disc_path, slot_disc_name);
-			else sprintf(slot_disc_path, "%s%s", menu.base_path, slot_disc_name);
-		
-			char* disc_path = menu.disc_paths[menu.disc];
-			if (!exactMatch(slot_disc_path, disc_path)) {
-				Game_changeDisc(slot_disc_path);
+	if (!menu.save_exists) return 0;
+
+	char original_disc[MAX_PATH] = {0};
+	int switched_disc = 0;
+	int target_disc = menu.disc;
+	if (menu.total_discs) {
+		char slot_disc_name[256] = {0};
+		size_t slot_disc_size = 0;
+		if (save_read_file(menu.txt_path, slot_disc_name,
+				sizeof(slot_disc_name)-1, 0, &slot_disc_size)) {
+			LOG_error("Invalid state disc identity: %s (%s)\n", menu.txt_path, strerror(errno));
+			return 0;
+		}
+		if (!slot_disc_size) {
+			LOG_error("Empty state disc identity: %s\n", menu.txt_path);
+			return 0;
+		}
+		slot_disc_name[slot_disc_size] = '\0';
+
+		char slot_disc_path[MAX_PATH];
+		int written = slot_disc_name[0]=='/'
+			? snprintf(slot_disc_path, sizeof(slot_disc_path), "%s", slot_disc_name)
+			: snprintf(slot_disc_path, sizeof(slot_disc_path), "%s%s", menu.base_path, slot_disc_name);
+		if (written < 0 || (size_t)written >= sizeof(slot_disc_path)) {
+			LOG_error("State disc identity is too long: %s\n", menu.txt_path);
+			return 0;
+		}
+
+		int known_disc = 0;
+		for (int i=0; i<menu.total_discs; i++) {
+			if (exactMatch(slot_disc_path, menu.disc_paths[i])) {
+				known_disc = 1;
+				target_disc = i;
+				break;
 			}
 		}
-	
-		state_slot = menu.slot;
-		putInt(menu.slot_path, menu.slot);
-		State_read();
+		if (!known_disc) {
+			LOG_error("State references an unknown disc: %s\n", slot_disc_path);
+			return 0;
+		}
+
+		if (!exactMatch(slot_disc_path, game.path)) {
+			snprintf(original_disc, sizeof(original_disc), "%s", game.path);
+			Game_changeDisc(slot_disc_path);
+			if (!exactMatch(slot_disc_path, game.path)) {
+				LOG_error("Could not switch to state disc: %s\n", slot_disc_path);
+				return 0;
+			}
+			switched_disc = 1;
+		}
 	}
+
+	state_slot = menu.slot;
+	if (!State_read()) {
+		if (switched_disc) Game_changeDisc(original_disc);
+		return 0;
+	}
+	menu.disc = target_disc;
+	putInt(menu.slot_path, menu.slot);
+	return 1;
 }
 
 static char* getAlias(char* path, char* alias) {
@@ -4824,15 +4932,17 @@ static void Menu_loop(void) {
 				break;
 				
 				case ITEM_SAVE: {
-					Menu_saveState();
-					status = STATUS_SAVE;
-					show_menu = 0;
+					if (Menu_saveState()) {
+						status = STATUS_SAVE;
+						show_menu = 0;
+					}
 				}
 				break;
 				case ITEM_LOAD: {
-					Menu_loadState();
-					status = STATUS_LOAD;
-					show_menu = 0;
+					if (Menu_loadState()) {
+						status = STATUS_LOAD;
+						show_menu = 0;
+					}
 				}
 				break;
 				case ITEM_OPTS: {

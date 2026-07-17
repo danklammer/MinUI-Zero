@@ -99,6 +99,11 @@ static void test_write_success(const char* path) {
 	save_io_test_fail(SAVE_IO_TEST_WRITE, 1, EINTR);
 	CHECK(!save_write_atomic(path, "after EINTR", 11), "EINTR write was not retried");
 	expect_contents(path, "after EINTR");
+
+	save_io_test_reset();
+	CHECK(!save_write_atomic(path, NULL, 0), "empty transaction marker failed");
+	char byte;
+	CHECK(read_plain(path, &byte, 1) == 0, "empty transaction marker is not empty");
 }
 
 static void test_pre_rename_failures(const char* path) {

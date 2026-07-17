@@ -924,9 +924,19 @@ smaller file is still zero-padded for the existing mGBA/Wario Land 4 compatibili
 crash handler remains async-signal-safe and now loops short writes, requires successful file
 sync/close before rename, and syncs its pre-opened save directory after publication.
 
-No path, extension, or on-disk payload changed: original MinUI extras and existing raw
-`.sav`/`.rtc`/`.stN` files remain compatible. The host ASan/UBSan fault harness covers partial
-I/O, EINTR, premature EOF, open/write/fsync/close/rename/unlink failures, old-target
+Callers also honor publication failure. Save & Quit exits only after the state is durable; menu
+Save/Load stays open when state I/O fails; auto-resume is advertised only after its state succeeds.
+Multi-disc manual saves use a durable `.txn` marker around the state + disc-sidecar pair, so a
+power cut between those files hides the slot until a successful retry instead of loading a new
+state against stale disc identity. Missing, empty, oversized, or unknown disc sidecars fail closed.
+The emergency crash writer is disarmed and its directory fd closed after the final SRAM/RTC flush,
+before `unload_game` invalidates its cached core pointers. Config reset changes in-memory values
+only after durable removal of the active config succeeds.
+
+No existing path, extension, or payload changed; `.txn` is an internal transient marker.
+Original MinUI extras and existing raw `.sav`/`.rtc`/`.stN` files remain compatible. The host
+ASan/UBSan fault harness covers partial I/O, EINTR, premature EOF,
+open/write/fsync/close/rename/unlink failures, old-target
 preservation, temp cleanup, and durable config deletion. The same harness passes on the
 Brick's real vfat `/mnt/SDCARD`, confirming directory `fsync` support. This closes transport
 and publication corruption; recognizing semantically corrupt legacy payloads remains a
