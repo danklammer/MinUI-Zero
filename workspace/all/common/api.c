@@ -18,6 +18,7 @@
 #include <time.h>
 #include "defines.h"
 #include "api.h"
+#include "ff_audio_rate.h"
 #include "utils.h"
 
 ///////////////////////////////
@@ -1115,9 +1116,16 @@ static struct SND_Context {
 	volatile long underruns;
 	volatile long overruns;
 	volatile long wait_ms;
+
+	int resample_diff;
+	SND_Frame resample_prev;
+	FFAudioRate ff_rate;
+	int ff_active;
+	int ff_audible;
 	
 	SND_Resampler resample;
 } snd = {0};
+static _Atomic int snd_ff_nonblock = 0;
 static void SND_publishOccupancy(void); // defined with the ring helpers below
 static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // plat_sound_callback
 	
@@ -1190,18 +1198,17 @@ static int SND_resampleNone(SND_Frame frame) { // audio_resample_passthrough
 	return 1;
 }
 static int SND_resampleNear(SND_Frame frame) { // audio_resample_nearest
-	static int diff = 0;
 	int consumed = 0;
 
-	if (diff < snd.sample_rate_out) {
+	if (snd.resample_diff < snd.sample_rate_out) {
 		snd.buffer[snd.frame_in++] = frame;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in_adj;
+		snd.resample_diff += snd.sample_rate_in_adj;
 	}
 
-	if (diff >= snd.sample_rate_out) {
+	if (snd.resample_diff >= snd.sample_rate_out) {
 		consumed++;
-		diff -= snd.sample_rate_out;
+		snd.resample_diff -= snd.sample_rate_out;
 	}
 
 	return consumed;
@@ -1212,23 +1219,21 @@ static int SND_resampleLinear(SND_Frame frame) { // audio_resample_linear
 	// Two multiplies per sample — audibly smoother on non-native rates (GBA 32.8kHz,
 	// PS1 44.1kHz -> 48kHz) for effectively zero CPU. Sinc/libsamplerate rejected:
 	// real CPU cost for fidelity this speaker can't reproduce.
-	static SND_Frame prev = {0,0};
-	static int diff = 0;
 	int consumed = 0;
 
-	if (diff < snd.sample_rate_out) {
+	if (snd.resample_diff < snd.sample_rate_out) {
 		SND_Frame out;
-		out.left  = prev.left  + (int16_t)(((int32_t)(frame.left  - prev.left ) * diff) / snd.sample_rate_out);
-		out.right = prev.right + (int16_t)(((int32_t)(frame.right - prev.right) * diff) / snd.sample_rate_out);
+		out.left  = snd.resample_prev.left  + (int16_t)(((int64_t)(frame.left  - snd.resample_prev.left ) * snd.resample_diff) / snd.sample_rate_out);
+		out.right = snd.resample_prev.right + (int16_t)(((int64_t)(frame.right - snd.resample_prev.right) * snd.resample_diff) / snd.sample_rate_out);
 		snd.buffer[snd.frame_in++] = out;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in_adj;
+		snd.resample_diff += snd.sample_rate_in_adj;
 	}
 
-	if (diff >= snd.sample_rate_out) {
+	if (snd.resample_diff >= snd.sample_rate_out) {
 		consumed++;
-		diff -= snd.sample_rate_out;
-		prev = frame;
+		snd.resample_diff -= snd.sample_rate_out;
+		snd.resample_prev = frame;
 	}
 
 	return consumed;
@@ -1244,10 +1249,17 @@ static void SND_selectResampler(void) { // plat_sound_select_resampler
 		snd.resample = SND_resampleLinear;
 	}
 }
+static void SND_updateAdjustedRate(void) {
+	int64_t adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
+	if (atomic_load(&snd_ff_nonblock))
+		adjusted = adjusted * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	if (adjusted < 1) adjusted = 1;
+	snd.sample_rate_in_adj = (int)adjusted;
+	SND_selectResampler();
+}
 void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc block)
 	snd.rate_adjust_ppm = ppm;
-	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
-	SND_selectResampler();
+	SND_updateAdjustedRate();
 }
 // Torn-free ring-occupancy snapshot for the flip path ("presentation-drop catch-up"):
 // producer (SND_batchSamples, under SDL_LockAudio) and consumer (SDL callback) each
@@ -1273,44 +1285,68 @@ static int SND_ringPct(void) {
 	return __atomic_load_n(&snd_ring_pct, __ATOMIC_ACQUIRE);
 }
 
-// FF-with-sound: normally a full ring blocks SND_batchSamples (SDL_Delay retry), which
-// audio-paces emulation to real time — that is exactly why fast-forward historically had
-// to mute (feeding 4x audio would throttle FF back to 1x). During FF we instead feed the
-// ring NON-BLOCKING: consume what fits, drop the overflow, never wait. The DAC plays the
-// samples that landed at 1x, i.e. the game audio temporally compressed — the expected
-// sped-up/chipmunk FF sound — while FF speed stays governed by limitFF(), not the ring.
-// The ring rides FULL during FF, so SND_ringPct stays high and the presentation-drop
-// catch-up can never engage (correct: FF is never audio-starved).
-// Hardened (v1.4 audit): the FF flag is written by the input path and read inside
-// SND_batchSamples — same thread in tg5040's serial build today, but any threaded consumer
-// (legacy thread_video builds; future work) makes a plain int a C data race. An _Atomic int
-// costs nothing here and is correct by construction.
-static _Atomic int snd_ff_nonblock = 0;
+// FF input arrives faster than the DAC can consume it. Measure that actual production rate
+// and drive the existing integer linear resampler at the same multiplier, evenly selecting
+// samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
+// remains as a safety valve while the first 50ms estimate converges or a core changes speed.
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
-void SND_setFastForward(int on) {
-	int next = on ? 1 : 0;
-	if (next == snd_ff_nonblock) return; // no transition
-	snd_ff_nonblock = next;
-	// Clean the FF->normal handoff (borrowed from NextUI's occupancy pause-management,
-	// kept lean — no adaptive resampler): on LEAVING fast-forward the ring holds
-	// temporally-compressed FF audio whose drop-induced discontinuities are audible as
-	// a brief crackle as they drain. Discard that stale audio and re-prime the DAC
-	// through the existing ~40% prefill gate: a short clean silence instead of trailing
-	// chop. (Entering FF needs nothing — 4x production floods the ring instantly.)
-	if (!on && snd.initialized && snd.buffer && snd.frame_count>0) {
+static void SND_reprime(void) {
+	if (snd.initialized && snd.buffer && snd.frame_count>0) {
 		SDL_LockAudio();
-		snd.frame_out = snd.frame_in;                                        // empty the ring
+		snd.frame_out = snd.frame_in;
 		snd.frame_filled = (snd.frame_in + snd.frame_count - 1) % snd.frame_count;
-		snd.prefilling = 1;                                                  // gate DAC until ~40% refill
+		snd.prefilling = 1;
 		SDL_PauseAudio(1);
 		SND_publishOccupancy();
 		SDL_UnlockAudio();
+	}
+}
+void SND_setFastForward(int active, int audible) {
+	active = active ? 1 : 0;
+	audible = active && audible ? 1 : 0;
+	if (active == snd.ff_active && audible == snd.ff_audible) return;
+
+	int was_active = snd.ff_active;
+	int was_audible = snd.ff_active && snd.ff_audible;
+	int will_be_audible = active && audible;
+	snd.ff_active = active;
+	snd.ff_audible = audible;
+	atomic_store(&snd_ff_nonblock, will_be_audible);
+
+	if (will_be_audible && !was_audible) {
+		FFAudioRate_begin(&snd.ff_rate, SDL_GetTicks());
+		snd.resample_diff = 0;
+		SND_updateAdjustedRate();
+	}
+	else if (!will_be_audible && was_audible) {
+		FFAudioRate_end(&snd.ff_rate);
+		snd.resample_diff = 0;
+		SND_updateAdjustedRate();
+	}
+
+	// Silent FF must pause instead of draining into underruns. Every FF exit discards
+	// stale compressed audio and uses the normal 40% prefill gate for a clean handoff.
+	if ((active && !audible) || (!active && was_active)) SND_reprime();
+}
+static void SND_measureFastForward(size_t frames) {
+	if (!atomic_load(&snd_ff_nonblock)) return;
+	if (!FFAudioRate_accumulate(&snd.ff_rate, frames, snd.sample_rate_in)) return;
+	if (FFAudioRate_measure(&snd.ff_rate, snd.sample_rate_in, SDL_GetTicks())) {
+		SND_updateAdjustedRate();
+		static int debug = -1;
+		if (debug < 0) {
+			const char* env = getenv("ZERO_GOV_DEBUG");
+			debug = env && env[0] && env[0] != '0';
+		}
+		if (debug) LOG_info("ff-audio: measured rate %.2fx\n",
+			(double)snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16);
 	}
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
 	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	SND_measureFastForward(frame_count);
 
 	// return frame_count; // TODO: tmp, silent
 
@@ -1390,6 +1426,8 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 #endif	
 	
 	memset(&snd, 0, sizeof(struct SND_Context));
+	atomic_store(&snd_ff_nonblock, 0);
+	FFAudioRate_init(&snd.ff_rate);
 	snd.frame_rate = frame_rate;
 
 	SDL_AudioSpec spec_in;
@@ -1415,9 +1453,8 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
-	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000);
 	
-	SND_selectResampler();
+	SND_updateAdjustedRate();
 	SND_resizeBuffer();
 	
 	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
@@ -1463,6 +1500,8 @@ void SND_quit(void) { // plat_sound_finish
 	snd.frame_count = 0;
 	snd.frame_in = snd.frame_out = snd.frame_filled = 0;
 	snd.initialized = 0;
+	atomic_store(&snd_ff_nonblock, 0);
+	FFAudioRate_end(&snd.ff_rate);
 	SND_publishOccupancy(); // reads 100 now — catch-up can never engage on a closed ring
 }
 
