@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include <msettings.h>
 
@@ -1267,7 +1268,11 @@ static int SND_ringPct(void) {
 // sped-up/chipmunk FF sound — while FF speed stays governed by limitFF(), not the ring.
 // The ring rides FULL during FF, so SND_ringPct stays high and the presentation-drop
 // catch-up can never engage (correct: FF is never audio-starved).
-static int snd_ff_nonblock = 0;
+// Hardened (v1.4 audit): the FF flag is written by the input path and read inside
+// SND_batchSamples — same thread in tg5040's serial build today, but any threaded consumer
+// (legacy thread_video builds; future work) makes a plain int a C data race. An _Atomic int
+// costs nothing here and is correct by construction.
+static _Atomic int snd_ff_nonblock = 0;
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
 void SND_setFastForward(int on) {
 	int next = on ? 1 : 0;
@@ -1293,6 +1298,17 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
 	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+
+	// return frame_count; // TODO: tmp, silent
+
+	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
+
+	SDL_LockAudio();
+	// Hardened (v1.4 audit): the prefill gate reads ring indices + prefilling that the
+	// FF->normal drain (SND_setFastForward) mutates under the audio lock — check under the
+	// lock too, so a stale read can never unpause the DAC against just-emptied indices.
+	// (SDL_PauseAudio under SDL_LockAudio is safe: SDL2's audio mutex is recursive, and the
+	// same pattern already ships in SND_setFastForward.)
 	if (snd.prefilling) {
 		int queued = snd.frame_in - snd.frame_out;
 		if (queued < 0) queued += snd.frame_count;
@@ -1301,12 +1317,6 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 			SDL_PauseAudio(0);
 		}
 	}
-	
-	// return frame_count; // TODO: tmp, silent
-	
-	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
-	
-	SDL_LockAudio();
 
 	int consumed = 0;
 	int consumed_frames = 0;
