@@ -238,7 +238,7 @@ static void clearVideo(void) {
 }
 
 void PLAT_quitVideo(void) {
-	clearVideo();
+	if (!fb_present) clearVideo(); // direct-fb menu never scans the GLES buffers
 
 	SDL_FreeSurface(vid.screen);
 	SDL_FreeSurface(vid.buffer);
@@ -249,7 +249,18 @@ void PLAT_quitVideo(void) {
 	SDL_DestroyWindow(vid.window);
 
 	SDL_Quit();
-	system("cat /dev/zero > /dev/fb0 2>/dev/null");
+	// The Brick menu already owns a writable fb0 mapping. Clear that mapping directly;
+	// spawning cat to stream /dev/zero through the full device costs ~600ms per handoff.
+	// Game/Smart Pro paths have no mapping and clear their visible GLES buffers above.
+	if (fb_mem) {
+		memset(fb_mem, 0, fb_finfo.smem_len);
+		munmap(fb_mem, fb_finfo.smem_len);
+		fb_mem = NULL;
+	}
+	if (fb_fd >= 0) {
+		close(fb_fd);
+		fb_fd = -1;
+	}
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
