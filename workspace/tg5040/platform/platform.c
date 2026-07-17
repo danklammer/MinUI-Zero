@@ -1083,14 +1083,16 @@ void PLAT_setUndervolt(int millivolts) { (void)millivolts; } // superseded by th
 
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"
 #define RUMBLE_VOLTAGE_PATH "/sys/class/motor/voltage"
-void PLAT_setRumble(int strength) {
+static void setRumble(int strength, int respect_mute) {
 	// the motor needs a drive voltage before the enable pin does anything — the Brick
 	// boots with a usable default, the Smart Pro with none (silent motor). 1.5V per
 	// NextUI's tg5040 implementation. Set once, lazily, only when rumble is first used.
 	static int motor_powered = 0;
 	if (strength && !motor_powered) { putInt(RUMBLE_VOLTAGE_PATH, 1500000); motor_powered = 1; }
-	putInt(RUMBLE_PATH, (strength && !GetMute())?1:0);
+	putInt(RUMBLE_PATH, (strength && (!respect_mute || !GetMute()))?1:0);
 }
+void PLAT_setRumble(int strength) { setRumble(strength, 1); }
+void PLAT_setSystemRumble(int strength) { setRumble(strength, 0); }
 
 int PLAT_pickSampleRate(int requested, int max) {
 	return MIN(requested, max);

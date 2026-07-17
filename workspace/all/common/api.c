@@ -231,6 +231,12 @@ static uint32_t SND_lastBatchMs(void); // last producer write, for the menu/paus
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
 static int gfx_drop_active = 0; // presentation-drop state (game path only); menu flips clear it
+static int gfx_drop_enabled = 0;
+void GFX_setPresentationDrop(int enabled) {
+	gfx_drop_enabled = enabled;
+	gfx_drop_active = 0;
+	LOG_info("presentation-drop: %s\n", enabled ? "enabled" : "disabled");
+}
 void GFX_flip(SDL_Surface* screen) {
 	// UNCONDITIONAL present — the menu/UI/single-shot path. Presentation-drop must never
 	// apply here: menu screens render once and then wait for input, so one skipped
@@ -252,6 +258,12 @@ void GFX_flip(SDL_Surface* screen) {
 }
 void GFX_flipGame(SDL_Surface* screen) {
 	// GAME-RUN-LOOP present: the ONLY path where presentation-drop may skip.
+	// Catch-up was measured on PS1, but Supafaust's healthy queue also crosses the
+	// PS1-tuned 50% threshold in steady state. Never drop another system's frames.
+	if (!gfx_drop_enabled) {
+		GFX_flip(screen);
+		return;
+	}
 	//
 	// PRESENTATION-DROP CATCH-UP (task #13 phase 1 — "presentation-drop catch-up").
 	// The v1.3 vsync-skip here was a NO-OP on tg5040: the renderer is created with
@@ -344,6 +356,7 @@ FALLBACK_IMPLEMENTATION void PLAT_setCPUVoltForCeil(int khz) { } // voltage auth
 FALLBACK_IMPLEMENTATION void PLAT_restoreCPUVolt(void) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_emergencyRestoreCPUVolt(void) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_uvReassert(void) { } // no-op
+FALLBACK_IMPLEMENTATION void PLAT_setSystemRumble(int strength) { PLAT_setRumble(strength); }
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding) {
 	int text_width;
@@ -1872,6 +1885,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	static uint32_t checked_charge_at = 0; // timestamp of last time checking charge
 	static uint32_t setting_shown_at = 0; // timestamp when settings started being shown
 	static uint32_t power_pressed_at = 0; // timestamp when power button was just pressed
+	static int power_press_is_wake = 0; // short post-resume presses must not immediately re-sleep
 	static uint32_t mod_unpressed_at = 0; // timestamp of last time settings modifier key was NOT down
 	static uint32_t was_muted = -1;
 	if (was_muted==-1) was_muted = GetMute();
@@ -1895,25 +1909,21 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (PAD_justReleased(BTN_POWEROFF) || (power_pressed_at && now-power_pressed_at>=1000)) {
 		// Haptic power cue (idea from SpruceOS): a short buzz the moment the quicksave+
 		// shutdown commits — feel it and let go. Keep holding regardless and the PMIC
-		// hardware long-hold cut remains the force-off escape hatch. (Rumble respects the
-		// mute switch by platform convention, matching stock behavior.)
-		PLAT_setRumble(1);
+		// hardware long-hold cut remains the force-off escape hatch. This system cue bypasses
+		// FN mute; game rumble still respects it.
+		PLAT_setSystemRumble(1);
 		SDL_Delay(150);
-		PLAT_setRumble(0);
+		PLAT_setSystemRumble(0);
 		if (before_sleep) before_sleep();
 		PWR_powerOff();
 	}
 	
 	if (PAD_justPressed(BTN_POWER)) {
-		// on deep-sleep platforms a wake arrives as a power press; debounce it so we don't
-		// immediately re-sleep / power off after resuming. Inert elsewhere (original behavior).
-		if (PLAT_supportsDeepSleep() && now - pwr.resume_tick < 1000) {
-			LOG_debug("ignoring spurious power button press (just resumed)\n");
-			power_pressed_at = 0;
-		} else {
-			power_pressed_at = now;
-		}
+		power_pressed_at = now;
+		power_press_is_wake = PLAT_supportsDeepSleep() && pwr.resume_tick && now-pwr.resume_tick<1000;
+		if (power_press_is_wake) LOG_debug("guarding power button release (just resumed)\n");
 	}
+	int power_released = PAD_justReleased(BTN_POWER);
 
 	#define SLEEP_DELAY 30000 // 30 seconds
 	if (now-last_input_at>=SLEEP_DELAY && PWR_preventAutosleep()) last_input_at = now;
@@ -1921,7 +1931,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && (!PLAT_supportsDeepSleep() || power_pressed_at)) // manual sleep (resume-press guard only where deep sleep is on)
+		(pwr.can_sleep && power_released && (!PLAT_supportsDeepSleep() || (power_pressed_at && !power_press_is_wake))) // manual sleep (resume-press guard only where deep sleep is on)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
@@ -1930,7 +1940,11 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 		
 		last_input_at = now = SDL_GetTicks();
 		power_pressed_at = 0;
+		power_press_is_wake = 0;
 		dirty = 1;
+	} else if (power_released) {
+		power_pressed_at = 0;
+		power_press_is_wake = 0;
 	}
 	
 	int was_dirty = dirty; // dirty list (not including settings/battery)

@@ -161,6 +161,7 @@ int GFX_hdmiChanged(void);
 void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen); // menu/UI/single-shot presents: never skippable (invisible-menu fix 2026-07-13)
 void GFX_flipGame(SDL_Surface* screen); // game run loop ONLY: presentation-drop catch-up may skip this present
+void GFX_setPresentationDrop(int enabled); // measured PS1 audio protection; disabled for other systems
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
 void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)
@@ -361,6 +362,7 @@ void PLAT_restoreCPUVolt(void);         // always-safe stock restore (clean quit
 void PLAT_emergencyRestoreCPUVolt(void); // lock-free variant for signal handlers ONLY
 void PLAT_uvReassert(void);             // per-frame: rewrite the lean voltage if the kernel re-stocked it
 void PLAT_setRumble(int strength);
+void PLAT_setSystemRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 
 char* PLAT_getModel(void);
