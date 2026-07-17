@@ -1073,3 +1073,17 @@ desired FF cue, not hi-fi). Interaction with the v1.3.1 presentation-drop catch-
 benign BY CONSTRUCTION: FF floods the ring, `SND_ringPct` rides high, catch-up (engages
 < 50%) never fires during FF — FF is never audio-starved. Device ear-test + engage=0
 confirmation pending (Brick asleep at implementation time).
+
+## D65 — Futile-climb governor ships DEFAULT-OFF: the harness passed, the device did not (2026-07-17)
+The futile-climb stand-down (D62-era addition: a slip that a full climb to f_max did not cure
+returns to the pre-climb ceiling) passed 18 synthetic tests and a Battletoads no-regression run —
+then the v1.4-RC3 smoke caught a LIVE false positive on the flagship case: a genuine BR2 heavy-scene
+arrival slips at f_max for ~2s while the depth-2 pipeline refills; the 4-tick detector judged the
+scene unfixable and stood the ceiling down to 1008 MID-FIGHT (54fps, 8-16 underruns/s, ear-confirmed
+crunch), and the bursty SLIP/BIGSLIP mix never tripped the BIGSLIP-only in-hold breaker for the full
+60s hold. The discriminator ("slipping at max = unfixable") cannot distinguish transition-slips from
+authentic engine slowdown at a 2s horizon. Gated OFF by default (ZERO_GOV_FUTILE=1 to enable for
+tuning); FFSLIP (the FF exemption) stays — it is correct independently. Revisit needs a burstiness/
+trend-aware discriminator and same-scene device validation on BOTH Battletoads (true positive) and
+BR2 scene transitions (the false positive). Lesson repeated from D24: synthetic traces model the
+signals we THINK the device produces; only the device produces the real ones.
