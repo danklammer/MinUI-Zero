@@ -662,7 +662,11 @@ static int State_read(void) { // from picoarch
 	State_getPath(filename);
 
 	size_t file_size = 0;
-	if (save_read_file(filename, state, state_size, 0, &file_size)) {
+	// allow_larger=1 (v1.4 final-review decision): cores with varying serialize_size() (mgba —
+	// see the Wario Land 4 note) can report M < N after writing a state of size N; refusing the
+	// load would make v1.4 reject a save v1.3.1 accepted (prefix-load was v1.3.1's de-facto
+	// semantics for years, harmlessly). The buffer is state_size; the read is bounded either way.
+	if (save_read_file(filename, state, state_size, 1, &file_size)) {
 		// st8 is a default state in MiniUI and may not exist, that's okay.
 		if (errno != ENOENT || state_slot!=8) {
 			LOG_error("Error reading state file: %s (%s)\n", filename, strerror(errno));
