@@ -249,18 +249,29 @@ void PLAT_quitVideo(void) {
 	SDL_DestroyWindow(vid.window);
 
 	SDL_Quit();
-	// The Brick menu already owns a writable fb0 mapping. Clear that mapping directly;
-	// spawning cat to stream /dev/zero through the full device costs ~600ms per handoff.
-	// Game/Smart Pro paths have no mapping and clear their visible GLES buffers above.
-	if (fb_mem) {
-		memset(fb_mem, 0, fb_finfo.smem_len);
-		munmap(fb_mem, fb_finfo.smem_len);
-		fb_mem = NULL;
+	// Preserve the old fb0 clear without spawning cat to stream /dev/zero through the
+	// device (~600ms). The direct-fb menu reuses its mapping; game/Smart Pro teardown
+	// briefly maps fb0 so a layer switch can never expose stale pre-game contents.
+	int clear_fd = fb_fd;
+	uint8_t* clear_mem = fb_mem;
+	size_t clear_size = clear_mem ? fb_finfo.smem_len : 0;
+	if (!clear_mem) {
+		struct fb_fix_screeninfo clear_finfo = {0};
+		clear_fd = open("/dev/fb0", O_RDWR);
+		if (clear_fd >= 0 && ioctl(clear_fd, FBIOGET_FSCREENINFO, &clear_finfo) == 0
+				&& clear_finfo.smem_len) {
+			clear_size = clear_finfo.smem_len;
+			clear_mem = mmap(0, clear_size, PROT_READ|PROT_WRITE, MAP_SHARED, clear_fd, 0);
+			if (clear_mem == MAP_FAILED) clear_mem = NULL;
+		}
 	}
-	if (fb_fd >= 0) {
-		close(fb_fd);
-		fb_fd = -1;
+	if (clear_mem) {
+		memset(clear_mem, 0, clear_size);
+		munmap(clear_mem, clear_size);
 	}
+	if (clear_fd >= 0) close(clear_fd);
+	fb_mem = NULL;
+	fb_fd = -1;
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
