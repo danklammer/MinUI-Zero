@@ -6024,6 +6024,12 @@ int main(int argc , char* argv[]) {
 				cpu_ticks = 0;
 				fps_ticks = 0;
 				cpu_double = 0;
+#ifdef ZERO_FRONTEND_THREADING_V2
+				// Re-review catch: the depth-2 generation counter must reset with the window too,
+				// or the first post-menu second sums pre-menu + post-menu epochs (~2x fps_double:
+				// HUD/MEASURE wrong for 1s, governor slip-blind for one tick).
+				zero_ftv2_gen_ticks = 0;
+#endif
 			}
 		}
 

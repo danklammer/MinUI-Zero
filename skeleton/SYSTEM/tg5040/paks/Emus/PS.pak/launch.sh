@@ -20,15 +20,21 @@ cd "$HOME"
 # Fall back to serial with ZERO_FTV2_DEPTH=1 if a specific game misbehaves.
 export ZERO_FTV2_DEPTH="${ZERO_FTV2_DEPTH:-2}"
 
-# Crash-canary bracket coherence (Codex v1.4 #10): if the last depth-2 session of THIS game
-# ended uncleanly, minarch will fall back to serial — but the governor bracket is chosen HERE,
-# before minarch runs. Check the canary ourselves so the serial fallback gets the serial
-# bracket (1800 cap), not depth-2's 1608 cap (which would make the "safe" session slower).
+# Crash-canary bracket coherence (Codex v1.4 #10, corrected after re-review): if the last
+# depth-2 session of THIS game ended uncleanly, minarch will fall back to serial for one
+# session — but the governor bracket is chosen HERE, before minarch runs. Use the canary
+# ONLY to pick the serial bracket. Do NOT force ZERO_FTV2_DEPTH=1: minarch's own canary
+# check (which clears the marker and retries depth-2 next launch) only runs when depth>=2 —
+# forcing 1 here left the canary in place forever = permanent serial lockout (re-review
+# catch). Multi-disc note: .m3u games resolve to a different canary name (the m3u basename)
+# than $ROM's — they simply keep the depth-2 bracket during a fallback session (capped but
+# safe); single-disc games (the common case) get the right bracket.
 CANARY="/mnt/SDCARD/.userdata/shared/PS-pcsx_rearmed/$(basename "$ROM").ftv2boot"
-[ -f "$CANARY" ] && export ZERO_FTV2_DEPTH=1
+FTV2_BRACKET=serial
+if [ ! -f "$CANARY" ] && [ "${ZERO_FTV2_DEPTH:-1}" -ge 2 ] 2>/dev/null; then FTV2_BRACKET=depth2; fi
 
 # closed-loop governor clock bracket (kHz); see docs/thermal-governor-design.md
-if [ "${ZERO_FTV2_DEPTH:-1}" -ge 2 ] 2>/dev/null; then
+if [ "$FTV2_BRACKET" = "depth2" ]; then
 	# Threading v2 depth-2: emulation and present run concurrently, so the CORE holds 60 at a
 	# LOWER clock than serial (present is off the critical path). MEASURED on BR2 (hardest PS1
 	# case, 2026-07-15): depth-2 holds 60 clean at 1416 (1200 breaks); depth-1 can't hold 60
