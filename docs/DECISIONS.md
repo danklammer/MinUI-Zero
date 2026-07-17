@@ -890,3 +890,20 @@ desired FF cue, not hi-fi). Interaction with the v1.3.1 presentation-drop catch-
 benign BY CONSTRUCTION: FF floods the ring, `SND_ringPct` rides high, catch-up (engages
 < 50%) never fires during FF — FF is never audio-starved. Device ear-test + engage=0
 confirmation pending (Brick asleep at implementation time).
+
+## D57 — Cadence mechanisms are content-scoped, including fast-forward (2026-07-17)
+The v1.3.1 PS1 presentation-drop thresholds were accidentally active for every core. Supafaust's
+healthy ring naturally crossed the PS-tuned 50% threshold while Mario 3 scrolled, so the frontend
+discarded valid presents and produced visible jitter. Presentation-drop is now enabled only for
+`PS`; the six-system Brick matrix logged it disabled everywhere else. During PS fast-forward it is
+temporarily disabled because deliberately outrunning presentation is not an audio delivery failure,
+then restored on FF exit. The BR2 trace confirmed enabled -> disabled -> enabled and normal-play
+catch-up resumed afterward.
+
+D45's rate correction is revived under Lenient vsync only for non-PS 58-61fps cores. PS remains
+excluded because the prior broad revival audibly chopped BR2 and THPS. Light systems converge at
+their efficient ceiling (Brick receipts: GBC +10050ppm at 408MHz; Genesis +6900ppm); games at their
+profile maximum remain ineligible and keep stock timing. Entering FF saves the learned ppm, runs at
+zero correction, and restores it once normal-play headroom returns. `ZERO_NO_DRC` and VSYNC_OFF
+remain kill switches. Automated transition/cadence coverage is green; the Mario gameplay eye-test
+after convergence and FF audio ear-test remain release gates.

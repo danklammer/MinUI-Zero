@@ -96,6 +96,8 @@ static int show_debug = 0;
 static int max_ff_speed = 3; // 4x
 static int fast_forward = 0;
 static int ff_audio = 1; // FF-with-sound: feed sped-up audio during fast-forward (see audio callbacks)
+static int presentation_drop_supported = 0;
+static int drc_system_allowed = 0;
 static int overclock = 1; // normal
 static int has_custom_controllers = 0;
 static int gamepad_type = 0; // index in gamepad_labels/gamepad_values
@@ -1878,6 +1880,7 @@ static void Menu_saveState(void);
 static void Menu_loadState(void);
 
 static int setFastForward(int enable) {
+	int changed = (fast_forward != enable);
 	{ // ZERO_GOV_DEBUG: trace every FF transition + caller context (FF-busted hunt 2026-07-10)
 		static int zfd = -1;
 		if (zfd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd = (e && e[0] && e[0] != '0') ? 1 : 0; }
@@ -1895,6 +1898,9 @@ static int setFastForward(int enable) {
 		toggle_thread = 1;
 	}
 	fast_forward = enable;
+	// PS1's presentation-drop catch-up protects normal-play audio, but deliberately
+	// outrunning presentation during FF must not be mistaken for a delivery underrun.
+	if (changed && presentation_drop_supported) GFX_setPresentationDrop(!enable);
 	// FF-with-sound: put the audio ring in non-blocking mode while fast-forwarding so
 	// feeding audio can't throttle FF back to real time (drop-on-full instead of block).
 	SND_setFastForward(enable && ff_audio);
@@ -5182,7 +5188,9 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
-	GFX_setPresentationDrop(exactMatch((char*)core.tag, "PS"));
+	presentation_drop_supported = exactMatch((char*)core.tag, "PS");
+	drc_system_allowed = !presentation_drop_supported;
+	GFX_setPresentationDrop(presentation_drop_supported);
 	Game_open(rom_path); // nes tries to load gamegenie setting before this returns ffs
 	if (!game.is_open) goto finish;
 	
@@ -5572,32 +5580,48 @@ int main(int argc , char* argv[]) {
 		// -> nudge down. Equilibrium hovers +/-150ppm around the true panel ratio. Games run
 		// ~1.3% fast, pitch +23 cents — the industry-standard imperceptible trade (RetroArch
 		// does the same). Heavy games that can't hold rate self-disable (no audio blocking ->
-		// ratchets to 0 = stock). ~60fps cores under strict vsync only; ZERO_NO_DRC disables.
+		// ratchets to 0 = stock). ~60fps non-PS cores whenever vsync is active; PS1 stays
+		// excluded because rate adjustment audibly chopped BR2/THPS. ZERO_NO_DRC disables.
 		if (!show_menu) {
 			static int drc_ppm = 0;
 			drc_ppm_expose(&drc_ppm);
 			static int drc_frames = 0;
 			static long drc_prev_wait = 0;
 			static int drc_disabled = -1;
+			static int drc_was_fast_forward = 0;
+			static int drc_restore_ppm = -1;
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
-			int drc_eligible = (!drc_disabled && !fast_forward
+			int drc_supported = (!drc_disabled && drc_system_allowed
 				&& core.fps >= 58.0 && core.fps <= 61.0
+				// Lenient still presents through the same vsynced SDL renderer on tg5040;
+				// only explicit VSYNC_OFF removes the panel clock DRC synchronizes to.
+				&& GFX_getVsync()!=VSYNC_OFF);
+			int drc_eligible = (drc_supported && !fast_forward
 				// a ceiling-saturated game has no headroom to run +ppm faster — asking
 				// starves the audio ring on schedule (BR2 chop, ear-found 2026-07-08)
-				&& gov_state.ceil_khz < gov_profile.f_max
-				// DORMANT BY DECISION (2026-07-08): a one-line Lenient-revival woke DRC
-				// platform-wide and audibly chopped PS1 audio the same night (BR2 + THPS
-				// titles, ear-verified) — the v1.1 design was only ever validated on
-				// synth-audio handheld cores. Until a per-content-class revalidation,
-				// STRICT-only keeps it dormant = the exact behavior of every release.
-				&& GFX_getVsync()==VSYNC_STRICT);
+				&& gov_state.ceil_khz < gov_profile.f_max);
+			if (fast_forward && !drc_was_fast_forward && drc_supported && drc_restore_ppm < 0)
+				drc_restore_ppm = drc_ppm;
+			drc_was_fast_forward = fast_forward;
+			if (!drc_supported) drc_restore_ppm = -1;
 			if (!drc_eligible) {
-				if (drc_ppm) { // revert cleanly (vsync toggled off / fast-forward)
+				if (drc_ppm) { // revert cleanly while ineligible; FF restores it below
 					drc_ppm = 0;
 					SND_setRateAdjustPPM(0);
 					GFX_setPacePeriodUs(0);
 					core_pace_ppm = 0;
 				}
+			}
+			else if (drc_restore_ppm >= 0) {
+				drc_ppm = drc_restore_ppm;
+				drc_restore_ppm = -1;
+				drc_frames = 0;
+				SND_Stats das; SND_getStats(&das);
+				drc_prev_wait = das.wait_ms;
+				SND_setRateAdjustPPM(drc_ppm);
+				core_pace_ppm = drc_ppm;
+				GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
+				LOG_info("drc: restored +%dppm after fast-forward\n", drc_ppm);
 			}
 			else if (++drc_frames >= 30) { // ~2Hz
 				drc_frames = 0;
