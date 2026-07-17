@@ -29,6 +29,10 @@ void PLAT_setCPUVoltForCeil(int khz);
                                // scene dips at every clock (authentic slowdown), so f_max is pure heat
 #define GOV_FUTILE_HOLD  120   // ticks (~60s) of not chasing that scene (slips hold instead of climb);
                                // expiry re-tests honestly, gov_burst (scene change) clears immediately
+#define GOV_FUTILE_BREAK 8     // consecutive BIGSLIPs (~4s) DURING a hold = this is a genuinely new
+                               // heavy scene, not the bursty authentic slowdown the hold was earned
+                               // on — break the hold and requalify (Codex #7: a same-resolution real
+                               // heavy scene must not sit starved for the rest of the hold)
 
 // CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
@@ -91,6 +95,11 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		// p95=7.7ms/16.7 (2026-07-09 gate telemetry). A wrong sink is cheap now (one-tick
 		// probe-undo + BIGSLIP-to-max + fail memory), so the gate can afford leniency.
 		st->slip_run = 0;
+		// Codex #7: BUSY = holding rate, so the slip episode is OVER. Without this reset,
+		// NON-consecutive slips (slip, BUSY, slip, BUSY ... at f_max) accumulate into a false
+		// futile verdict for a scene that a climb IS curing between hiccups.
+		st->max_slip_run = 0;
+		st->slip_origin_khz = 0;
 	}
 	else if (frame_overrun) {
 		// Fast-forward slips (GOV_SIGNAL_FFSLIP) are unreachable-by-design targets: they must
@@ -104,8 +113,25 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		// held slips would otherwise poison fail_khz and block legitimate later sinking). Expiry
 		// or a scene change (gov_burst) re-tests honestly. Audio: presentation-drop covers dips.
 		if (st->futile_hold > 0 && !ff) {
-			st->slack_run = 0;
-			return st->ceil_khz;
+			// Codex #7: a hold must not starve a GENUINELY new heavy scene. Authentic slowdown
+			// (what earned the hold) is bursty — BIGSLIP ticks interleave with clean ones. A
+			// sustained run of BIGSLIPs (~4s continuous) is a different animal: break the hold
+			// and requalify via the normal climb. max_slip_run is repurposed as the in-hold
+			// counter (it is always 0 when a hold starts).
+			if (frame_overrun == GOV_SIGNAL_BIGSLIP) {
+				if (++st->max_slip_run >= GOV_FUTILE_BREAK) {
+					st->futile_hold = 0;
+					st->max_slip_run = 0;
+					st->slip_run = 0;   // fresh episode: fall through to the normal climb path
+				} else {
+					st->slack_run = 0;
+					return st->ceil_khz;
+				}
+			} else {
+				st->max_slip_run = 0;   // bursty: a non-BIGSLIP tick resets the breaker
+				st->slack_run = 0;
+				return st->ceil_khz;
+			}
 		}
 		if (!ff) {
 			// Episode origin: remember the settled ceiling this slip episode started from — if the

@@ -272,6 +272,52 @@ static void test_ff_slip_bypasses_futile(void) {
 	CHECK(st.ceil_khz == p->f_max, "FF should rest at f_max, got %d", st.ceil_khz);
 }
 
+// ---- Codex #7a: non-consecutive slips (slip/BUSY alternation at f_max) are a scene the
+// climb IS curing between hiccups — they must never accumulate into a futile verdict. ----
+static void test_busy_ends_futile_episode(void) {
+	printf("[futile] slip/BUSY alternation at f_max never accumulates to a stand-down\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c); // settle low
+	for (int i = 0; i < 60; i++)
+		gov_step(&st, p, 45, (i % 2 == 0) ? GOV_SIGNAL_SLIP : GOV_SIGNAL_BUSY);
+	CHECK(st.futile_hold == 0, "alternating slip/BUSY must not engage futile (hold=%d)", st.futile_hold);
+	CHECK(st.ceil_khz == p->f_max, "climb-curable hiccup scene should sit at f_max, got %d", st.ceil_khz);
+}
+
+// ---- Codex #7b: a hold survives BURSTY BIGSLIPs (authentic slowdown) but breaks on a
+// SUSTAINED run of them (a genuinely new heavy scene must not stay starved). ----
+static void test_hold_breaks_on_sustained_bigslip(void) {
+	printf("[futile] hold survives bursty BIGSLIP, breaks on sustained BIGSLIP\n");
+	const GovProfile* p = &GOV_P_8BIT;
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 600000, 45, 120, 10, &a, &b, &c);
+	int settled = st.ceil_khz;
+	for (int i = 0; i < 12; i++) gov_step(&st, p, 45, GOV_SIGNAL_SLIP); // engage the hold
+	CHECK(st.futile_hold > 0 && st.ceil_khz == settled, "setup: hold at origin");
+	// bursty: BIGSLIP interleaved with clean ticks — hold must survive
+	for (int i = 0; i < 20; i++)
+		gov_step(&st, p, 45, (i % 2 == 0) ? GOV_SIGNAL_BIGSLIP : GOV_SIGNAL_SLACK);
+	CHECK(st.futile_hold > 0, "bursty BIGSLIP must not break the hold (hold=%d)", st.futile_hold);
+	// A genuinely NEW heavy scene arrives mid-hold: it BIGSLIPs at every clock BELOW f_max
+	// and is cured AT f_max (workload-realistic). The hold must break within the breaker
+	// window (~4-5s) and the scene must get f_max and keep it — not sit starved for 60s.
+	// (A scene that still BIGSLIPs AT f_max is unfixable by definition; re-holding there
+	// is correct and covered by the stands-down test.)
+	int reclimbed_at = -1;
+	for (int i = 0; i < 24; i++) {
+		int sig = (st.ceil_khz < p->f_max) ? GOV_SIGNAL_BIGSLIP : GOV_SIGNAL_BUSY;
+		int khz = gov_step(&st, p, 45, sig);
+		if (khz == p->f_max && reclimbed_at < 0) reclimbed_at = i;
+	}
+	CHECK(reclimbed_at >= 0 && reclimbed_at <= 9,
+	      "hold must break + reach f_max within the breaker window (reclimbed_at=%d)", reclimbed_at);
+	CHECK(st.futile_hold == 0, "cured-at-max scene must not be under a hold (hold=%d)", st.futile_hold);
+	CHECK(st.ceil_khz == p->f_max, "cured-at-max scene rests at f_max, got %d", st.ceil_khz);
+}
+
 static void test_tick_io(void) {
 	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
@@ -381,6 +427,8 @@ int main(void) {
 	test_futile_climb_stands_down();
 	test_curable_slip_still_climbs();
 	test_ff_slip_bypasses_futile();
+	test_busy_ends_futile_episode();
+	test_hold_breaks_on_sustained_bigslip();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	if (g_fail) { printf("%d check(s) failed\n", g_fail); return 1; }
