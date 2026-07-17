@@ -941,3 +941,23 @@ preservation, temp cleanup, and durable config deletion. The same harness passes
 Brick's real vfat `/mnt/SDCARD`, confirming directory `fsync` support. This closes transport
 and publication corruption; recognizing semantically corrupt legacy payloads remains a
 separate user-facing recovery task.
+
+## D59 — Measured-rate FF audio smoothing + the state-size compat decision (2026-07-17, v1.4 final review)
+Two closing decisions from the v1.4 ship review:
+1. **FF smoothing supersedes part of D56's rationale.** D56 fed FF audio by dropping arbitrary
+full-ring chunks ("no adaptive resampler"); e1a5a6e5 replaces that with a measured production
+rate (Q16 fixed-point multiplier on the existing linear resampler) so FF audio is evenly
+decimated instead of chopped. D56's "the ring rides full so catch-up can never fire during FF"
+guarantee is superseded — catch-up safety during FF now rests on D57's PS-only presentation-drop
+scoping (drop disabled during PS FF, restored on exit). Line-level review: Q16 math bounded
+(overflow/wrap/zero-guard verified, tick-wrap tested), estimator scoped to audible-FF windows,
+stale windows (menu/sleep) discarded, non-FF path bit-identical to v1.3.1 except where the old
+int32 resampler math overflowed (that was UB — the int64 cast is a fix). Device gate: the
+smoothing commit was host-tested + cross-compiled but ships only after an on-device ear test.
+2. **State_read keeps v1.3.1 compatibility (allow_larger=1).** D58's fail-closed read rejected
+states larger than the core's current serialize_size(); review flagged this as the one place
+v1.4 could refuse a save v1.3.1 accepted (cores with varying serialize_size — mgba). Decision:
+prefix-load stays (bounded read into a state_size buffer, v1.3.1's de-facto semantics); D58's
+fail-closed stance is kept for every other failure class (truncation, short reads, publish
+failures). Also closed by review: test-save-io added to release-checks CI; the stale -8 release
+zip (embedded pre-commit hash) discarded — release artifacts must embed the tagged HEAD's hash.
