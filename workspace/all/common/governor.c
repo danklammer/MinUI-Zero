@@ -42,6 +42,8 @@ void PLAT_setCPUVoltForCeil(int khz);
 #define GOV_STOCK_MAX_KHZ 1800000
 
 // ---- Per-system ceiling brackets (f_min/f_max are real OPPs; f_max <= stock cap, no OC) ----
+static int gov_futile_enabled(void); // default-off gate (defined below near gov_disabled)
+
 const GovProfile GOV_P_8BIT   = {  408000, 1008000 }; // MEASURED: 408 is the real OPP floor
 const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
 const GovProfile GOV_P_PS1    = { 1008000, 1800000 };
@@ -139,7 +141,10 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 			if (st->slip_run == 0 && st->ceil_khz < p->f_max)
 				st->slip_origin_khz = st->ceil_khz;
 			// Futile detector: slipping AT f_max means the climb already happened and didn't cure it.
-			if (st->ceil_khz >= p->f_max) {
+			// (Engagement gated OFF by default — see gov_futile_enabled: live false-positive on
+			// heavy-scene transitions. The hold/breaker machinery above still services any hold
+			// engaged while the gate is on, e.g. under the harness.)
+			if (st->ceil_khz >= p->f_max && gov_futile_enabled()) {
 				if (++st->max_slip_run >= GOV_FUTILE_TICKS && st->slip_origin_khz > 0
 				    && st->slip_origin_khz < p->f_max) {
 					st->ceil_khz = st->slip_origin_khz;  // stand down to what the scene actually needs
@@ -226,6 +231,18 @@ int gov_sink_fits(int cur_khz, int next_khz, int p95_pure_us, int budget_us) {
 	// predicted post-sink p95: work scales ~ inversely with clock (CPU-bound frame)
 	long long predicted = (long long)p95_pure_us * cur_khz / next_khz;
 	return predicted < (long long)budget_us * GOV_SINK_MARGIN_PCT / 100;
+}
+
+static int gov_futile_enabled(void) {
+	// Futile-climb is OFF by default for v1.4: the RC3 on-device smoke (2026-07-17) caught a
+	// LIVE false positive — a genuine BR2 heavy-scene transition slips at f_max for ~2s while
+	// the depth-2 pipeline refills; the 4-tick detector judged it unfixable and stood down to
+	// 1008 MID-FIGHT (54fps + underruns for the 60s hold; bursty mixed slips never tripped the
+	// BIGSLIP-only breaker). The discriminator needs to separate transition-slips from
+	// authentic slowdown (burstiness/trend), which needs unhurried device tuning. Enable for
+	// that work with ZERO_GOV_FUTILE=1. Deliberately NOT cached: harness tests toggle it.
+	const char* e = getenv("ZERO_GOV_FUTILE");
+	return e && e[0] && e[0] != '0';
 }
 
 static int gov_disabled(void) {
