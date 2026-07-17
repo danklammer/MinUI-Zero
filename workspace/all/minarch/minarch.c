@@ -18,6 +18,7 @@
 #include "defines.h"
 #include "api.h"
 #include "utils.h"
+#include "save_io.h"
 #include "scaler.h"
 #include "governor.h"
 #include "telemetry.h"
@@ -462,6 +463,38 @@ static void Game_changeDisc(char* path) {
 static void SRAM_getPath(char* filename) {
 	sprintf(filename, "%s/%s.sav", core.saves_dir, game.name);
 }
+static void Memory_read(const char* filename, void* memory, size_t memory_size, const char* kind) {
+	if (!memory) {
+		LOG_error("Error getting %s data\n", kind);
+		return;
+	}
+
+	void* staged = malloc(memory_size);
+	if (!staged) {
+		LOG_error("Couldn't allocate memory for %s data\n", kind);
+		return;
+	}
+
+	size_t file_size = 0;
+	if (save_read_file(filename, staged, memory_size, 1, &file_size)) {
+		if (errno != ENOENT) LOG_error("Error reading %s data: %s\n", kind, strerror(errno));
+		free(staged);
+		return;
+	}
+	if (!file_size) {
+		LOG_error("Empty %s file: %s\n", kind, filename);
+		free(staged);
+		return;
+	}
+
+	size_t copy_size = file_size < memory_size ? file_size : memory_size;
+	memcpy(memory, staged, copy_size);
+	if (file_size != memory_size) {
+		LOG_warn("%s size mismatch: file=%zu core=%zu (%s)\n",
+			kind, file_size, memory_size, filename);
+	}
+	free(staged);
+}
 static void SRAM_read(void) {
 	size_t sram_size = core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
 	if (!sram_size) return;
@@ -470,16 +503,8 @@ static void SRAM_read(void) {
 	SRAM_getPath(filename);
 	printf("sav path (read): %s\n", filename);
 	
-	FILE *sram_file = fopen(filename, "r");
-	if (!sram_file) return;
-
 	void* sram = core.get_memory_data(RETRO_MEMORY_SAVE_RAM);
-
-	if (!sram || !fread(sram, 1, sram_size, sram_file)) {
-		LOG_error("Error reading SRAM data\n");
-	}
-
-	fclose(sram_file);
+	Memory_read(filename, sram, sram_size, "SRAM");
 }
 static void SRAM_write(void) {
 	size_t sram_size = core.get_memory_size(RETRO_MEMORY_SAVE_RAM);
@@ -495,27 +520,9 @@ static void SRAM_write(void) {
 		return;
 	}
 
-	// write-to-tmp + fsync + rename so a mid-write death (power cut, crash) can never
-	// truncate the last good save — same pattern as the crash handler (audit 2026-07-12).
-	// flush just this file to disk (was a global sync() — flushed every filesystem and
-	// stalled menu-open/sleep while unrelated dirty data drained)
-	char tmp_path[MAX_PATH+8];
-	sprintf(tmp_path, "%s.tmp", filename);
-	FILE *sram_file = fopen(tmp_path, "w");
-	if (!sram_file) {
-		LOG_error("Error opening SRAM file: %s\n", strerror(errno));
-		return;
+	if (save_write_atomic(filename, sram, sram_size)) {
+		LOG_error("Error writing SRAM data: %s\n", strerror(errno));
 	}
-	if (sram_size != fwrite(sram, 1, sram_size, sram_file)) {
-		LOG_error("Error writing SRAM data to file\n");
-		fclose(sram_file);
-		unlink(tmp_path);
-		return;
-	}
-	fflush(sram_file);
-	fsync(fileno(sram_file));
-	fclose(sram_file);
-	if (rename(tmp_path, filename)) LOG_error("Error renaming SRAM file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -531,16 +538,8 @@ static void RTC_read(void) {
 	RTC_getPath(filename);
 	printf("rtc path (read): %s\n", filename);
 	
-	FILE *rtc_file = fopen(filename, "r");
-	if (!rtc_file) return;
-
 	void* rtc = core.get_memory_data(RETRO_MEMORY_RTC);
-
-	if (!rtc || !fread(rtc, 1, rtc_size, rtc_file)) {
-		LOG_error("Error reading RTC data\n");
-	}
-
-	fclose(rtc_file);
+	Memory_read(filename, rtc, rtc_size, "RTC");
 }
 static void RTC_write(void) {
 	size_t rtc_size = core.get_memory_size(RETRO_MEMORY_RTC);
@@ -556,23 +555,9 @@ static void RTC_write(void) {
 		return;
 	}
 
-	char tmp_path[MAX_PATH+8];
-	sprintf(tmp_path, "%s.tmp", filename);
-	FILE *rtc_file = fopen(tmp_path, "w");
-	if (!rtc_file) {
-		LOG_error("Error opening RTC file: %s\n", strerror(errno));
-		return;
+	if (save_write_atomic(filename, rtc, rtc_size)) {
+		LOG_error("Error writing RTC data: %s\n", strerror(errno));
 	}
-	if (rtc_size != fwrite(rtc, 1, rtc_size, rtc_file)) {
-		LOG_error("Error writing RTC data to file\n");
-		fclose(rtc_file);
-		unlink(tmp_path);
-		return;
-	}
-	fflush(rtc_file);
-	fsync(fileno(rtc_file));
-	fclose(rtc_file);
-	if (rename(tmp_path, filename)) LOG_error("Error renaming RTC file: %s\n", strerror(errno));
 }
 
 ///////////////////////////////////////
@@ -587,24 +572,39 @@ static struct {
 	void* data;
 	size_t size;
 	char path[MAX_PATH];
-	char tmp[MAX_PATH];
+	char tmp[MAX_PATH+8];
 } crash_save[2]; // [0]=SRAM [1]=RTC
+static int crash_save_dir_fd = -1;
+
+static int Crash_writeAll(int fd, const void* data, size_t size) {
+	const unsigned char* in = data;
+	size_t done = 0;
+	while (done < size) {
+		ssize_t wrote = write(fd, in + done, size - done);
+		if (wrote > 0) done += (size_t)wrote;
+		else if (wrote < 0 && errno == EINTR) continue;
+		else return -1;
+	}
+	return 0;
+}
 
 static void Crash_handler(int sig) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
 	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
 	static const char msg[] = "minarch: fatal signal — emergency-saving SRAM/RTC\n";
 	write(STDERR_FILENO, msg, sizeof(msg)-1);
+	int renamed = 0;
 	for (int i=0; i<2; i++) {
 		if (!crash_save[i].data || !crash_save[i].size) continue;
 		int fd = open(crash_save[i].tmp, O_WRONLY|O_CREAT|O_TRUNC, 0644);
 		if (fd < 0) continue;
-		ssize_t wrote = write(fd, crash_save[i].data, crash_save[i].size);
-		fsync(fd);
-		close(fd);
-		if (wrote == (ssize_t)crash_save[i].size) rename(crash_save[i].tmp, crash_save[i].path);
+		int okay = !Crash_writeAll(fd, crash_save[i].data, crash_save[i].size);
+		if (okay && fsync(fd)) okay = 0;
+		if (close(fd)) okay = 0;
+		if (okay && !rename(crash_save[i].tmp, crash_save[i].path)) renamed = 1;
 		else unlink(crash_save[i].tmp);
 	}
+	if (renamed && crash_save_dir_fd >= 0) fsync(crash_save_dir_fd);
 	// voltage authority: restore stock volts before dying. MUST be the lock-free emergency
 	// variant — the normal restore takes uv_lock, which the hold thread owns ~20% of the
 	// time; a mutex here could deadlock the dying process into a frozen zombie (audit fix).
@@ -623,6 +623,7 @@ static void Crash_install(void) { // call after core.load_game + SRAM_read (poin
 		strcpy(crash_save[i].tmp, crash_save[i].path);
 		strcat(crash_save[i].tmp, ".tmp");
 	}
+	crash_save_dir_fd = open(core.saves_dir, O_RDONLY|O_DIRECTORY|O_CLOEXEC);
 	signal(SIGSEGV, Crash_handler);
 	signal(SIGBUS,  Crash_handler);
 	signal(SIGILL,  Crash_handler);
@@ -643,9 +644,6 @@ static void State_read(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
-	// declared before the first goto — jumping over the initializer left it
-	// indeterminate at the error label (audit 2026-07-12)
-	FILE *state_file = NULL;
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
@@ -655,29 +653,33 @@ static void State_read(void) { // from picoarch
 	char filename[MAX_PATH];
 	State_getPath(filename);
 
-	state_file = fopen(filename, "r");
-	if (!state_file) {
-		if (state_slot!=8) { // st8 is a default state in MiniUI and may not exist, that's okay
-			LOG_error("Error opening state file: %s (%s)\n", filename, strerror(errno));
+	size_t file_size = 0;
+	if (save_read_file(filename, state, state_size, 0, &file_size)) {
+		// st8 is a default state in MiniUI and may not exist, that's okay.
+		if (errno != ENOENT || state_slot!=8) {
+			LOG_error("Error reading state file: %s (%s)\n", filename, strerror(errno));
 		}
 		goto error;
 	}
-	
-	// some cores report the wrong serialize size initially for some games, eg. mgba: Wario Land 4
-	// so we allow a size mismatch as long as the actual size fits in the buffer we've allocated
-	if (state_size < fread(state, 1, state_size, state_file)) {
-		LOG_error("Error reading state data from file: %s (%s)\n", filename, strerror(errno));
+	if (!file_size) {
+		LOG_error("Empty state file: %s\n", filename);
 		goto error;
 	}
 
+	// some cores report the wrong serialize size initially for some games, eg. mgba: Wario Land 4
+	// so we allow a size mismatch as long as the actual size fits in the buffer we've allocated
+	if (file_size != state_size) {
+		LOG_warn("State size mismatch: file=%zu core=%zu (%s)\n",
+			file_size, state_size, filename);
+	}
+
 	if (!core.unserialize(state, state_size)) {
-		LOG_error("Error restoring save state: %s (%s)\n", filename, strerror(errno));
+		LOG_error("Error restoring save state: %s\n", filename);
 		goto error;
 	}
 
 error:
 	if (state) free(state);
-	if (state_file) fclose(state_file);
 	
 	fast_forward = was_ff;
 }
@@ -688,13 +690,7 @@ static void State_write(void) { // from picoarch
 	int was_ff = fast_forward;
 	fast_forward = 0;
 
-	// serialize into memory BEFORE touching the file, then write-to-tmp + fsync + rename:
-	// the old code truncated the existing state first, so a failed serialize destroyed the
-	// last good save. state_file is declared before the first goto — jumping over the
-	// initializer left it indeterminate at the error label (audit 2026-07-12)
-	FILE *state_file = NULL;
 	char filename[MAX_PATH];
-	char tmp_path[MAX_PATH+8];
 	void *state = calloc(1, state_size);
 	if (!state) {
 		LOG_error("Couldn't allocate memory for state\n");
@@ -708,30 +704,12 @@ static void State_write(void) { // from picoarch
 		goto error;
 	}
 
-	sprintf(tmp_path, "%s.tmp", filename);
-	state_file = fopen(tmp_path, "w");
-	if (!state_file) {
-		LOG_error("Error opening state file: %s (%s)\n", tmp_path, strerror(errno));
-		goto error;
+	if (save_write_atomic(filename, state, state_size)) {
+		LOG_error("Error writing state data: %s (%s)\n", filename, strerror(errno));
 	}
-
-	if (state_size != fwrite(state, 1, state_size, state_file)) {
-		LOG_error("Error writing state data to file: %s (%s)\n", tmp_path, strerror(errno));
-		fclose(state_file);
-		state_file = NULL;
-		unlink(tmp_path);
-		goto error;
-	}
-
-	fflush(state_file);
-	fsync(fileno(state_file));
-	fclose(state_file);
-	state_file = NULL;
-	if (rename(tmp_path, filename)) LOG_error("Error renaming state file: %s (%s)\n", filename, strerror(errno));
 
 error:
 	if (state) free(state);
-	if (state_file) fclose(state_file);
 
 	fast_forward = was_ff;
 }
@@ -1515,47 +1493,101 @@ static void Config_readControls(void) {
 	Config_readControlsString(config.default_cfg);
 	Config_readControlsString(config.user_cfg);
 }
+
+typedef struct ConfigBuffer {
+	char* data;
+	size_t size;
+	size_t capacity;
+	int failed;
+} ConfigBuffer;
+
+static void ConfigBuffer_append(ConfigBuffer* buffer, const char* format, ...) {
+	if (buffer->failed) return;
+
+	va_list args;
+	va_start(args, format);
+	va_list measure;
+	va_copy(measure, args);
+	int added = vsnprintf(NULL, 0, format, measure);
+	va_end(measure);
+	if (added < 0 || buffer->size > SIZE_MAX - (size_t)added - 1) {
+		if (added >= 0) errno = EOVERFLOW;
+		buffer->failed = 1;
+		va_end(args);
+		return;
+	}
+
+	size_t required = buffer->size + (size_t)added + 1;
+	if (required > buffer->capacity) {
+		size_t capacity = buffer->capacity ? buffer->capacity : 1024;
+		while (capacity < required) {
+			if (capacity > SIZE_MAX / 2) {
+				capacity = required;
+				break;
+			}
+			capacity *= 2;
+		}
+		char* data = realloc(buffer->data, capacity);
+		if (!data) {
+			buffer->failed = 1;
+			va_end(args);
+			return;
+		}
+		buffer->data = data;
+		buffer->capacity = capacity;
+	}
+
+	vsnprintf(buffer->data + buffer->size, buffer->capacity - buffer->size, format, args);
+	buffer->size += (size_t)added;
+	va_end(args);
+}
+
 static void Config_write(int override) {
 	char path[MAX_PATH];
-	// sprintf(path, "%s/%s.cfg", core.config_dir, game.name);
-	Config_getPath(path, CONFIG_WRITE_GAME);
-	
-	if (!override) {
-		if (config.loaded==CONFIG_GAME) unlink(path);
-		Config_getPath(path, CONFIG_WRITE_ALL);
-	}
-	config.loaded = override ? CONFIG_GAME : CONFIG_CONSOLE;
-	
-	FILE *file = fopen(path, "wb");
-	if (!file) return;
+	char game_path[MAX_PATH];
+	Config_getPath(game_path, CONFIG_WRITE_GAME);
+	if (override) strcpy(path, game_path);
+	else Config_getPath(path, CONFIG_WRITE_ALL);
+
+	ConfigBuffer contents = {};
 	
 	for (int i=0; config.frontend.options[i].key; i++) {
 		Option* option = &config.frontend.options[i];
-		fprintf(file, "%s = %s\n", option->key, option->values[option->value]);
+		ConfigBuffer_append(&contents, "%s = %s\n", option->key, option->values[option->value]);
 	}
 	for (int i=0; config.core.options[i].key; i++) {
 		Option* option = &config.core.options[i];
-		fprintf(file, "%s = %s\n", option->key, option->values[option->value]);
+		ConfigBuffer_append(&contents, "%s = %s\n", option->key, option->values[option->value]);
 	}
 	
-	if (has_custom_controllers) fprintf(file, "%s = %i\n", "minarch_gamepad_type", gamepad_type);
+	if (has_custom_controllers) ConfigBuffer_append(&contents, "%s = %i\n", "minarch_gamepad_type", gamepad_type);
 	
 	for (int i=0; config.controls[i].name; i++) {
 		ButtonMapping* mapping = &config.controls[i];
 		int j = mapping->local + 1;
 		if (mapping->mod) j += LOCAL_BUTTON_COUNT;
-		fprintf(file, "bind %s = %s\n", mapping->name, button_labels[j]);
+		ConfigBuffer_append(&contents, "bind %s = %s\n", mapping->name, button_labels[j]);
 	}
 	for (int i=0; config.shortcuts[i].name; i++) {
 		ButtonMapping* mapping = &config.shortcuts[i];
 		int j = mapping->local + 1;
 		if (mapping->mod) j += LOCAL_BUTTON_COUNT;
-		fprintf(file, "bind %s = %s\n", mapping->name, button_labels[j]);
+		ConfigBuffer_append(&contents, "bind %s = %s\n", mapping->name, button_labels[j]);
 	}
 
-	fflush(file);
-	fsync(fileno(file));
-	fclose(file);
+	if (!contents.failed && save_write_atomic(path, contents.data, contents.size)) contents.failed = 1;
+	free(contents.data);
+	if (contents.failed) {
+		LOG_error("Error writing config: %s (%s)\n", path, strerror(errno));
+		return;
+	}
+
+	// Keep the active game override until its replacement console config is durable.
+	if (!override && config.loaded==CONFIG_GAME && save_remove_file(game_path)) {
+		LOG_error("Error removing game config: %s (%s)\n", game_path, strerror(errno));
+		return;
+	}
+	config.loaded = override ? CONFIG_GAME : CONFIG_CONSOLE;
 }
 static void Config_restore(void) {
 	char path[MAX_PATH];
