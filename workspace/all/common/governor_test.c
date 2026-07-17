@@ -204,6 +204,36 @@ static void test_converges_to_lowest_stable(void) {
 }
 
 // ---- scenario 5: gov_tick I/O path smoke test (temp sensor absent -> -1) ----
+
+// ---- capped fractional FF must settle BELOW f_max once its target holds (Codex v1.4-ff #1) ----
+// Models minarch's new mapping: enabling a reachable 1.25x target first reads as a gross deficit
+// (BIGSLIP -> f_max), then, while the target HOLDS, capped FF emits SLACK (generation-rate-driven)
+// so the ladder probes down; a probe that slips is undone and remembered. The old mapping emitted
+// BUSY forever -> pinned f_max for the whole FF session.
+static void test_capped_ff_settles_below_max(void) {
+	printf("[ff-capped] reachable FF target converges below f_max after the initial jump\n");
+	const GovProfile* p = &GOV_P_PS1; // 1008000..1800000
+	int f_req = 1500000;              // the 75fps (1.25x) workload: holds at 1608, slips below
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 1008000, 45, 120, 10, &a, &b, &c); // normal 60fps play settled low
+	int khz = gov_step(&st, p, 45, GOV_SIGNAL_BIGSLIP);      // user enables 1.25x: initial deficit
+	CHECK(khz == p->f_max, "initial FF deficit must jump to f_max, got %d", khz);
+	// FF held for a long session; signals per the new minarch mapping (slip iff below f_req)
+	int tail_min = p->f_max, tail_max = 0, tail_overruns = 0;
+	for (int i = 0; i < 400; i++) {
+		int slipping = (st.ceil_khz < f_req);
+		khz = gov_step(&st, p, 45, slipping ? GOV_SIGNAL_SLIP : GOV_SIGNAL_SLACK);
+		if (i >= 360) {
+			if (khz < tail_min) tail_min = khz;
+			if (khz > tail_max) tail_max = khz;
+			if (khz < f_req) tail_overruns++;
+		}
+	}
+	CHECK(tail_max < p->f_max, "capped FF must settle BELOW f_max (old behavior pinned 1800), tail_max=%d", tail_max);
+	CHECK(tail_min >= f_req || tail_overruns <= 1, "settled clock must hold the FF target (tail_min=%d overruns=%d)", tail_min, tail_overruns);
+}
+
 static void test_tick_io(void) {
 	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
@@ -310,6 +340,7 @@ int main(void) {
 	test_boundary_no_limit_cycle();
 	test_predictive_sink_gate();
 	test_converges_to_lowest_stable();
+	test_capped_ff_settles_below_max();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	if (g_fail) { printf("%d check(s) failed\n", g_fail); return 1; }

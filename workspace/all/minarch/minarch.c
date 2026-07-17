@@ -1721,11 +1721,15 @@ static void Special_quit(void) {
 ///////////////////////////////
 
 static  int Option_getValueIndex(Option* item, const char* value) {
-	if (!value) return 0;
+	if (!value) return item->value;
 	for (int i=0; i<item->count; i++) {
 		if (!strcmp(item->values[i], value)) return i;
 	}
-	return 0;
+	// Unknown label (hand-edited cfg or a label removed by an update): KEEP the current —
+	// usually default — value instead of silently becoming index 0. For Max FF Speed index 0
+	// is "None" = uncapped FF, and a locked unknown line would freeze that with no menu
+	// escape (Codex v1.4-ff review #2). Applies to every option; strictly safer.
+	return item->value;
 }
 static void Option_setValue(Option* item, const char* value) {
 	// TODO: store previous value?
@@ -5624,9 +5628,19 @@ int main(int argc , char* argv[]) {
 					int frame_overrun;
 					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
 					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
-					else if (fast_forward) frame_overrun = GOV_SIGNAL_BUSY; // FF: climb or hold, never sink —
-					// the per-frame work measurement is unreliable while presentation is skipping,
-					// and the user is explicitly asking for speed. Sinking resumes when FF ends.
+					else if (fast_forward) {
+						// Capped FF that is HOLDING its finite target gets a generation-rate-driven
+						// descent (Codex v1.4-ff #1): with only unreachable targets, "BUSY: never
+						// sink during FF" was harmless — a reachable 1.25x target made it pin
+						// f_max forever. SLACK here reuses the normal convergence machinery
+						// exactly as the review prescribes: the sink ladder's 4-tick dwell gives
+						// controlled one-OPP probes, presink-undo reverts on the first fps_short,
+						// and fail-memory stops re-probing a clock that slipped — all driven by
+						// generation rate alone (the per-frame WORK estimates stay unused during
+						// FF; presentation skipping makes them garbage, which is why BUSY was
+						// originally chosen). Uncapped FF (index 0) keeps BUSY: no finite target.
+						frame_overrun = (max_ff_speed > 0) ? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+					}
 					else if (thread_video) {
 						// the main thread's frame window includes WAITING on the core thread, so
 						// judge headroom by the core thread's own samples. Per-frame budgets
