@@ -11,7 +11,8 @@ there a low-risk improvement consistent with Zero's lean design?
 - Device: TrimUI Brick, stock clocks, release/v1.4 base `8e11ce52`.
 - Baseline: profiler commit `74f203ac`; shipping platform behavior unchanged.
 - Candidate: direct framebuffer clear plus invisible-menu-clear skip (`ba8d79d4` +
-  `d1059218`); shipping extraction is `cd3c2e11`.
+  `d1059218`); shipping extraction is `5d296303`, hardened by `3457ef28` to retain the
+  no-mapping fb0 clear.
 - Five consecutive cycles per cell through the real MinUI selection and in-game Quit paths.
 - Launch interval: `menu.queue_next` to `game.first_frame`.
 - Exit interval: `game.teardown.begin` to `menu.first_present`.
@@ -20,19 +21,25 @@ there a low-risk improvement consistent with Zero's lean design?
 
 ## Result
 
-| Game | Interval | Baseline median | Candidate median | Delta |
+| Game | Interval | Baseline median | Final candidate median | Delta |
 |---|---:|---:|---:|---:|
 | Aladdin | launch | 1,880 ms | 1,160 ms | **-720 ms (-38%)** |
-| Aladdin | exit | 1,810 ms | 1,190 ms | **-620 ms (-34%)** |
+| Aladdin | exit | 1,810 ms | 1,270 ms | **-540 ms (-30%)** |
 | Bloody Roar II | launch | 2,150 ms | 1,460 ms | **-690 ms (-32%)** |
-| Bloody Roar II | exit | 1,780 ms | 1,010 ms | **-770 ms (-43%)** |
+| Bloody Roar II | exit | 1,780 ms | 1,280 ms | **-500 ms (-28%)** |
 
 The launcher-wide `sync` calls measured about 20-30 ms and are not the problem. The dominant
 operation was `system("cat /dev/zero > /dev/fb0")`, which cost 600-630 ms per process exit.
-The Brick menu already owns a writable fb0 mapping, while game and Smart Pro paths already
-present black through GLES. The candidate clears the existing mapping directly, then unmaps
-and closes it; it also skips three black GLES presents only for the direct-fb Brick menu,
-whose panel never scans those buffers.
+The Brick menu already owns a writable fb0 mapping. The final candidate clears that mapping
+directly; a game or Smart Pro path without an existing mapping briefly opens and maps fb0 so
+a layer switch cannot expose stale pre-game contents. That hardened clear cost 60-90 ms in
+the final ten-cycle run (80 ms median for Aladdin, 90 ms for Bloody Roar II), versus 600-630
+ms for the old shell command. Three black GLES presents are skipped only for the direct-fb
+Brick menu, whose panel never scans those buffers.
+
+The final exit medians come from a second five-cycle-per-game pass after the no-mapping
+hardening. Launch is unaffected because the new work exists only in `PLAT_quitVideo`; launch
+medians remain from the original candidate pass.
 
 All 20 candidate launches and graceful exits completed. Raw event streams:
 
@@ -40,11 +47,14 @@ All 20 candidate launches and graceful exits completed. Raw event streams:
 - `receipts/launch-exit-snes-fast-20260717.txt`
 - `receipts/launch-exit-ps-baseline-20260717.txt`
 - `receipts/launch-exit-ps-fast-20260717.txt`
+- `receipts/launch-exit-final-preserved-fb-20260717.txt` (first five exits Aladdin, final
+  five Bloody Roar II)
 
 ## Gates
 
 - **Passed:** tg5040 cross-build of MinUI and MinArch.
 - **Passed:** five repeated launch/exit cycles in each of four A/B cells.
+- **Passed:** five repeated final-candidate exits per game with the no-mapping fb0 clear.
 - **Pending:** human observation for stale-frame/flash behavior during both transitions.
 - **Pending:** one Smart Pro launch/exit smoke test. Its code path retains the existing GLES
   black-buffer presents because `fb_present` is false.
