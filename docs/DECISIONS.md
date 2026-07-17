@@ -907,3 +907,27 @@ profile maximum remain ineligible and keep stock timing. Entering FF saves the l
 zero correction, and restores it once normal-play headroom returns. `ZERO_NO_DRC` and VSYNC_OFF
 remain kill switches. Automated transition/cadence coverage is green; the Mario gameplay eye-test
 after convergence and FF audio ear-test remain release gates.
+
+## D58 — Save publication is atomic through the directory entry (2026-07-17, v1.4)
+The first atomic-save pass serialized to `*.tmp`, called `fflush`/`fsync`, and renamed, but
+ignored every late error. A full buffered `fwrite` followed by ENOSPC/EIO from `fflush`,
+`fsync`, or `fclose` could therefore replace the last good save with incomplete data. State
+loading also used `state_size < fread(..., state_size)`, a condition that can never be true,
+and SRAM/RTC reads mutated live core memory before knowing whether the read completed.
+
+Decision: minarch's SRAM, RTC, state, and config writers share `save_io`: loop through short
+writes/EINTR, sync and close the complete temp file, atomically rename, then sync the parent
+directory. Every pre-rename failure preserves the old target and removes the temp. SRAM/RTC
+loads stage into temporary memory before committing; legacy size mismatches remain accepted
+for core/save compatibility. State files larger than the core's buffer are rejected, while a
+smaller file is still zero-padded for the existing mGBA/Wario Land 4 compatibility path. The
+crash handler remains async-signal-safe and now loops short writes, requires successful file
+sync/close before rename, and syncs its pre-opened save directory after publication.
+
+No path, extension, or on-disk payload changed: original MinUI extras and existing raw
+`.sav`/`.rtc`/`.stN` files remain compatible. The host ASan/UBSan fault harness covers partial
+I/O, EINTR, premature EOF, open/write/fsync/close/rename/unlink failures, old-target
+preservation, temp cleanup, and durable config deletion. The same harness passes on the
+Brick's real vfat `/mnt/SDCARD`, confirming directory `fsync` support. This closes transport
+and publication corruption; recognizing semantically corrupt legacy payloads remains a
+separate user-facing recovery task.

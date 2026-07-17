@@ -44,11 +44,13 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry test-undervolt test-reproducibility
+.PHONY: test-governor test-telemetry test-save-io test-undervolt test-reproducibility
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
+test-save-io:
+	sh ./workspace/all/common/run-save-io-tests.sh
 test-undervolt:
 	sh ./workspace/tg5040/undervolt/run-tests.sh
 test-reproducibility:

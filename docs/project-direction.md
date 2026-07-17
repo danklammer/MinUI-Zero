@@ -70,7 +70,9 @@ against the stages, with the authoritative detail in `docs/STATUS.md` and `docs/
   QoL #6 keeps pacing/scaler synced across mid-run AV-info changes. The audio-path rewrite stays
   instrument-first behind a dev flag (device-gated).
 - **Stage 6 (fault tolerance) — partial.** QoL #4 (bail cleanly on failed `core.load_game`) shipped;
-  broader atomic-save / fault-injection work is still future.
+  atomic SRAM/RTC/state/config publication and its fault-injection harness are complete (D57).
+  Semantic corrupt-data fallback, low-battery emergency handling, and shutdown/unmount validation
+  remain open.
 
 ---
 
