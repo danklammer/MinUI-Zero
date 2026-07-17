@@ -94,7 +94,7 @@ static int screen_sharpness = SHARPNESS_SOFT;
 static int screen_effect = EFFECT_NONE;
 static int prevent_tearing = 1; // lenient
 static int show_debug = 0;
-static int max_ff_speed = 3; // 4x
+static int max_ff_speed = 6; // 4x (index into max_ff_labels/max_ff_mults — fractional speeds occupy 1-3)
 static int fast_forward = 0;
 static int ff_audio = 1; // FF-with-sound: feed sped-up audio during fast-forward (see audio callbacks)
 static int presentation_drop_supported = 0;
@@ -811,6 +811,9 @@ static char* tearing_labels[] = {
 };
 static char* max_ff_labels[] = {
 	"None",
+	"1.25x",
+	"1.5x",
+	"1.75x",
 	"2x",
 	"3x",
 	"4x",
@@ -820,6 +823,12 @@ static char* max_ff_labels[] = {
 	"8x",
 	NULL,
 };
+// FF speed multipliers, index-aligned with max_ff_labels (0 = "None" = uncapped; guarded at
+// every use). Fractional speeds (v1.4, D60): the "watchable" band — speech stays intelligible
+// with FF audio at 1.25-1.75x, and heavy PS1 games that can't reach 2x CAN reach these, making
+// PS1 fast-forward real for the first time. Config compat is free: cfgs persist the label
+// string (e.g. "4x") and resolve by string match, so inserting entries can't remap old saves.
+static const double max_ff_mults[] = { 0, 1.25, 1.5, 1.75, 2, 3, 4, 5, 6, 7, 8 };
 
 ///////////////////////////////
 
@@ -1091,9 +1100,9 @@ static struct Config {
 				.key	= "minarch_max_ff_speed",
 				.name	= "Max FF Speed",
 				.desc	= "Fast forward will not exceed the\nselected speed (but may be less\ndepending on game and emulator).",
-				.default_value = 3, // 4x
-				.value = 3, // 4x
-				.count = 8,
+				.default_value = 6, // 4x (index shifted by the three fractional speeds; cfgs
+				.value = 6,         // resolve by label string, so saved "4x" stays 4x)
+				.count = 11,
 				.values = max_ff_labels,
 				.labels = max_ff_labels,
 			},
@@ -5241,7 +5250,12 @@ static void limitFF(void) {
 	static int last_max_speed = -1;
 	if (last_max_speed!=max_ff_speed) {
 		last_max_speed = max_ff_speed;
-		ff_frame_time = 1000000 / (core.fps * (max_ff_speed + 1));
+		// Fractional speeds (D60): budget from the multiplier table, not index+1. Index 0
+		// ("None" = uncapped) never paces — guard the divide (the use below is also gated
+		// on max_ff_speed, but a stale inf/0 budget must never be computed).
+		ff_frame_time = max_ff_speed > 0
+			? (uint64_t)(1000000.0 / (core.fps * max_ff_mults[max_ff_speed]))
+			: 0;
 	}
 	
 	uint64_t now = getMicroseconds();
@@ -5603,7 +5617,7 @@ int main(int argc , char* argv[]) {
 					// Max FF Speed index 0 = "None" (uncapped): there is no finite target, so
 					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
-					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? (max_ff_speed + 1) : 1000) : 1);
+					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
 					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
 					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
