@@ -57,13 +57,15 @@ philosophy. Zero's measured performance numbers are in the table above.
 | Rendering | Software; GPU powered down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
 | CPU | Frame-aware closed loop; stock clocks only, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
 | Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
+| Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor — plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes, on by default | Yes |
 | Devices | Brick, Smart Pro | Brick, Smart Pro, Smart Pro S |
 
 Measured at MinUI Zero v1.4 and NextUI v6.13.2. Source lines count each firmware's own
 `.c`/`.h` (launcher, frontend, platform) and exclude the third-party emulator cores both ship;
 download sizes are each project's latest base release zip. The NextUI feature list is from its
-README, and the 2.0 GHz figure from its `boot.sh`. Some code flows both ways between these
+README, its background services and the 2.0 GHz figure from its boot and launch scripts
+(both firmwares also run the vendor's stock input daemon). Some code flows both ways between these
 projects — deep sleep shares a lineage, and NextUI is credited in this codebase.
 
 ## What is different?
