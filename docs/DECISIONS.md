@@ -976,8 +976,9 @@ caps provisioned higher (the capped-target descent, below). Heavy-scene reality 
 1.5x, fights deliver ~1.1x best-effort under any cap. GOVERNOR: capped-FF targets get a generation-
 rate-driven descent (SLACK when holding) — CONTAINED to the fractional band for v1.4.0 because the
 governor tick runs per generated frame while the rate sampler is 1Hz wall: at <2x the sink dwell
-(1.14-1.6s) stays >= the sample period (validated regime); at 2x-8x it compresses to 0.25-0.5s
-(multiple probes per stale sample + fail-holds expiring in 7-15s wall = wobble), so integer caps
+(1.14-1.6s) stays >= the sample period (validated regime); at 2x-8x the dwell compresses to
+0.25-1.0s and fail-holds to 7.5-30s at 60fps, with the stale-sample risk strongest at the higher
+caps (multiple probes per stale sample = wobble), so integer caps
 keep the previously-shipped BUSY hold. Wall-clock-invariant FF governor timing is the v1.4.1 item
 that lifts the containment. This was a v1.3.1
 limitation, not a regression — audible FF merely exposed it. Implementation: a multiplier table
