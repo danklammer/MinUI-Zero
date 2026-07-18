@@ -55,7 +55,7 @@ philosophy. Zero's measured performance numbers are in the table above.
 | Philosophy | Lowest power that holds full speed | Full-featured daily driver |
 | Firmware source code | ~18,600 lines | ~47,200 lines |
 | Base install download | 7 MB | 85 MB |
-| Rendering | Software; GPU powered down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
+| Rendering | Lean pipeline — GPU only displays the finished frame in-game, and powers down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
 | CPU | Frame-aware closed loop; stock clocks only, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
 | Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor — plus WiFi and Bluetooth stacks when enabled |
