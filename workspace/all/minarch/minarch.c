@@ -5647,7 +5647,17 @@ int main(int argc , char* argv[]) {
 						// generation rate alone (the per-frame WORK estimates stay unused during
 						// FF; presentation skipping makes them garbage, which is why BUSY was
 						// originally chosen). Uncapped FF (index 0) keeps BUSY: no finite target.
-						frame_overrun = (max_ff_speed > 0) ? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+						// Containment (Codex re-review): the descent is enabled ONLY for the
+						// fractional band (<2x). The governor tick runs per 30 GENERATED frames,
+						// so FF compresses its wall cadence; cpu_double refreshes at 1Hz wall.
+						// At 1.25-1.75x the sink dwell is 1.14-1.6s wall >= the sample period
+						// (fresh data per probe — the regime the device traces validated). At
+						// 2x-8x dwell shrinks to 0.5-0.25s: multiple sinks on one stale sample
+						// and fail-holds expiring in 7-15s wall = probe/pitch wobble. Integer
+						// caps keep the previously-shipped BUSY hold until FF governor timing
+						// is wall-clock invariant (v1.4.1 candidate, D60).
+						frame_overrun = (max_ff_speed > 0 && max_ff_mults[max_ff_speed] < 2.0)
+							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
 					}
 					else if (thread_video) {
 						// the main thread's frame window includes WAITING on the core thread, so

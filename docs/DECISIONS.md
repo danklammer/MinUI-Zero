@@ -966,12 +966,20 @@ zip (embedded pre-commit hash) discarded — release artifacts must embed the ta
 FF speeds were integer-multiplier by construction (`index+1` in the pacer budget) — a harmless
 simplification in the silent-FF era, when 1.25x video was indistinguishable from 1x. FF-with-sound
 (D56) + measured-rate smoothing (D59) change the calculus twice over: (1) speech stays intelligible
-at 1.25-1.75x, making them the "watchable" band for RPG/text play; (2) heavy PS1 games cannot reach
-the old 2x minimum (user-reported as "FF does nothing"). How far into the fractional band a given
-PS1 title reaches is title- and scene-dependent and is measured at the device gate: the fractional
-band lowers the FLOOR of usefulness, so any title with headroom above 1x delivers a real, audible
-speedup instead of nothing — while the very heaviest scenes may still cap below 1.25x and simply
-deliver their best (the pacer is a ceiling, not a promise). This was a v1.3.1
+at 1.25-1.75x, making them the "watchable" band for RPG/text play. Honest scope (Codex re-review):
+Max FF Speed is a CEILING — a scene hardware-limited to ~1.1x ran at ~1.1x under the old 2x cap too,
+and a fractional cap does not add speed there. What the fractional band demonstrably adds (device
+traces 2026-07-17): (a) watchable caps — titles that would exceed 1.25-1.75x are held at a followable
+speed instead of racing to 2-4x; (b) gentler audio pitch at those caps; (c) LOWER CLOCKS for titles
+capable of exceeding the cap — Advance Wars at a 1.5x cap settles at 600-768MHz where the old 2x+
+caps provisioned higher (the capped-target descent, below). Heavy-scene reality (BR2): intro reaches
+1.5x, fights deliver ~1.1x best-effort under any cap. GOVERNOR: capped-FF targets get a generation-
+rate-driven descent (SLACK when holding) — CONTAINED to the fractional band for v1.4.0 because the
+governor tick runs per generated frame while the rate sampler is 1Hz wall: at <2x the sink dwell
+(1.14-1.6s) stays >= the sample period (validated regime); at 2x-8x it compresses to 0.25-0.5s
+(multiple probes per stale sample + fail-holds expiring in 7-15s wall = wobble), so integer caps
+keep the previously-shipped BUSY hold. Wall-clock-invariant FF governor timing is the v1.4.1 item
+that lifts the containment. This was a v1.3.1
 limitation, not a regression — audible FF merely exposed it. Implementation: a multiplier table
 (`max_ff_mults`, index-aligned with the labels) replaces `index+1` at the two math sites (limitFF
 budget, governor FF target); "None"=0 stays uncapped and divide-guarded. Config compatibility is
