@@ -1984,6 +1984,14 @@ static int setFastForward(int enable) {
 		toggle_thread = 1;
 	}
 	fast_forward = enable;
+	// FF entry/exit is a WORKLOAD change — burst the governor like a scene change (device
+	// finding, 2026-07-17): during a long capped-FF session the convergence probes repeatedly
+	// fail the step below the FF floor and ESCALATE fail-memory (60s->2m->4m). That memory is
+	// only valid for the FF workload; without this burst it kept 1x play pinned at the FF
+	// clock for minutes after FF ended (Dr. Mario stuck at 1008 for 85s+, fresh session
+	// descended normally). Burst clears fail/futile state and re-finds the floor honestly
+	// in either direction.
+	if (changed && gov_active) gov_burst(&gov_state, &gov_profile);
 	// PS1's presentation-drop catch-up protects normal-play audio, but deliberately
 	// outrunning presentation during FF must not be mistaken for a delivery underrun.
 	if (changed && presentation_drop_supported) GFX_setPresentationDrop(!enable);
