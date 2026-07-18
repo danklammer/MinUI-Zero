@@ -40,7 +40,7 @@ typedef struct {
 // Named brackets from docs/thermal-governor-design.md (ASSUMED — verify the OPP ladder and
 // the verified-stock max on device; nothing breaks if wrong: scaling_max_freq snaps to the
 // nearest OPP and the loop self-corrects).
-extern const GovProfile GOV_P_8BIT;  // NES/GB/GBC/SMS/GG/PCE/NGP/PKM
+extern const GovProfile GOV_P_8BIT;  // NES/GB/GBC/SMS/GG/PCE: schedutil under a 1008 MHz stock ceiling
 extern const GovProfile GOV_P_16BIT; // SNES/Genesis/GBA/VB
 extern const GovProfile GOV_P_PS1;   // PlayStation
 // Safe default for an unconfigured system: ceiling starts at the stock max, sinks from there.

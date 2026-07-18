@@ -24,8 +24,9 @@ mixer so the kernel accepts `mem` and audio comes back clean.
 
 ### Closed-loop governor (hybrid ceiling + schedutil)
 The frame-aware controller sets a `scaling_max_freq` **ceiling**; the kernel **`schedutil`**
-governor picks the instantaneous frequency beneath it. Measured OPP values applied. Validated
-across the range — GBC sinks to the **408 MHz** floor, PS1 rides **~1416–1800 MHz** — and runs
+governor picks the instantaneous frequency beneath it. Measured OPP values applied. The hardware
+still idles at **408 MHz**; low-end systems retain a **1008 MHz** ceiling so short GLES present
+bursts are not clipped, while PS1 rides **~1416–1800 MHz**. The system runs
 **~4–5°C cooler than stock**. Key on-device lesson (**D14, race-to-idle**): capping the ceiling
 *too low* runs the CPU **warmer**, because it forces ~100% util instead of letting schedutil
 finish-the-frame-and-idle (WFI). The ceiling caps runaway spikes; it must not drive schedutil

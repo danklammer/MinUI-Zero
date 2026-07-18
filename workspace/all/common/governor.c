@@ -34,7 +34,7 @@ void PLAT_setCPUVoltForCeil(int khz);
 #define GOV_STOCK_MAX_KHZ 1800000
 
 // ---- Per-system ceiling brackets (f_min/f_max are real OPPs; f_max <= stock cap, no OC) ----
-const GovProfile GOV_P_8BIT   = {  408000, 1008000 }; // MEASURED: 408 is the real OPP floor
+const GovProfile GOV_P_8BIT   = { 1008000, 1008000 }; // schedutil still idles below this; the ceiling preserves short GLES bursts
 const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
 const GovProfile GOV_P_PS1    = { 1008000, 1800000 };
 const GovProfile GOV_P_DEFAULT = { 600000, 1800000 };

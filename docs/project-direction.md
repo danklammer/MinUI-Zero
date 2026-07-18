@@ -54,8 +54,10 @@ against the stages, with the authoritative detail in `docs/STATUS.md` and `docs/
   measured (**~6h on Game Boy**). CPU OPP **floor confirmed = 408 MHz** (no lower step).
 - **Stage 1 (CPU + power lifecycle) — shipped + validated.** Closed-loop hybrid governor:
   frame-aware `scaling_max_freq` ceiling + kernel `schedutil` beneath it, per-system caps, **no
-  overclock**, 408 floor. **~4–5°C cooler than stock**; validated GBC (sinks to 408) → PS1
-  (~1416–1800). Race-to-idle lesson learned on-device (**D14**). Some abnormal-exit restore paths
+  overclock**, 408 hardware idle floor. Low-end systems retain a 1008 stock ceiling so schedutil can
+  service short GLES present bursts while still idling below it; PS1 rides ~1416–1800. **~4–5°C
+  cooler than stock**. Race-to-idle
+  lesson learned on-device (**D14/D61**). Some abnormal-exit restore paths
   still partial (see D12 deferred list).
 - **Stage 2 (core build audit) — done.** 6 stock cores corrected from silent `-O2` to `-O3`/`-Ofast`
   and pinned to reproducible HEADs; SNES payoff A/B deferred (no ROM on the test unit).

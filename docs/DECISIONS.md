@@ -979,7 +979,7 @@ governor tick runs per generated frame while the rate sampler is 1Hz wall: at <2
 (1.14-1.6s) stays >= the sample period (validated regime); at 2x-8x the dwell compresses to
 0.25-1.0s and fail-holds to 7.5-30s at 60fps, with the stale-sample risk strongest at the higher
 caps (multiple probes per stale sample = wobble), so integer caps
-keep the previously-shipped BUSY hold. Wall-clock-invariant FF governor timing is the v1.4.1 item
+keep the previously-shipped BUSY hold. Wall-clock-invariant FF governor timing is a follow-up item
 that lifts the containment. This was a v1.3.1
 limitation, not a regression — audible FF merely exposed it. Implementation: a multiplier table
 (`max_ff_mults`, index-aligned with the labels) replaces `index+1` at the two math sites (limitFF
@@ -987,3 +987,44 @@ budget, governor FF target); "None"=0 stays uncapped and divide-guarded. Config 
 free by construction: cfgs persist the LABEL STRING and resolve by string match, so inserting
 entries cannot remap a saved speed; the in-code default index moves 3->6 to keep the 4x default.
 Device gate: pacing feel + FF-audio ear check at each fractional speed, PS1 (heavy title) included.
+
+## D61 — Low-end burst headroom and transition-window hygiene (2026-07-18, v1.4.1)
+v1.4 used 408 MHz as both the hardware idle floor and the minimum low-end gameplay ceiling. Those
+are not equivalent under the hybrid controller: a low `scaling_max_freq` prevents schedutil from
+servicing short GLES upload/submit bursts that the frontend's pure-work sensor does not see. The
+full Pokémon Gold matrix reproduced 55-58 fps episodes at both 600 and 816 MHz ceilings, with DRC
+enabled and disabled; 1008 recovered immediately. This matches the earlier pipeline finding that a
+low ceiling starves bursty work despite modest average CPU time. GB/GBC/FC/SMS/GG/PCE therefore keep
+the verified-stock 1008 MHz ceiling. This does not pin a frequency: schedutil remains authoritative
+beneath the cap and the 816-ceiling trace sampled 408/600 MHz in 101 of 104 one-second windows. It
+does stop the frontend from deliberately probing a ceiling now proven to miss realtime.
+
+The same matrix invalidated D57's broad Lenient-vsync DRC revival. Against the enlarged 200 ms audio
+ring, the audio-block signal has enough lag to wind the integrator beyond +6000 ppm; Pokémon then
+fell to 55 fps and forced a governor recovery. That path was not human-validated after its Lenient
+gate was revived. DRC is default-off again for v1.4.1 and remains available only through the
+`ZERO_ENABLE_DRC=1` diagnostic environment variable pending an anti-windup controller and a full
+cross-system gauntlet. Presentation-drop scoping from D57 is independent and remains enabled only
+for PS1.
+
+The first FC regression trace also exposed a separate upgrade trap: this device's persisted
+`FC-fceumm` config still selected upstream's `High` sound-quality path, overriding the `Low` pak
+default fixed in D25. That path previously measured roughly 400 MHz more expensive and seven times
+the audio underruns. v1.4.1 performs a verified one-time `High` to `Low` migration across saved FC
+configs; the completion marker is published only after every matching file was rewritten, so a
+failed card write retries on the next boot.
+
+The in-game menu is not the GPU-dark launcher. It composites a paused game frame, TTF text, and
+state previews through GLES, so the 600 MHz menu ceiling made redraws visibly lag. It now uses the
+existing 1200 MHz powersave ceiling; schedutil remains free to idle beneath it. State previews are
+decoded only when the selected slot changes, and invalid images fail to the existing No Preview
+state instead of reaching `SDL_ConvertSurface(NULL)`. On Brick, ordinary redraw latency improved
+from ~129 ms to ~66 ms and a repeated Save/Load preview from ~135 ms to ~35 ms.
+
+Finally, menu and sleep are explicit measurement boundaries. A sleep interval previously remained
+inside the one-second generation-rate window: the Contra trace reported a synthetic 21/60 fps
+sample after wake, promoted a healthy 600 MHz session to 1008 MHz, and armed failure memory against
+the floor. Both boundaries now reset frame-rate, governor work-batch, process-use, and DRC baselines;
+wake/menu exit also restore the controller's exact saved ceiling rather than the static CPU option.
+Failure memory itself is retained, so opening a menu cannot force a known-bad clock to be re-probed.
+These are serial-path defects present in v1.4.0; they are independent of threading v2.

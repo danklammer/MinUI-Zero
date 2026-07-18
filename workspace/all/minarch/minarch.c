@@ -1194,6 +1194,10 @@ static void Gov_start(void) {
 	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
+static void Gov_restore(void) {
+	if (gov_active) PWR_setCPUMaxFreq(gov_state.ceil_khz);
+	else setOverclock(overclock);
+}
 static int* g_drc_ppm_ptr = NULL;
 static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
 static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
@@ -2957,10 +2961,30 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 static int cpu_ticks = 0;
 static int fps_ticks = 0;
 static int use_ticks = 0;
+static int last_use_ticks = 0;
 static double fps_double = 0;
 static double cpu_double = 0;
 static double use_double = 0;
 static uint32_t sec_start = 0;
+static unsigned run_window_epoch = 0;
+static int gov_frames = 0;
+static long gov_prev_wait_ms = 0;
+static uint32_t gov_work[GOV_TICK_FRAMES];
+static unsigned getUsage(void);
+
+static void RunLoop_resetWindow(void) {
+	sec_start = SDL_GetTicks();
+	cpu_ticks = 0;
+	fps_ticks = 0;
+	fps_double = 0;
+	cpu_double = 0;
+	use_double = 0;
+	use_ticks = last_use_ticks = (int)getUsage();
+	SND_Stats as; SND_getStats(&as);
+	gov_frames = 0;
+	gov_prev_wait_ms = as.wait_ms;
+	run_window_epoch++;
+}
 
 #ifdef USES_SWSCALER
 	static int fit = 1;
@@ -3668,7 +3692,10 @@ void Menu_afterSleep(void) {
 	// LOG_info("beforeSleep\n");
 	if (save_remove_file(AUTO_RESUME_PATH))
 		LOG_error("Error clearing auto-resume marker (%s)\n", strerror(errno));
-	setOverclock(overclock);
+	// PWR_sleep blocked inside core.run. Discard the partial timing window so the
+	// sleep interval cannot be classified as a gameplay slowdown on resume.
+	RunLoop_resetWindow();
+	Gov_restore();
 }
 
 typedef struct MenuList MenuList;
@@ -4863,7 +4890,9 @@ static void Menu_loop(void) {
 	RTC_write();
 	PWR_warn(0);
 	if (!HAS_POWER_BUTTON) PWR_enableSleep();
-	PWR_setCPUSpeed(CPU_SPEED_MENU); // set Hz directly
+	// This path composites the paused game, TTF text, and save previews through GLES.
+	// The powersave ceiling keeps redraws responsive while schedutil still idles low.
+	PWR_setCPUSpeed(CPU_SPEED_POWERSAVE);
 	GFX_setVsync(VSYNC_STRICT);
 	GFX_setEffect(EFFECT_NONE);
 	
@@ -4902,7 +4931,9 @@ static void Menu_loop(void) {
 	int ignore_menu = 0;
 	int menu_start = 0;
 	
-	SDL_Surface* preview = SDL_CreateRGBSurface(SDL_SWSURFACE,DEVICE_WIDTH/2,DEVICE_HEIGHT/2,FIXED_DEPTH,RGBA_MASK_565); // TODO: retain until changed?
+	SDL_Surface* preview = SDL_CreateRGBSurface(SDL_SWSURFACE,DEVICE_WIDTH/2,DEVICE_HEIGHT/2,FIXED_DEPTH,RGBA_MASK_565);
+	int preview_slot = -1;
+	int preview_valid = 0;
 	
 	while (show_menu) {
 		GFX_startFrame();
@@ -5126,20 +5157,30 @@ static void Menu_loop(void) {
 				ox += SCALE1(WINDOW_RADIUS);
 				oy += SCALE1(WINDOW_RADIUS);
 				
-				if (menu.preview_exists) { // has save, has preview
-					// lotta memory churn here
-					SDL_Surface* bmp = IMG_Load(menu.bmp_path);
-					SDL_Surface* raw_preview = SDL_ConvertSurface(bmp, screen->format, SDL_SWSURFACE);
-					
-					// LOG_info("raw_preview %ix%i\n", raw_preview->w,raw_preview->h);
-					
-					SDL_FillRect(preview, NULL, 0);
-					Menu_scale(raw_preview, preview);
-					SDL_BlitSurface(preview, NULL, screen, &(SDL_Rect){ox,oy});
-					SDL_FreeSurface(raw_preview);
-					SDL_FreeSurface(bmp);
+				int preview_ready = 0;
+				if (preview && menu.preview_exists) { // has save, has preview
+					if (preview_slot != menu.slot) {
+						preview_slot = menu.slot;
+						preview_valid = 0;
+						SDL_Surface* bmp = IMG_Load(menu.bmp_path);
+						SDL_Surface* raw_preview = bmp
+							? SDL_ConvertSurface(bmp, screen->format, SDL_SWSURFACE)
+							: NULL;
+						if (raw_preview) {
+							SDL_FillRect(preview, NULL, 0);
+							Menu_scale(raw_preview, preview);
+							preview_valid = 1;
+						}
+						else LOG_error("Unable to load state preview: %s (%s)\n", menu.bmp_path, SDL_GetError());
+						if (raw_preview) SDL_FreeSurface(raw_preview);
+						if (bmp) SDL_FreeSurface(bmp);
+					}
+					if (preview_valid) {
+						SDL_BlitSurface(preview, NULL, screen, &(SDL_Rect){ox,oy});
+						preview_ready = 1;
+					}
 				}
-				else {
+				if (!preview_ready) {
 					SDL_Rect preview_rect = {ox,oy,hw,hh};
 					SDL_FillRect(screen, &preview_rect, 0);
 					if (menu.save_exists) GFX_blitMessage(font.large, "No Preview", screen, &preview_rect);
@@ -5177,7 +5218,7 @@ static void Menu_loop(void) {
 		GFX_clear(screen);
 		video_refresh_callback(renderer.src, renderer.true_w, renderer.true_h, renderer.src_p);
 		
-		setOverclock(overclock); // restore overclock value
+		Gov_restore();
 		if (rumble_strength) VIB_setStrength(rumble_strength);
 		
 		GFX_setVsync(prevent_tearing);
@@ -5231,7 +5272,6 @@ finish:
 
 static void trackFPS(void) {
 	cpu_ticks += 1;
-	static int last_use_ticks = 0;
 	uint32_t now = SDL_GetTicks();
 	if (now - sec_start>=1000) {
 		double last_time = (double)(now - sec_start) / 1000;
@@ -5374,7 +5414,10 @@ int main(int argc , char* argv[]) {
 	
 	Core_open(core_path, tag_name);
 	presentation_drop_supported = exactMatch((char*)core.tag, "PS");
-	drc_system_allowed = !presentation_drop_supported;
+	// The Lenient-vsync DRC revival can wind up against the 200ms audio ring and
+	// drive a healthy low-end core below realtime. Keep it diagnostic-only until
+	// its controller has an anti-windup contract and a cross-system device gauntlet.
+	drc_system_allowed = !presentation_drop_supported && getenv("ZERO_ENABLE_DRC") != NULL;
 	GFX_setPresentationDrop(presentation_drop_supported);
 	Game_open(rom_path); // nes tries to load gamegenie setting before this returns ffs
 	if (!game.is_open) goto finish;
@@ -5536,10 +5579,7 @@ int main(int argc , char* argv[]) {
 			// (threaded mode resets before the resume signal instead — the core owns
 			// these counters there and is already running again by this point)
 			if (!thread_video) {
-				sec_start = SDL_GetTicks();
-				cpu_ticks = 0;
-				fps_ticks = 0;
-				cpu_double = 0;
+				RunLoop_resetWindow();
 			}
 		}
 
@@ -5603,9 +5643,6 @@ int main(int argc , char* argv[]) {
 			// (gov_sink_fits: p95 pure work scaled to the next clock must fit 85% of budget) replaces
 			// both — quantitative race-to-idle instead of a binary guess.
 			if (gov_active) {
-				static int gov_frames = 0;
-				static long gov_prev_wait_ms = 0;
-				static uint32_t gov_work[GOV_TICK_FRAMES];
 				// per-frame PURE work: frame work minus the audio-pacing block inside core.run
 				// (blocked frames are pacing, not load — counting them as work over-holds the sink)
 				{
@@ -5632,7 +5669,9 @@ int main(int argc , char* argv[]) {
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
 					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
 					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
-					if (thread_video && cpu_double <= 0.5) { gov_frames = 0; continue; } // core paused/sleeping, not slipping
+					// A menu/sleep reset deliberately clears cpu_double. Do not make a
+					// sink decision until trackFPS publishes a fresh wall-clock sample.
+					if (cpu_double <= 0.5) { gov_frames = 0; continue; }
 					int frame_overrun;
 					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
 					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
@@ -5776,7 +5815,7 @@ int main(int argc , char* argv[]) {
 			}
 		}
 
-		// Dynamic rate control (sync-stutter fix): the panel's true refresh runs faster than
+		// Experimental dynamic rate control: the panel's true refresh runs faster than
 		// the cores' 60.0 (Brick 60.8Hz, SP ~61Hz measured), and with three clocks in play
 		// (audio-blocking pace, drift-free pacer, vsync) the slowest wins — so stock shows a
 		// duplicated frame every ~1.3s. Feedback controller, no rate measurement needed: if
@@ -5786,15 +5825,23 @@ int main(int argc , char* argv[]) {
 		// ~1.3% fast, pitch +23 cents — the industry-standard imperceptible trade (RetroArch
 		// does the same). Heavy games that can't hold rate self-disable (no audio blocking ->
 		// ratchets to 0 = stock). ~60fps non-PS cores whenever vsync is active; PS1 stays
-		// excluded because rate adjustment audibly chopped BR2/THPS. ZERO_NO_DRC disables.
+		// excluded because rate adjustment audibly chopped BR2/THPS. Disabled by default;
+		// ZERO_ENABLE_DRC opts into the diagnostic path and ZERO_NO_DRC remains a kill switch.
 		if (!show_menu) {
 			static int drc_ppm = 0;
 			drc_ppm_expose(&drc_ppm);
 			static int drc_frames = 0;
 			static long drc_prev_wait = 0;
+			static unsigned drc_window_epoch = 0;
 			static int drc_disabled = -1;
 			static int drc_was_fast_forward = 0;
 			static int drc_restore_ppm = -1;
+			if (drc_window_epoch != run_window_epoch) {
+				SND_Stats das; SND_getStats(&das);
+				drc_window_epoch = run_window_epoch;
+				drc_frames = 0;
+				drc_prev_wait = das.wait_ms;
+			}
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_supported = (!drc_disabled && drc_system_allowed
 				&& core.fps >= 58.0 && core.fps <= 61.0

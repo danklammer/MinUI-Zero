@@ -54,10 +54,22 @@ static void run_workload(GovState* st, const GovProfile* p, int f_req, int temp_
 	*tail_min = tmin; *tail_max = tmax; *tail_overruns = oruns;
 }
 
+static void test_profile_brackets(void) {
+	printf("[profiles] low-end ceiling preserves schedutil burst headroom\n");
+	CHECK(GOV_P_8BIT.f_min == 1008000,
+	      "8-bit f_min should preserve the proven 1008 MHz burst ceiling, got %d", GOV_P_8BIT.f_min);
+	CHECK(GOV_P_8BIT.f_max == 1008000,
+	      "8-bit f_max changed unexpectedly: %d", GOV_P_8BIT.f_max);
+}
+
+// Controller-mechanics tests need room to move even though the shipping low-end
+// profile deliberately leaves schedutil under one fixed stock ceiling.
+static const GovProfile TEST_WIDE_8BIT = { 408000, 1008000 };
+
 // ---- scenario 1: cold / idle — should sink to f_min and stay ----
 static void test_cold_idle(void) {
 	printf("[cold/idle] sinks to f_min and stays there\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	int tmin, tmax, oruns;
 	// f_req at f_min: the clock always holds frame rate, so the controller is free to sink.
@@ -249,7 +261,7 @@ static void test_tick_io(void) {
 
 static void test_boot_slip_at_max_still_sinks(void) {
 	printf("[boot-slip] slips at f_max must not arm fail memory (GBC 1008-pin, 2026-07-09)\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	// boot churn: several slip ticks while fully provisioned (load spikes at f_max)
 	for (int i = 0; i < 6; i++) gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
@@ -263,7 +275,7 @@ static void test_boot_slip_at_max_still_sinks(void) {
 
 static void test_sink_despite_busy_noise(void) {
 	printf("[busy-noise] sporadic BUSY windows (fsync stalls) must not block sinking\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	// light game with a stall window every 3rd tick: SLACK,SLACK,BUSY,repeat
 	for (int i = 0; i < 120; i++)
@@ -328,6 +340,7 @@ static void test_scene_burst_resets_floor_memory(void) {
 
 int main(void) {
 	printf("== governor synthetic harness ==\n");
+	test_profile_brackets();
 	test_cold_idle();
 	test_boot_slip_at_max_still_sinks();
 	test_sink_despite_busy_noise();
