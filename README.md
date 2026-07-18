@@ -43,6 +43,29 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 
 Your games, silicon, and settings will vary. Raw data and the reasoning behind every claim live in [`docs/bench/`](docs/bench/) and [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
+## MinUI Zero or NextUI?
+
+[NextUI](https://github.com/LoveRetro/NextUI) is the other major MinUI fork for these devices —
+full-featured and polished where Zero is deliberately minimal. Both are good firmware; pick by
+philosophy. Zero's measured performance numbers are in the table above.
+
+| | **MinUI Zero** | **NextUI** |
+|---|---|---|
+| Philosophy | Lowest power that holds full speed | Full-featured daily driver |
+| Firmware source code | ~18,600 lines | ~47,200 lines |
+| Base install download | 7 MB | 85 MB |
+| Rendering | Software; GPU powered down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
+| CPU | Frame-aware closed loop; stock clocks only, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
+| Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
+| Deep sleep | Yes, on by default | Yes |
+| Devices | Brick, Smart Pro | Brick, Smart Pro, Smart Pro S |
+
+Measured at MinUI Zero v1.4 and NextUI v6.13.2. Source lines count each firmware's own
+`.c`/`.h` (launcher, frontend, platform) and exclude the third-party emulator cores both ship;
+download sizes are each project's latest base release zip. The NextUI feature list is from its
+README, and the 2.0 GHz figure from its `boot.sh`. Some code flows both ways between these
+projects — deep sleep shares a lineage, and NextUI is credited in this codebase.
+
 ## What is different?
 
 | Feature | What it means for you |
