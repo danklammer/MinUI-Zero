@@ -52,7 +52,7 @@ philosophy. Zero's measured performance numbers are in the table above.
 
 | | **MinUI Zero** | **NextUI** |
 |---|---|---|
-| Philosophy | Lowest power that holds full speed | Full-featured daily driver |
+| Philosophy | Lowest power that holds full speed | Full-featured |
 | Firmware source code | ~18,600 lines | ~47,200 lines |
 | Base install download | 7 MB | 85 MB |
 | Rendering | Lean pipeline — GPU only displays the finished frame in-game, and powers down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
