@@ -59,7 +59,7 @@ philosophy. Zero's measured performance numbers are in the table above.
 | CPU | Frame-aware closed loop; stock clocks only, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
 | Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor — plus WiFi and Bluetooth stacks when enabled |
-| Deep sleep | Yes, on by default | Yes |
+| Deep sleep | Yes | Yes |
 | Devices | Brick, Smart Pro | Brick, Smart Pro, Smart Pro S |
 
 Measured at MinUI Zero v1.4 and NextUI v6.13.2. Source lines count each firmware's own
