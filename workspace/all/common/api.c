@@ -223,6 +223,14 @@ void GFX_startFrame(void) {
 uint32_t GFX_getFrameWorkUs(void) {
 	return frame_work_us;
 }
+void GFX_finishFrameWork(void) {
+	// present-skip path: the frame did real work even though it will not flip — close
+	// the sample so per-frame work consumers (governor batch) never read a stale value
+	if (frame_start_us) {
+		frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us);
+		frame_start_us = 0;
+	}
+}
 int GFX_didOverrun(void) {
 	return frame_overran;
 }
@@ -1103,6 +1111,7 @@ static struct SND_Context {
 	int rate_adjust_ppm;    // dynamic rate control: pace the core to the panel's true rate
 	
 	int buffer_seconds;     // current_audio_buffer_size
+	int ring_override_ms;   // MINARCH_SND_RING_MS: ring capacity in DAC-output milliseconds (0 = default sizing)
 	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
@@ -1167,6 +1176,12 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 	size_t old_frame_count = snd.frame_count;
 	size_t new_frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
+	if (snd.ring_override_ms > 0 && snd.sample_rate_out > 0) {
+		// capacity requested in wall-clock ms: the ring holds output-rate frames
+		new_frame_count = (size_t)snd.ring_override_ms * snd.sample_rate_out / 1000;
+		LOG_info("SND ring capacity override: %dms (%zu frames at %dHz out)\n",
+			snd.ring_override_ms, new_frame_count, snd.sample_rate_out);
+	}
 	if (new_frame_count==0) return;
 	
 	// LOG_info("frame_count: %i (%i * %i / %f)\n", snd.frame_count, snd.buffer_seconds, snd.sample_rate_in, snd.frame_rate);
@@ -1401,6 +1416,9 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	return consumed;
 }
 
+int SND_isActive(void) {
+	return snd.initialized;
+}
 void SND_getStats(SND_Stats* out) {
 	if (!out) return;
 	out->underruns = snd.underruns;
@@ -1453,17 +1471,13 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
 	{	// per-system capacity (MINARCH_SND_RING_MS, exported by the pak launch.sh like
 		// MINARCH_FMIN): audio-block pacing runs the ring near-full, so capacity IS the
-		// steady-state latency. The 200ms default absorbs pcsx stalls; 8-bit cores'
-		// worst stall is a ~20ms SRAM fsync — they can ride much lower.
+		// steady-state latency. Applied in SND_resizeBuffer against the DAC OUTPUT rate —
+		// the ring stores output-rate frames, so input-rate math would skew real latency
+		// by the resample ratio (Codex review finding 5).
 		char* ring_ms = getenv("MINARCH_SND_RING_MS");
-		if (ring_ms && frame_rate > 0) {
+		if (ring_ms) {
 			int ms = atoi(ring_ms);
-			if (ms >= 67 && ms <= 500) {
-				int frames = (int)((ms * frame_rate) / 1000.0 + 0.5);
-				if (frames < 4) frames = 4;
-				snd.buffer_seconds = frames;
-				LOG_info("SND ring capacity override: %dms (%d frames)\n", ms, frames);
-			}
+			if (ms >= 67 && ms <= 500) snd.ring_override_ms = ms;
 		}
 	}
 	snd.sample_rate_in  = sample_rate;

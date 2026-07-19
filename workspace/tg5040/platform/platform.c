@@ -540,6 +540,10 @@ static void dbgConvert(SDL_Texture* tex, uint16_t* px) {
 	SDL_UpdateTexture(tex, NULL, dbg_argb, dbg.w * 4);
 }
 static void drawDebugOverlay(void) {
+	// convert+upload only when the strip content changed (text updates ~1Hz; doing this
+	// per frame measured ~1.9ms/frame — the HUD must not distort what it displays)
+	static uint16_t* prev_top = NULL; static uint16_t* prev_bot = NULL;
+	static int prev_n = 0;
 	if (!dbg.top || dbg.w <= 0 || dbg.stride < dbg.w) return;
 	if (dbg.tex_top && (dbg.tex_w != dbg.w || dbg.tex_h != dbg.h)) {
 		SDL_DestroyTexture(dbg.tex_top); SDL_DestroyTexture(dbg.tex_bottom);
@@ -553,12 +557,9 @@ static void drawDebugOverlay(void) {
 		if (dbg.tex_bottom) SDL_SetTextureBlendMode(dbg.tex_bottom, SDL_BLENDMODE_BLEND);
 		dbg_argb = malloc(dbg.w * dbg.h * sizeof(uint32_t));
 		dbg.tex_w = dbg.w; dbg.tex_h = dbg.h;
+		prev_n = 0; // fresh textures hold no pixels — the content cache must not claim otherwise
 	}
 	if (!dbg.tex_top || !dbg.tex_bottom || !dbg_argb) return;
-	// convert+upload only when the strip content changed (text updates ~1Hz; doing this
-	// per frame measured ~1.9ms/frame — the HUD must not distort what it displays)
-	static uint16_t* prev_top = NULL; static uint16_t* prev_bot = NULL;
-	static int prev_n = 0;
 	int strip_n = dbg.stride * dbg.h;
 	if (prev_n != strip_n) {
 		free(prev_top); free(prev_bot);
