@@ -20,7 +20,7 @@ void PLAT_setCPUVoltForCeil(int khz);
 // bad brackets at runtime, (3) the conservative ceiling bounds the downside to "too cautious".
 #define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
 #define GOV_T_CEIL_C   72      // hard back-off above this — always wins
-#define GOV_STEP_KHZ   216000  // one real OPP step (MEASURED gaps 192-216MHz; 108k snapped back up)
+// GOV_STEP_KHZ lives in governor.h (shared with minarch's per-game governor memory)
 #define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
