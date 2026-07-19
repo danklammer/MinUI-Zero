@@ -168,6 +168,7 @@ void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync ab
 uint32_t GFX_getFlipWaitUs(void); // how long the last flip blocked on vsync (panel-lock signal)
 int GFX_didOverrun(void); // 1 if the most recent frame's CPU work exceeded the frame budget (closed-loop governor signal)
 uint32_t GFX_getFrameWorkUs(void); // benchmark: us of CPU work in the last frame (GFX_startFrame->GFX_flip)
+void GFX_finishFrameWork(void); // present-skip: close the work sample for a frame that will not flip
 void GFX_quit(void);
 
 enum {
@@ -221,6 +222,7 @@ void SND_quit(void);
 // audio-health telemetry (benchmark): cumulative counters + current ring fill.
 typedef struct SND_Stats { long underruns; long overruns; long wait_ms; int queue_frames; int frame_count; } SND_Stats;
 void SND_getStats(SND_Stats* out);
+int SND_isActive(void); // audio device open and pacing (present-skip is only legal while true)
 
 ///////////////////////////////
 

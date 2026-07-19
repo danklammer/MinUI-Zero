@@ -94,6 +94,8 @@ static int screen_sharpness = SHARPNESS_SOFT;
 static int screen_effect = EFFECT_NONE;
 static int prevent_tearing = 1; // lenient
 static int show_debug = 0;
+static int dup_force_present = 0; // menu exit / sleep resume repaint identical bytes on purpose
+static unsigned present_dirty_gen = 1; // any frontend option change invalidates "identical is invisible"
 static int max_ff_speed = 6; // 4x (index into max_ff_labels/max_ff_mults — fractional speeds occupy 1-3)
 static int fast_forward = 0;
 static int ff_audio = 1; // FF-with-sound: feed sped-up audio during fast-forward (see audio callbacks)
@@ -1260,6 +1262,7 @@ static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
 static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
+	present_dirty_gen++; // scaling/effect/sharpness/HUD changes must reach the panel even on duplicate frames
 	int i = -1;
 	if (exactMatch(key,config.frontend.options[FE_OPT_SCALING].key)) {
 		screen_scaling 	= value;
@@ -3325,42 +3328,13 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
 }
-static int dup_force_present = 0; // menu exit / sleep resume repaint identical bytes on purpose
-
 static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
 	// return;
 
 	Special_render();
 
-	// Duplicate-frame rate (ZERO_PRESENT_STATS=1): how often the core emits a frame
-	// byte-identical to the last one — the addressable win for present-skip (measure
-	// before building). memcmp+memcpy cost is why this is diagnostic-only.
-	int dup_frame = 0;
-	{
-		static int dup_on = -1;
-		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
-		if (dup_on && data) {
-			static void* prev = NULL; static size_t prev_sz = 0;
-			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
-			size_t sz = (size_t)height * pitch;
-			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; }
-			if (prev && prev_sz == sz) {
-				df_n++;
-				if (memcmp(prev, data, sz) == 0) { df_dup++; dup_frame = 1; }
-				else memcpy(prev, data, sz);
-			}
-			uint32_t df_now = SDL_GetTicks();
-			if (!df_at) df_at = df_now;
-			else if (df_now - df_at >= 1000) {
-				static long df_ur0 = 0;
-				SND_Stats dfs; SND_getStats(&dfs);
-				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
-					df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
-				df_ur0 = dfs.underruns;
-				df_n = df_dup = 0; df_at = df_now;
-			}
-		}
-	}
+	// (duplicate detection lives below the early-returns: only frames that would
+	// actually present may update the comparison snapshot — Codex review finding 1)
 	
 	// static int tmp_frameskip = 0;
 	// if ((tmp_frameskip++)%2) return;
@@ -3385,25 +3359,57 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	
 	if (!data) return;
 
-	// Present-skip prototype (ZERO_DUP_SKIP=1): a byte-identical frame changes nothing
-	// on screen — skip upload/submit/swap entirely and let the CPU idle sooner. Pacing
-	// is owned by the audio block (vsync is the secondary clock in the serial path).
-	// Rails: never during FF (limitFF owns that), never with the HUD on (it must
-	// measure the true pipeline and repaints per second), always honor a forced
-	// present (menu exit / sleep resume repaint the same bytes on purpose), and
-	// present at least every 30th frame so PLAT-side per-flip duties (undervolt
-	// reassert) keep their cadence on long-static screens.
+	// Duplicate detection + present-skip (ZERO_PRESENT_STATS measures; ZERO_DUP_SKIP acts).
+	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let
+	// the CPU idle sooner. Pacing is owned by the audio block, so skipping is only legal
+	// while audio is alive (silent-fallback sessions keep vsync pacing — review finding 2).
+	// The snapshot updates only on frames that reach the present path below (finding 1),
+	// systems with presentation-drop (PS) are excluded outright (finding 1), and skipping
+	// requires clean geometry AND an unchanged frontend-settings generation so aspect/
+	// effect/HUD changes land immediately (finding 3). Work telemetry is finalized on
+	// skipped frames so governor batches never consume stale samples (finding 2).
+	int dup_frame = 0;
+	{
+		static int dup_on = -1;
+		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
+		if (dup_on) {
+			static void* prev = NULL; static size_t prev_sz = 0; static int prev_valid = 0;
+			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
+			size_t sz = (size_t)height * pitch;
+			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; prev_valid = 0; }
+			if (prev && prev_sz == sz) {
+				df_n++;
+				if (prev_valid && memcmp(prev, data, sz) == 0) { df_dup++; dup_frame = 1; }
+				else { memcpy(prev, data, sz); prev_valid = 1; }
+			}
+			uint32_t df_now = SDL_GetTicks();
+			if (!df_at) df_at = df_now;
+			else if (df_now - df_at >= 1000) {
+				static long df_ur0 = 0;
+				SND_Stats dfs; SND_getStats(&dfs);
+				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
+					df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
+				df_ur0 = dfs.underruns;
+				df_n = df_dup = 0; df_at = df_now;
+			}
+		}
+	}
 	{
 		static int skip_on = -1;
 		if (skip_on == -1) skip_on = (getenv("ZERO_DUP_SKIP") != NULL);
 		static int dup_streak = 0;
-		if (skip_on && dup_frame && !show_debug && !fast_forward
-			&& !dup_force_present && dup_streak < 30) {
+		static unsigned clean_gen = 0;
+		int geometry_dirty = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h);
+		if (skip_on && dup_frame && !geometry_dirty && clean_gen == present_dirty_gen
+			&& !show_debug && !fast_forward && !presentation_drop_supported
+			&& SND_isActive() && !dup_force_present && dup_streak < 30) {
 			dup_streak++;
+			GFX_finishFrameWork(); // close this frame's work sample for the governor batch
 			return;
 		}
 		dup_streak = 0;
 		dup_force_present = 0;
+		clean_gen = present_dirty_gen;
 	}
 
 	fps_ticks += 1;
