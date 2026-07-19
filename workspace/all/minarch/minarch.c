@@ -1089,7 +1089,7 @@ static struct Config {
 			[FE_OPT_DEBUG] = {
 				.key	= "minarch_debug_hud",
 				.name	= "Debug HUD",
-				.desc	= "Show frames per second, cpu load,\nresolution, and scaler information.",
+				.desc	= "Overlay: clock/ceiling MHz, temp,\nactual/target fps, cpu load, scaling.",
 				.default_value = 0,
 				.value = 0,
 				.count = 2,
