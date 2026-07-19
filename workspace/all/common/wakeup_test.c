@@ -110,6 +110,25 @@ static void test_vib_rapid_toggle(void) {
 	tvib_quit();
 	CHECK(stub_last() == 0, "motor left on after quit");
 }
+static int tvib_get(void) { // mirrors the fixed VIB_getStrength: read under the mutex
+	pthread_mutex_lock(&tvib.mx);
+	int v = tvib.strength;
+	pthread_mutex_unlock(&tvib.mx);
+	return v;
+}
+static void test_vib_getter_race(void) {
+	printf("[vib] getter: menu-entry save/restore sequence races the worker cleanly\n");
+	tvib_start();
+	for (int i = 0; i < 200; i++) {
+		tvib_set(i % 7 ? 60 : 0);
+		int saved = tvib_get();   // menu entry: capture current strength
+		tvib_set(0);              // menu: rumble off
+		tvib_set(saved);          // menu exit: restore
+	}
+	msleep(120);
+	CHECK(tvib_get() == 0 || tvib_get() == 60, "getter returned torn value");
+	tvib_quit();
+}
 static void test_vib_teardown(void) {
 	printf("[vib] scenario 3: shutdown while active and while blocked\n");
 	tvib_start();
@@ -297,6 +316,7 @@ int main(void) {
 	printf("== wakeup-reduction synchronization harness ==\n");
 	test_vib_idle_no_wakeups();
 	test_vib_rapid_toggle();
+	test_vib_getter_race();
 	test_vib_teardown();
 	test_snd_block_and_release();
 	test_snd_ff_while_blocked();

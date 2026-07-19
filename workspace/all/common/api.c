@@ -1112,6 +1112,7 @@ static struct SND_Context {
 	
 	int buffer_seconds;     // current_audio_buffer_size
 	int ring_override_ms;   // MINARCH_SND_RING_MS: ring capacity in DAC-output milliseconds (0 = default sizing)
+	int paused;             // device closed for sleep: producers drop instead of waiting (no consumer exists)
 	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
@@ -1220,6 +1221,7 @@ static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 	snd.frame_filled = snd.frame_count - 1;
 	
 	SDL_UnlockAudio();
+	SND_signalSpace(); // reshaped ring = new space; a waiter must see it (review 5)
 }
 static int SND_resampleNone(SND_Frame frame) { // audio_resample_passthrough
 	snd.buffer[snd.frame_in++] = frame;
@@ -1357,6 +1359,7 @@ void SND_setFastForward(int active, int audible) {
 	// Silent FF must pause instead of draining into underruns. Every FF exit discards
 	// stale compressed audio and uses the normal 40% prefill gate for a clean handoff.
 	if ((active && !audible) || (!active && was_active)) SND_reprime();
+	SND_signalSpace(); // AFTER the reprime: the ring-space it creates must reach a waiter (review 5)
 }
 static void SND_measureFastForward(size_t frames) {
 	if (!atomic_load(&snd_ff_nonblock)) return;
@@ -1425,7 +1428,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 				if (pthread_cond_timedwait(&snd_space_cv, &snd_space_mx, &ts) == ETIMEDOUT) break;
 			pthread_mutex_unlock(&snd_space_mx);
 			SDL_LockAudio();
-			if (!snd.initialized || !snd.buffer || snd.frame_count==0) { // torn down while blocked
+			if (!snd.initialized || snd.paused || !snd.buffer || snd.frame_count==0) { // torn down/paused while blocked
 				SDL_UnlockAudio();
 				return consumed;
 			}
@@ -1532,9 +1535,10 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
+	snd.paused = 1; // no consumer exists now: the producer wait predicate must not spin on timeouts (review 5)
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
-	SND_signalSpace(); // belt: a blocked producer re-evaluates (serial callers cannot overlap, threaded ones could)
+	SND_signalSpace(); // a blocked producer wakes and exits via the paused check
 }
 void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffer was preserved
 	if (!snd.initialized) return;
@@ -1552,8 +1556,10 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 		// forever — drop to silent-but-safe instead (audit 2026-07-11)
 		LOG_info("SDL_OpenAudio error (resume): %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
+		snd.paused = 0;
 		return;
 	}
+	snd.paused = 0; // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
@@ -1947,7 +1953,11 @@ void VIB_setStrength(int strength) {
 	pthread_mutex_unlock(&vib.mx);
 }
 int VIB_getStrength(void) {
-	return vib.strength;
+	if (!vib.initialized) return 0;
+	pthread_mutex_lock(&vib.mx);
+	int v = vib.strength;
+	pthread_mutex_unlock(&vib.mx);
+	return v;
 }
 
 ///////////////////////////////
