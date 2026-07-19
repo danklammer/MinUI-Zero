@@ -1710,9 +1710,10 @@ static void Special_updatedDMGPalette(int frames) {
 static void Special_refreshDMGPalette(void) {
 	special.palette_updated -= 1;
 	if (special.palette_updated>0) return;
-	
+
 	int rgb = getInt("/tmp/dmg_grid_color");
 	GFX_setEffectColor(rgb);
+	present_dirty_gen++; // effect-color change must reach the panel even on duplicate frames (review 6)
 }
 static void Special_init(void) {
 	if (special.palette_updated>1) special.palette_updated = 1;
