@@ -3390,12 +3390,29 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		if (dup_on) {
 			static void* prev = NULL; static size_t prev_sz = 0; static int prev_valid = 0;
 			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
-			size_t sz = (size_t)height * pitch;
+			// compare VISIBLE pixels only, never padded pitch bytes (gambatte pads 160
+			// rows to a 256 pitch = 37.5% wasted comparison; Codex GB findings). The
+			// packed prev buffer keeps the fast single-memcmp path when pitch is tight.
+			size_t row_bytes = (size_t)width * (downsample ? 4 : 2); // this runs PRE-downsample: 32bpp cores carry width*4 visible bytes
+			if (row_bytes > pitch) row_bytes = pitch; // never read past a smaller pitch
+			size_t sz = (size_t)height * row_bytes;
 			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; prev_valid = 0; }
 			if (prev && prev_sz == sz) {
 				df_n++;
-				if (prev_valid && memcmp(prev, data, sz) == 0) { df_dup++; dup_frame = 1; }
-				else { memcpy(prev, data, sz); prev_valid = 1; }
+				int same = prev_valid;
+				if (same) {
+					if (row_bytes == pitch) same = (memcmp(prev, data, sz) == 0);
+					else for (unsigned y = 0; y < height; y++) {
+						if (memcmp((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes) != 0) { same = 0; break; }
+					}
+				}
+				if (same) { df_dup++; dup_frame = 1; }
+				else {
+					if (row_bytes == pitch) memcpy(prev, data, sz);
+					else for (unsigned y = 0; y < height; y++)
+						memcpy((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes);
+					prev_valid = 1;
+				}
 			}
 			uint32_t df_now = SDL_GetTicks();
 			if (!df_at) df_at = df_now;
