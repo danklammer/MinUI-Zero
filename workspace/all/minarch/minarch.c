@@ -281,7 +281,14 @@ static void ta_write_verdict(int v) {
 // Safety is the existing machinery: BIGSLIP jumps to f_max within ~1s if the memory is
 // stale, and scene-change bursts are unaffected. ZERO_NO_GOV_MEMORY disables.
 static int gov_mem_on = 1;
-static int gov_mem_fastsink_khz = 0; // armed by Gov_start, consumed by the first healthy tick
+static int gov_mem_fastsink_khz = 0; // armed by Gov_start, consumed by the accelerated ladder
+static unsigned rate_seq = 0;        // bumped by trackFPS each time cpu_double refreshes
+static void gov_mem_cancel(const char* why) { // scene changed: the remembered floor is no longer evidence
+	if (gov_mem_fastsink_khz) {
+		LOG_info("gov-memory: fast-sink canceled (%s)\n", why);
+		gov_mem_fastsink_khz = 0;
+	}
+}
 static int gov_mem_hist_khz[16];
 static uint32_t gov_mem_hist_n[16];
 static void gov_mem_path(char* out) {
@@ -1241,7 +1248,10 @@ static void Gov_start(void) {
 	gov_active = 1;
 	gov_mem_on = (getenv("ZERO_NO_GOV_MEMORY") == NULL);
 	if (gov_profile.f_min == gov_profile.f_max) gov_mem_on = 0; // fixed bracket: nothing to learn
-	if (getenv("GOV_DISABLE")) gov_mem_on = 0; // no controller = nothing can ever climb back (review 1)
+	{ // no controller = nothing can ever climb back (review 1); value semantics match governor.c ("0" = enabled)
+		const char* gd = getenv("GOV_DISABLE");
+		if (gd && gd[0] && gd[0] != '0') gov_mem_on = 0;
+	}
 	// FAST-SINK, not start-low (review finding 3): boot always starts at f_max — some cores
 	// do heavy pre-video work and the resize burst only fires after the first frame. The
 	// remembered floor is ARMED instead, and applied by the tick loop after the first
@@ -2060,7 +2070,7 @@ static int setFastForward(int enable) {
 	// clock for minutes after FF ended (Dr. Mario stuck at 1008 for 85s+, fresh session
 	// descended normally). Burst clears fail/futile state and re-finds the floor honestly
 	// in either direction.
-	if (changed && gov_active) gov_burst(&gov_state, &gov_profile);
+	if (changed && gov_active) { gov_burst(&gov_state, &gov_profile); gov_mem_cancel("ff toggle"); }
 	// PS1's presentation-drop catch-up protects normal-play audio, but deliberately
 	// outrunning presentation during FF must not be mistaken for a delivery underrun.
 	if (changed && presentation_drop_supported) GFX_setPresentationDrop(!enable);
@@ -3431,7 +3441,7 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		int size_changed = (width!=renderer.true_w || height!=renderer.true_h);
 		selectScaler(width, height, pitch);
 		GFX_clearAll();
-		if (size_changed) gov_burst(&gov_state, &gov_profile); // provision before the cost lands
+		if (size_changed) { gov_burst(&gov_state, &gov_profile); gov_mem_cancel("scene change"); } // provision before the cost lands
 	}
 	
 	// debug
@@ -5452,6 +5462,7 @@ static void trackFPS(void) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
 		cpu_double = cpu_ticks / last_time;
+		rate_seq++; // generation-rate publication counter (gov-memory fast ladder freshness)
 
 		// once-a-second /proc parse; consumed by the debug HUD and the pause-menu stats line.
 		// Normalized to % of TOTAL CPU (all cores), not one core — multi-threaded cores
@@ -5982,23 +5993,31 @@ int main(int argc , char* argv[]) {
 					// that fail to hold) and FF workloads never vote, so a hot or struggling
 					// session cannot persist a floor the game was audibly slow at (review 2).
 					if (!fast_forward && (frame_overrun == GOV_SIGNAL_SLACK || frame_overrun == GOV_SIGNAL_BUSY))
-						gov_mem_note(gov_state.ceil_khz);
-					// gov-memory FAST-SINK: first healthy sample proves the workload is the
-					// remembered one — jump the ladder. presink/since_sink plug into the
-					// existing probe-undo: if the very next tick slips, one tick restores.
-					// The arm expires after ~2min unconsumed (scene is clearly heavier now).
+						gov_mem_note(prev_ceil); // the ceiling that PRODUCED the sample, not the post-tick one (review r2)
+					// gov-memory ACCELERATED LADDER (review round 2): while armed, waive only
+					// the sink DWELL — one OPP per tick, and only on a tick whose SLACK verdict
+					// came from a FRESH cpu_double sample (rate_seq advanced since our last
+					// accelerated step). Every other gate — predictive fit, fail-memory,
+					// thermal, presink-undo — is the normal machinery, because the sink happens
+					// through gov_tick itself on the NEXT pass (slack_run pre-load). A SLIP
+					// disarms (scene heavier than memory); bursts cancel via gov_mem_cancel;
+					// the arm expires after ~2min unconsumed.
 					if (gov_mem_fastsink_khz > 0) {
 						static int gm_arm_ticks = 0;
-						if (++gm_arm_ticks > 240) gov_mem_fastsink_khz = 0;
-						else if (!fast_forward && frame_overrun == GOV_SIGNAL_SLACK
-							&& gov_mem_fastsink_khz < gov_state.ceil_khz) {
-							LOG_info("gov-memory: fast-sink %d->%d kHz after healthy tick\n",
-								gov_state.ceil_khz, gov_mem_fastsink_khz);
-							gov_state.presink_khz = gov_state.ceil_khz;
-							gov_state.since_sink = 0;
-							gov_state.ceil_khz = gov_mem_fastsink_khz;
-							PWR_setCPUMaxFreq(gov_state.ceil_khz);
+						static unsigned gm_last_seq = 0;
+						if (++gm_arm_ticks > 240) gov_mem_cancel("arm expired");
+						else if (fast_forward) { /* hold: FF retarget owns the ceiling */ }
+						else if (frame_overrun == GOV_SIGNAL_SLIP || frame_overrun == GOV_SIGNAL_BIGSLIP)
+							gov_mem_cancel("slip before target");
+						else if (gov_state.ceil_khz <= gov_mem_fastsink_khz) {
+							LOG_info("gov-memory: reached remembered floor %d kHz\n", gov_mem_fastsink_khz);
 							gov_mem_fastsink_khz = 0;
+						}
+						else if (frame_overrun == GOV_SIGNAL_SLACK && rate_seq != gm_last_seq) {
+							gm_last_seq = rate_seq;
+							// waive the dwell for the NEXT tick's sink decision; gov_step still
+							// applies cool_enough, fail-memory, and f_min clamps itself
+							if (gov_state.slack_run < GOV_DN_DWELL - 1) gov_state.slack_run = GOV_DN_DWELL - 1;
 						}
 					}
 					gov_frames = 0;
