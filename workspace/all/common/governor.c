@@ -21,7 +21,7 @@ void PLAT_setCPUVoltForCeil(int khz);
 #define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
 #define GOV_T_CEIL_C   72      // hard back-off above this — always wins
 // GOV_STEP_KHZ lives in governor.h (shared with minarch's per-game governor memory)
-#define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
+// GOV_DN_DWELL lives in governor.h (shared with the gov-memory accelerated ladder)
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
                                // -> 600 slip -> ... = periodic slowdown bursts; Contra 2026-07-01)
