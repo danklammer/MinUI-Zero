@@ -281,6 +281,7 @@ static void ta_write_verdict(int v) {
 static int gov_mem_on = 1;
 static int gov_mem_fastsink_khz = 0; // armed by Gov_start, consumed by the accelerated ladder
 static unsigned rate_seq = 0;        // bumped by trackFPS each time cpu_double refreshes
+static int gov_mem_window_dirty = 1; // ceiling moved inside the current rate window: votes are unattributable
 static void gov_mem_cancel(const char* why) { // scene changed: the remembered floor is no longer evidence
 	if (gov_mem_fastsink_khz) {
 		LOG_info("gov-memory: fast-sink canceled (%s)\n", why);
@@ -3379,9 +3380,17 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		// GBC at 1008 instead of its 408 floor (gambatte resyncs periodically; caught
 		// by the 2026-07-09 regression sweep). A real scene switch changes dimensions.
 		int size_changed = (width!=renderer.true_w || height!=renderer.true_h);
+		static int geometry_established = 0; // review r3: the FIRST callback always differs
+		int first_geometry = size_changed && !geometry_established;
+		if (size_changed) geometry_established = 1;
 		selectScaler(width, height, pitch);
 		GFX_clearAll();
-		if (size_changed) { gov_burst(&gov_state, &gov_profile); gov_mem_cancel("scene change"); } // provision before the cost lands
+		if (size_changed) { // provision before the cost lands
+			gov_burst(&gov_state, &gov_profile);
+			// initial geometry acquisition is how every session begins — only a LATER
+			// real dimension change invalidates the remembered floor (review r3)
+			if (!first_geometry) gov_mem_cancel("scene change");
+		}
 	}
 	
 	// debug
@@ -5924,14 +5933,24 @@ int main(int argc , char* argv[]) {
 					}
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
-					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
+					if (gov_state.ceil_khz != prev_ceil) { // ceiling moved: log, and poison the current vote window
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
+						gov_mem_window_dirty = 1;
+					}
 					// gov-memory: LEARN only qualified windows — target held (SLACK or BUSY)
-					// at normal speed. SLIP/BIGSLIP windows (including thermal-forced sinks
-					// that fail to hold) and FF workloads never vote, so a hot or struggling
-					// session cannot persist a floor the game was audibly slow at (review 2).
-					if (!fast_forward && (frame_overrun == GOV_SIGNAL_SLACK || frame_overrun == GOV_SIGNAL_BUSY))
-						gov_mem_note(prev_ceil); // the ceiling that PRODUCED the sample, not the post-tick one (review r2)
+					// at normal speed, voted AT MOST ONCE per published rate sample, and only
+					// when the ceiling stayed constant across the whole sampled window (a
+					// window spanning a ceiling change measured neither ceiling — review r3).
+					{
+						static unsigned gm_seen_seq = 0;
+						if (rate_seq != gm_seen_seq) {
+							if (!gov_mem_window_dirty && !fast_forward
+								&& (frame_overrun == GOV_SIGNAL_SLACK || frame_overrun == GOV_SIGNAL_BUSY))
+								gov_mem_note(prev_ceil);
+							gm_seen_seq = rate_seq;
+							gov_mem_window_dirty = 0;
+						}
+					}
 					// gov-memory ACCELERATED LADDER (review round 2): while armed, waive only
 					// the sink DWELL — one OPP per tick, and only on a tick whose SLACK verdict
 					// came from a FRESH cpu_double sample (rate_seq advanced since our last
