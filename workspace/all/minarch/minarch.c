@@ -3272,8 +3272,33 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 }
 static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
 	// return;
-	
+
 	Special_render();
+
+	// Duplicate-frame rate (ZERO_PRESENT_STATS=1): how often the core emits a frame
+	// byte-identical to the last one — the addressable win for present-skip (measure
+	// before building). memcmp+memcpy cost is why this is diagnostic-only.
+	{
+		static int dup_on = -1;
+		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL);
+		if (dup_on && data) {
+			static void* prev = NULL; static size_t prev_sz = 0;
+			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
+			size_t sz = (size_t)height * pitch;
+			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; }
+			if (prev && prev_sz == sz) {
+				df_n++;
+				if (memcmp(prev, data, sz) == 0) df_dup++;
+				else memcpy(prev, data, sz);
+			}
+			uint32_t df_now = SDL_GetTicks();
+			if (!df_at) df_at = df_now;
+			else if (df_now - df_at >= 1000) {
+				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%)\n", df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0);
+				df_n = df_dup = 0; df_at = df_now;
+			}
+		}
+	}
 	
 	// static int tmp_frameskip = 0;
 	// if ((tmp_frameskip++)%2) return;

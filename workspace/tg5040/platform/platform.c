@@ -306,6 +306,10 @@ static void resizeVideo(int w, int h, int p) {
 			if (w*hs>=device_width || h*hs>=device_height) { hard_scale = hs; break; }
 		}
 	}
+	{ // dev A/B knob: force the Crisp prescale factor (ZERO_HARD_SCALE=1..4)
+		char* hs_env = getenv("ZERO_HARD_SCALE");
+		if (hs_env) { int v = atoi(hs_env); if (v >= 1 && v <= 4) hard_scale = v; }
+	}
 
 	LOG_info("resizeVideo(%i,%i,%i) hard_scale: %i crisp: %i\n",w,h,p, hard_scale,vid.sharpness==SHARPNESS_CRISP);
 
@@ -582,10 +586,17 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 
 	if (fb_game) { PLAT_flipFB_game(); vid.blit = NULL; return; } // GPU-dark software present for games
 
-	// uint32_t then = SDL_GetTicks();
+	// Present-stage instrumentation (ZERO_PRESENT_STATS=1): CPU-side block time of each
+	// stage, aggregated per second. These are API-call stalls (submit/backpressure), not
+	// GPU execution time — exactly the bursts D61 showed a low ceiling starves.
+	static int ps_on = -1;
+	if (ps_on == -1) ps_on = (getenv("ZERO_PRESENT_STATS") != NULL);
+	uint64_t ps_t0 = 0, ps_t1 = 0, ps_t2 = 0, ps_t3 = 0, ps_t4 = 0;
+	if (ps_on) ps_t0 = getMicroseconds();
+
 	SDL_UpdateTexture(vid.texture,NULL,vid.blit->src,vid.blit->src_p);
-	// LOG_info("blit blocked for %ims (%i,%i)\n", SDL_GetTicks()-then,vid.buffer->w,vid.buffer->h);
-	
+	if (ps_on) ps_t1 = getMicroseconds();
+
 	SDL_Texture* target = vid.texture;
 	int x = vid.blit->src_x;
 	int y = vid.blit->src_y;
@@ -601,6 +612,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		h *= hard_scale;
 		target = vid.target;
 	}
+	if (ps_on) ps_t2 = getMicroseconds();
 	
 	SDL_Rect* src_rect = &(SDL_Rect){x,y,w,h};
 	SDL_Rect* dst_rect = &(SDL_Rect){0,0,device_width,device_height};
@@ -643,9 +655,30 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	}
 	dbg.game = *dst_rect;
 	drawDebugOverlay();
-	// uint32_t then = SDL_GetTicks();
+	if (ps_on) ps_t3 = getMicroseconds();
 	SDL_RenderPresent(vid.renderer);
-	// LOG_info("SDL_RenderPresent blocked for %ims\n", SDL_GetTicks()-then);
+	if (ps_on) {
+		ps_t4 = getMicroseconds();
+		static uint64_t s_up, s_pass, s_copy, s_pres;
+		static uint32_t m_up, m_pass, m_copy, m_pres;
+		static int s_n; static uint32_t s_at;
+		uint32_t up = (uint32_t)(ps_t1-ps_t0), pass = (uint32_t)(ps_t2-ps_t1);
+		uint32_t copy = (uint32_t)(ps_t3-ps_t2), pres = (uint32_t)(ps_t4-ps_t3);
+		s_up += up; s_pass += pass; s_copy += copy; s_pres += pres; s_n++;
+		if (up > m_up) m_up = up;
+		if (pass > m_pass) m_pass = pass;
+		if (copy > m_copy) m_copy = copy;
+		if (pres > m_pres) m_pres = pres;
+		uint32_t now = SDL_GetTicks();
+		if (!s_at) s_at = now;
+		else if (now - s_at >= 1000) {
+			LOG_info("present-stats: n=%d upload=%llu/%u pass=%llu/%u copy=%llu/%u present=%llu/%u us(avg/max) hs=%d\n",
+				s_n, s_up/s_n, m_up, s_pass/s_n, m_pass, s_copy/s_n, m_copy, s_pres/s_n, m_pres, hard_scale);
+			s_up = s_pass = s_copy = s_pres = 0; s_n = 0;
+			m_up = m_pass = m_copy = m_pres = 0;
+			s_at = now;
+		}
+	}
 	vid.blit = NULL;
 }
 
