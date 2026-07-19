@@ -3356,9 +3356,9 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
 				sm_at = sm_now;
 			}
-			sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
+			sprintf(debug_text, "%s %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
 		}
-		else sprintf(debug_text, "%iMHZ %iC %.0f/%.0f %i%%", gov_state.ceil_khz/1000, hud_temp, cpu_double, core.fps, (int)use_double);
+		else sprintf(debug_text, "%s %iC %.0f/%.0f %i%%", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
 	
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
