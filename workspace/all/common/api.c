@@ -1136,6 +1136,19 @@ static struct SND_Context {
 } snd = {0};
 static _Atomic int snd_ff_nonblock = 0;
 static void SND_publishOccupancy(void); // defined with the ring helpers below
+// Event-driven producer backpressure: SND_batchSamples waits here (never while holding
+// the SDL audio lock) and the callback signals freed capacity once per consume pass.
+// The generation counter closes the signal-before-wait race window.
+static pthread_mutex_t snd_space_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t snd_space_cv = PTHREAD_COND_INITIALIZER;
+static unsigned snd_space_gen = 0;
+static void SND_signalSpace(void) {
+	pthread_mutex_lock(&snd_space_mx);
+	snd_space_gen++;
+	pthread_cond_broadcast(&snd_space_cv);
+	pthread_mutex_unlock(&snd_space_mx);
+}
+
 static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // plat_sound_callback
 	
 	// return (void)memset(stream,0,len); // TODO: tmp, silent
@@ -1160,6 +1173,7 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 		if (snd.frame_out>=snd.frame_count) snd.frame_out = 0;
 	}
 	SND_publishOccupancy(); // consumer side of the presentation-drop snapshot
+	SND_signalSpace(); // wake a producer blocked on a full ring
 
 	if (len>0) snd.underruns++; // ring drained before the request was filled (audible crackle)
 	int zero = len>0 && len==SAMPLES;
@@ -1327,6 +1341,7 @@ void SND_setFastForward(int active, int audible) {
 	snd.ff_active = active;
 	snd.ff_audible = audible;
 	atomic_store(&snd_ff_nonblock, will_be_audible);
+	SND_signalSpace(); // a producer blocked on a full ring must re-evaluate the FF drop path
 
 	if (will_be_audible && !was_audible) {
 		FFAudioRate_begin(&snd.ff_rate, SDL_GetTicks());
@@ -1385,19 +1400,43 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	int consumed = 0;
 	int consumed_frames = 0;
 	while (frame_count > 0) {
-		int tries = 0;
 		int amount = MIN(BATCH_SIZE, frame_count);
-		
-		while (!snd_ff_nonblock && tries < 10 && snd.frame_in==snd.frame_filled) {
-			tries++;
+
+		// Event-driven backpressure (was: unlock/SDL_Delay(1)/relock poll — 5-15 relock
+		// wakeups per paced frame). This block IS audio pacing: wait for the callback's
+		// space signal under a dedicated mutex (never while holding the SDL audio lock,
+		// so there is no order inversion with the callback). A generation counter makes
+		// the wait race-free against a signal landing between unlock and wait, and the
+		// 20ms timedwait cap is lost-wakeup insurance plus the escape hatch for pause/
+		// quit/FF-toggle arriving while blocked (each iteration rechecks the ring and
+		// liveness under the audio lock). wait_ms keeps its meaning — wall ms blocked —
+		// which the governor's pure-work sensor and DRC consume as deltas.
+		uint32_t wait_t0 = 0;
+		while (!snd_ff_nonblock && snd.frame_in==snd.frame_filled) {
+			if (!wait_t0) { wait_t0 = SDL_GetTicks(); snd.overruns++; }
+			pthread_mutex_lock(&snd_space_mx);
+			unsigned g0 = snd_space_gen;
 			SDL_UnlockAudio();
-			SDL_Delay(1);
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += 20 * 1000000L;
+			if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+			while (snd_space_gen == g0)
+				if (pthread_cond_timedwait(&snd_space_cv, &snd_space_mx, &ts) == ETIMEDOUT) break;
+			pthread_mutex_unlock(&snd_space_mx);
 			SDL_LockAudio();
+			if (!snd.initialized || !snd.buffer || snd.frame_count==0) { // torn down while blocked
+				SDL_UnlockAudio();
+				return consumed;
+			}
+		}
+		if (wait_t0) {
+			uint32_t waited = SDL_GetTicks() - wait_t0;
+			snd.wait_ms += waited ? waited : 1;
 		}
 		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
 		// frames and return so emulation never blocks on audio during fast-forward.
 		if (snd_ff_nonblock && snd.frame_in==snd.frame_filled) break;
-		if (tries) { snd.overruns++; snd.wait_ms += tries; } // buffer full: audio-blocking paced emulation
 		// if (tries) LOG_info("%8i waited %ims for buffer to get low...\n", ms(), tries);
 
 		while (amount && snd.frame_in != snd.frame_filled) {
@@ -1495,6 +1534,7 @@ void SND_pause(void) { // close the device so the SDL audio thread fully stops d
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
+	SND_signalSpace(); // belt: a blocked producer re-evaluates (serial callers cannot overlap, threaded ones could)
 }
 void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffer was preserved
 	if (!snd.initialized) return;
@@ -1532,6 +1572,7 @@ void SND_quit(void) { // plat_sound_finish
 	atomic_store(&snd_ff_nonblock, 0);
 	FFAudioRate_end(&snd.ff_rate);
 	SND_publishOccupancy(); // reads 100 now — catch-up can never engage on a closed ring
+	SND_signalSpace(); // a producer blocked mid-teardown wakes and exits via its liveness recheck
 }
 
 ///////////////////////////////
@@ -1840,42 +1881,70 @@ int PAD_tappedMenu(uint32_t now) {
 static struct VIB_Context {
 	int initialized;
 	pthread_t pt;
+	pthread_mutex_t mx;
+	pthread_cond_t cv;
 	int queued_strength;
 	int strength;
+	int quit;
 } vib = {0};
 static void* VIB_thread(void *arg) {
-#define DEFER_FRAMES 3
-	static int defer = 0;
-	while(1) {
-		SDL_Delay(17);
-		if (vib.queued_strength!=vib.strength) {
-			if (defer<DEFER_FRAMES && vib.queued_strength==0) { // minimize vacillation between 0 and some number (which this motor doesn't like)
-				defer += 1;
-				continue;
-			}
-			vib.strength = vib.queued_strength;
-			defer = 0;
-
-			PLAT_setRumble(vib.strength);
+	// Event-driven: the worker sleeps on the condvar until a strength change or quit —
+	// ZERO idle wakeups (the old loop woke every 17ms forever, ~59/s). The deferred-off
+	// behavior survives as a bounded timedwait: a request for 0 is held ~51ms (the old
+	// DEFER_FRAMES*17ms) and abandoned if a non-zero request arrives in that window,
+	// because this motor dislikes 0<->N vacillation.
+#define VIB_DEFER_OFF_MS 51
+	pthread_mutex_lock(&vib.mx);
+	while (!vib.quit) {
+		if (vib.queued_strength == vib.strength) {
+			pthread_cond_wait(&vib.cv, &vib.mx); // blocks indefinitely; wakes on change/quit
+			continue;
 		}
+		int target = vib.queued_strength;
+		if (target == 0) {
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += VIB_DEFER_OFF_MS * 1000000L;
+			if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+			while (!vib.quit && vib.queued_strength == 0)
+				if (pthread_cond_timedwait(&vib.cv, &vib.mx, &ts) == ETIMEDOUT) break;
+			if (vib.quit) break;
+			if (vib.queued_strength != 0) continue; // rescued within the window: skip the off
+		}
+		vib.strength = target;
+		pthread_mutex_unlock(&vib.mx);
+		PLAT_setRumble(target); // device write outside the lock: setters never block on i2c/sysfs
+		pthread_mutex_lock(&vib.mx);
 	}
+	pthread_mutex_unlock(&vib.mx);
 	return 0;
 }
 void VIB_init(void) {
 	vib.queued_strength = vib.strength = 0;
+	vib.quit = 0;
+	pthread_mutex_init(&vib.mx, NULL);
+	pthread_cond_init(&vib.cv, NULL);
 	pthread_create(&vib.pt, NULL, &VIB_thread, NULL);
 	vib.initialized = 1;
 }
 void VIB_quit(void) {
 	if (!vib.initialized) return;
-	
-	VIB_setStrength(0);
-	pthread_cancel(vib.pt);
-	pthread_join(vib.pt, NULL);
+	pthread_mutex_lock(&vib.mx);
+	vib.quit = 1;
+	pthread_cond_broadcast(&vib.cv);
+	pthread_mutex_unlock(&vib.mx);
+	pthread_join(vib.pt, NULL); // deterministic teardown (was pthread_cancel mid-SDL_Delay)
+	PLAT_setRumble(0);          // motor off regardless of what was in flight
+	vib.initialized = 0;
 }
 void VIB_setStrength(int strength) {
-	if (vib.queued_strength==strength) return;
-	vib.queued_strength = strength;
+	if (!vib.initialized) return;
+	pthread_mutex_lock(&vib.mx);
+	if (vib.queued_strength != strength) {
+		vib.queued_strength = strength;
+		pthread_cond_signal(&vib.cv);
+	}
+	pthread_mutex_unlock(&vib.mx);
 }
 int VIB_getStrength(void) {
 	return vib.strength;
