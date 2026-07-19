@@ -1378,7 +1378,9 @@ static void SND_measureFastForward(size_t frames) {
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
-	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	if (!snd.initialized || snd.paused || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	// (paused: device closed for sleep — no consumer exists; writing would only queue
+	// stale audio for resume and leave a future concurrent producer waiting on timeouts)
 	SND_measureFastForward(frame_count);
 
 	// return frame_count; // TODO: tmp, silent
