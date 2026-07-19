@@ -1112,7 +1112,9 @@ static struct SND_Context {
 	
 	int buffer_seconds;     // current_audio_buffer_size
 	int ring_override_ms;   // MINARCH_SND_RING_MS: ring capacity in DAC-output milliseconds (0 = default sizing)
-	int paused;             // device closed for sleep: producers drop instead of waiting (no consumer exists)
+	atomic_int paused;      // device closed for sleep: producers drop instead of waiting. Atomic:
+	                        // the entry guard reads it pre-lock and a future concurrent CORE
+	                        // producer must not race SND_pause/SND_resume (review r3)
 	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
@@ -1378,7 +1380,7 @@ static void SND_measureFastForward(size_t frames) {
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
-	if (!snd.initialized || snd.paused || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
 	// (paused: device closed for sleep — no consumer exists; writing would only queue
 	// stale audio for resume and leave a future concurrent producer waiting on timeouts)
 	SND_measureFastForward(frame_count);
@@ -1430,7 +1432,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 				if (pthread_cond_timedwait(&snd_space_cv, &snd_space_mx, &ts) == ETIMEDOUT) break;
 			pthread_mutex_unlock(&snd_space_mx);
 			SDL_LockAudio();
-			if (!snd.initialized || snd.paused || !snd.buffer || snd.frame_count==0) { // torn down/paused while blocked
+			if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0) { // torn down/paused while blocked
 				SDL_UnlockAudio();
 				return consumed;
 			}
@@ -1537,7 +1539,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
-	snd.paused = 1; // no consumer exists now: the producer wait predicate must not spin on timeouts (review 5)
+	atomic_store(&snd.paused, 1); // no consumer exists now: producers drop instead of waiting (review 5/r3)
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
 	SND_signalSpace(); // a blocked producer wakes and exits via the paused check
@@ -1558,10 +1560,10 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 		// forever — drop to silent-but-safe instead (audit 2026-07-11)
 		LOG_info("SDL_OpenAudio error (resume): %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
-		snd.paused = 0;
+		atomic_store(&snd.paused, 0);
 		return;
 	}
-	snd.paused = 0; // consumer is back: producers may wait again
+	atomic_store(&snd.paused, 0); // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
