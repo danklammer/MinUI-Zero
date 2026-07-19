@@ -502,6 +502,72 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 	resizeVideo(vid.blit->true_w,vid.blit->true_h,vid.blit->src_p);
 }
 
+// Debug HUD strips: minarch renders bitmap text at native resolution and the GPU
+// composites them at 2x over the finished game frame — text size is constant on
+// every system instead of inheriting the game's scale (8x on GBC = unreadable).
+static struct {
+	uint16_t* top; uint16_t* bottom;
+	int w, h, stride;
+	SDL_Texture* tex_top; SDL_Texture* tex_bottom;
+	int tex_w, tex_h;
+	SDL_Rect game; // panel rect of the most recently presented frame
+} dbg;
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
+	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
+}
+void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
+	*x = dbg.game.x; *y = dbg.game.y; *w = dbg.game.w; *h = dbg.game.h;
+}
+#define DBG_KEY 0xF81F // magenta in the RGB565 strips = fully transparent
+static uint32_t* dbg_argb = NULL;
+static void dbgConvert(SDL_Texture* tex, uint16_t* px) {
+	for (int y = 0; y < dbg.h; y++) {
+		uint16_t* row = px + y * dbg.stride;
+		uint32_t* out = dbg_argb + y * dbg.w;
+		for (int x = 0; x < dbg.w; x++) {
+			uint16_t p = row[x];
+			out[x] = (p == DBG_KEY) ? 0x00000000
+				: 0xFF000000
+				| ((p & 0xF800) << 8) | ((p & 0xE000) << 3)   // R
+				| ((p & 0x07E0) << 5) | ((p & 0x0600) >> 1)   // G
+				| ((p & 0x001F) << 3) | ((p & 0x001C) >> 2);  // B
+		}
+	}
+	SDL_UpdateTexture(tex, NULL, dbg_argb, dbg.w * 4);
+}
+static void drawDebugOverlay(void) {
+	if (!dbg.top || dbg.w <= 0 || dbg.stride < dbg.w) return;
+	if (dbg.tex_top && (dbg.tex_w != dbg.w || dbg.tex_h != dbg.h)) {
+		SDL_DestroyTexture(dbg.tex_top); SDL_DestroyTexture(dbg.tex_bottom);
+		dbg.tex_top = dbg.tex_bottom = NULL;
+		free(dbg_argb); dbg_argb = NULL;
+	}
+	if (!dbg.tex_top) {
+		dbg.tex_top = SDL_CreateTexture(vid.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, dbg.w, dbg.h);
+		dbg.tex_bottom = SDL_CreateTexture(vid.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, dbg.w, dbg.h);
+		if (dbg.tex_top) SDL_SetTextureBlendMode(dbg.tex_top, SDL_BLENDMODE_BLEND);
+		if (dbg.tex_bottom) SDL_SetTextureBlendMode(dbg.tex_bottom, SDL_BLENDMODE_BLEND);
+		dbg_argb = malloc(dbg.w * dbg.h * sizeof(uint32_t));
+		dbg.tex_w = dbg.w; dbg.tex_h = dbg.h;
+	}
+	if (!dbg.tex_top || !dbg.tex_bottom || !dbg_argb) return;
+	dbgConvert(dbg.tex_top, dbg.top);
+	dbgConvert(dbg.tex_bottom, dbg.bottom);
+	// anchor to the game's panel rect (classic in-frame HUD hugged the game image):
+	// one scaled pixel of margin inside the frame edges, clamped to the panel
+	int S = DBG_OVERLAY_SCALE;
+	int m = S;
+	int gx = dbg.game.w > 0 ? dbg.game.x : 0;
+	int gy = dbg.game.h > 0 ? dbg.game.y : 0;
+	int gh = dbg.game.h > 0 ? dbg.game.h : device_height;
+	int ty = gy + m;
+	int by = gy + gh - dbg.h * S - m;
+	if (ty < 0) ty = 0;
+	if (by + dbg.h * S > device_height) by = device_height - dbg.h * S;
+	SDL_RenderCopy(vid.renderer, dbg.tex_top, NULL, &(SDL_Rect){gx, ty, dbg.w * S, dbg.h * S});
+	SDL_RenderCopy(vid.renderer, dbg.tex_bottom, NULL, &(SDL_Rect){gx, by, dbg.w * S, dbg.h * S});
+}
+
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	PLAT_uvReassert(); // voltage authority: out-persist the kernel (no-op unless armed)
 	
@@ -570,11 +636,13 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	}
 	
 	SDL_RenderCopy(vid.renderer, target, src_rect, dst_rect);
-	
+
 	updateEffect();
 	if (vid.blit && effect.type!=EFFECT_NONE && vid.effect) {
 		SDL_RenderCopy(vid.renderer, vid.effect, &(SDL_Rect){0,0,dst_rect->w,dst_rect->h}, dst_rect);
 	}
+	dbg.game = *dst_rect;
+	drawDebugOverlay();
 	// uint32_t then = SDL_GetTicks();
 	SDL_RenderPresent(vid.renderer);
 	// LOG_info("SDL_RenderPresent blocked for %ims\n", SDL_GetTicks()-then);

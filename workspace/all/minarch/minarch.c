@@ -854,6 +854,7 @@ enum {
 	SHORTCUT_CYCLE_EFFECT,
 	SHORTCUT_TOGGLE_FF,
 	SHORTCUT_HOLD_FF,
+	SHORTCUT_TOGGLE_HUD,
 	SHORTCUT_COUNT,
 };
 
@@ -1135,6 +1136,7 @@ static struct Config {
 		[SHORTCUT_CYCLE_EFFECT]			= {"Cycle Effect",		-1, BTN_ID_NONE, 0},
 		[SHORTCUT_TOGGLE_FF]			= {"Toggle FF",			-1, BTN_ID_NONE, 0},
 		[SHORTCUT_HOLD_FF]				= {"Hold FF",			-1, BTN_ID_NONE, 0},
+		[SHORTCUT_TOGGLE_HUD]			= {"Toggle HUD",		-1, BTN_ID_NONE, 0},
 		{NULL}
 	},
 };
@@ -2084,6 +2086,10 @@ static void input_poll_callback(void) {
 						screen_effect += 1;
 						if (screen_effect>=EFFECT_COUNT) screen_effect -= EFFECT_COUNT;
 						Config_syncFrontend(config.frontend.options[FE_OPT_EFFECT].key, screen_effect);
+						break;
+					case SHORTCUT_TOGGLE_HUD:
+						show_debug = !show_debug;
+						Config_syncFrontend(config.frontend.options[FE_OPT_DEBUG].key, show_debug);
 						break;
 					default: break;
 				}
@@ -3316,13 +3322,48 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		char debug_text[128];
 		int scale = renderer.scale;
 		if (scale==-1) scale = 1; // nearest neighbor flag
-		
+
+		// Render the HUD into two native-resolution strips presented by the GPU at 2x
+		// AFTER the game frame (PLAT_setDebugOverlay). Drawn into the core's frame the
+		// text was magnified by the game scale — 8x on GBC filled the screen and the
+		// corner fields collided/clipped. ZERO_FB_GAME presents before the overlay
+		// draw ever runs, so that dev path keeps the legacy in-frame text.
+		static int dbg_legacy = -1;
+		if (dbg_legacy == -1) dbg_legacy = (getenv("ZERO_FB_GAME") != NULL);
+		static uint16_t* dbg_top = NULL;
+		static uint16_t* dbg_bot = NULL;
+		static int dbg_w = 0, dbg_h = 0;
+		if (!dbg_legacy && !dbg_top) {
+			dbg_w = screen->w / DBG_OVERLAY_SCALE; // presented scaled -> strips span the panel
+			dbg_h = CHAR_HEIGHT + 2;
+			dbg_top = calloc(dbg_w * dbg_h, sizeof(uint16_t));
+			dbg_bot = calloc(dbg_w * dbg_h, sizeof(uint16_t));
+			if (!dbg_top || !dbg_bot) dbg_legacy = 1; // allocation failed: keep old path
+		}
+		uint16_t* t_px = (uint16_t*)data; int t_stride = pitch/2, t_w = width, t_h = height, t_x = x, t_y = y;
+		uint16_t* b_px = (uint16_t*)data; int b_stride = pitch/2, b_w = width, b_h = height, b_x = x, b_y = -y;
+		int dbg_eff_w = dbg_w;
+		if (!dbg_legacy) {
+			// align the text field to the game's panel rect (last presented frame) so
+			// left/right text hug the game image like the classic in-frame HUD did
+			int gx, gy, gw, gh;
+			PLAT_getGameRect(&gx, &gy, &gw, &gh);
+			if (gw > 0) dbg_eff_w = gw / DBG_OVERLAY_SCALE;
+			if (dbg_eff_w > dbg_w) dbg_eff_w = dbg_w;
+			if (dbg_eff_w < 64) dbg_eff_w = 64; // degenerate rect: keep text drawable
+			// 0xF81F magenta = transparent (the platform keys it out); blitBitmapText
+			// black-fills exactly the text rectangle, so only the text carries a bg
+			for (int i = 0; i < dbg_w * dbg_h; i++) { dbg_top[i] = 0xF81F; dbg_bot[i] = 0xF81F; }
+			t_px = dbg_top; t_stride = dbg_w; t_w = dbg_eff_w; t_h = dbg_h; t_x = 2; t_y = 1;
+			b_px = dbg_bot; b_stride = dbg_w; b_w = dbg_eff_w; b_h = dbg_h; b_x = 2; b_y = 1;
+		}
+
 		sprintf(debug_text, "%ix%i %ix", renderer.src_w,renderer.src_h, scale);
-		blitBitmapText(debug_text,x,y,(uint16_t*)data,pitch/2, width,height);
+		blitBitmapText(debug_text,t_x,t_y,t_px,t_stride, t_w,t_h);
 
 		sprintf(debug_text, "%i,%i %ix%i", renderer.dst_x,renderer.dst_y, renderer.src_w*scale,renderer.src_h*scale);
-		blitBitmapText(debug_text,-x,y,(uint16_t*)data,pitch/2, width,height);
-	
+		blitBitmapText(debug_text,-t_x,t_y,t_px,t_stride, t_w,t_h);
+
 		// governor dashboard: live clock/ceiling / temp / generation-vs-target fps / % of total CPU
 		static int hud_temp = -1;
 		static int hud_cur_khz = -1;
@@ -3359,12 +3400,15 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 			sprintf(debug_text, "%s %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
 		}
 		else sprintf(debug_text, "%s %iC %.0f/%.0f %i%%", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double);
-		blitBitmapText(debug_text,x,-y,(uint16_t*)data,pitch/2, width,height);
-	
+		blitBitmapText(debug_text,b_x,b_y,b_px,b_stride, b_w,b_h);
+
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
-		blitBitmapText(debug_text,-x,-y,(uint16_t*)data,pitch/2, width,height);
+		blitBitmapText(debug_text,-b_x,b_y,b_px,b_stride, b_w,b_h);
+
+		if (!dbg_legacy) PLAT_setDebugOverlay(dbg_top, dbg_bot, dbg_eff_w, dbg_h, dbg_w);
 	}
-	
+	else PLAT_setDebugOverlay(NULL, NULL, 0, 0, 0);
+
 	if (downsample) {
 		buffer_downsample(data,width,height,pitch*2);
 		renderer.src = buffer;

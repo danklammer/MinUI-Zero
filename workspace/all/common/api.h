@@ -340,6 +340,13 @@ void PLAT_vsync(int remaining);
 scaler_t PLAT_getScaler(GFX_Renderer* renderer);
 void PLAT_blitRenderer(GFX_Renderer* renderer);
 void PLAT_flip(SDL_Surface* screen, int sync);
+// debug HUD strips (RGB565, native res, presented at DBG_OVERLAY_SCALE anchored to the
+// game's panel rect); NULL top disables. w = used columns (game width / scale), stride =
+// the buffer's allocated row width. 0xF81F = transparent.
+#define DBG_OVERLAY_SCALE 3
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride);
+// panel-coordinate rect of the most recently presented game frame (0s before first flip)
+void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);
 
 SDL_Surface* PLAT_initOverlay(void);
