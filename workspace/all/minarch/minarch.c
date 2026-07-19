@@ -281,6 +281,7 @@ static void ta_write_verdict(int v) {
 // Safety is the existing machinery: BIGSLIP jumps to f_max within ~1s if the memory is
 // stale, and scene-change bursts are unaffected. ZERO_NO_GOV_MEMORY disables.
 static int gov_mem_on = 1;
+static int gov_mem_fastsink_khz = 0; // armed by Gov_start, consumed by the first healthy tick
 static int gov_mem_hist_khz[16];
 static uint32_t gov_mem_hist_n[16];
 static void gov_mem_path(char* out) {
@@ -1240,17 +1241,20 @@ static void Gov_start(void) {
 	gov_active = 1;
 	gov_mem_on = (getenv("ZERO_NO_GOV_MEMORY") == NULL);
 	if (gov_profile.f_min == gov_profile.f_max) gov_mem_on = 0; // fixed bracket: nothing to learn
-	int start_khz = gov_profile.f_max; // default: start high so the first frames never starve
+	if (getenv("GOV_DISABLE")) gov_mem_on = 0; // no controller = nothing can ever climb back (review 1)
+	// FAST-SINK, not start-low (review finding 3): boot always starts at f_max — some cores
+	// do heavy pre-video work and the resize burst only fires after the first frame. The
+	// remembered floor is ARMED instead, and applied by the tick loop after the first
+	// healthy (SLACK, non-FF) sample — one ~0.5s tick at f_max, then straight down.
 	if (gov_mem_on) {
 		int mem = gov_mem_read();
 		if (mem >= gov_profile.f_min && mem < gov_profile.f_max) {
-			start_khz = mem + GOV_STEP_KHZ; // one step of headroom over the remembered floor
-			if (start_khz > gov_profile.f_max) start_khz = gov_profile.f_max;
-			gov_state.ceil_khz = start_khz;
-			LOG_info("gov-memory: starting at %d kHz (remembered floor %d)\n", start_khz, mem);
+			gov_mem_fastsink_khz = mem + GOV_STEP_KHZ; // one step of headroom over the remembered floor
+			if (gov_mem_fastsink_khz > gov_profile.f_max) gov_mem_fastsink_khz = gov_profile.f_max;
+			LOG_info("gov-memory: fast-sink armed to %d kHz (remembered floor %d)\n", gov_mem_fastsink_khz, mem);
 		}
 	}
-	PWR_setCPUMaxFreq(start_khz);
+	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
 static void Gov_restore(void) {
@@ -5734,6 +5738,7 @@ int main(int argc , char* argv[]) {
 		
 		if (show_menu) {
 			park_core("menu"); // savestates must never overlap a running core.run
+			gov_mem_save(); // parked boundary: persist without touching the gameplay audio reserve (review 7)
 			// a menu visit invalidates any in-flight auto-threading window HERE: the
 			// abort check in the tick path never observes show_menu because Menu_loop
 			// is synchronous and clears it before returning (audit 2026-07-11). Without
@@ -5972,11 +5977,29 @@ int main(int argc , char* argv[]) {
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
-					gov_mem_note(gov_state.ceil_khz);
-					{ // checkpoint the memory every ~2min of ticks: survives battery pulls
-					  // and SIGKILL; gov_mem_save dedupes so repeat writes are skipped
-						static int gm_ticks = 0;
-						if (++gm_ticks >= 240) { gm_ticks = 0; gov_mem_save(); }
+					// gov-memory: LEARN only qualified windows — target held (SLACK or BUSY)
+					// at normal speed. SLIP/BIGSLIP windows (including thermal-forced sinks
+					// that fail to hold) and FF workloads never vote, so a hot or struggling
+					// session cannot persist a floor the game was audibly slow at (review 2).
+					if (!fast_forward && (frame_overrun == GOV_SIGNAL_SLACK || frame_overrun == GOV_SIGNAL_BUSY))
+						gov_mem_note(gov_state.ceil_khz);
+					// gov-memory FAST-SINK: first healthy sample proves the workload is the
+					// remembered one — jump the ladder. presink/since_sink plug into the
+					// existing probe-undo: if the very next tick slips, one tick restores.
+					// The arm expires after ~2min unconsumed (scene is clearly heavier now).
+					if (gov_mem_fastsink_khz > 0) {
+						static int gm_arm_ticks = 0;
+						if (++gm_arm_ticks > 240) gov_mem_fastsink_khz = 0;
+						else if (!fast_forward && frame_overrun == GOV_SIGNAL_SLACK
+							&& gov_mem_fastsink_khz < gov_state.ceil_khz) {
+							LOG_info("gov-memory: fast-sink %d->%d kHz after healthy tick\n",
+								gov_state.ceil_khz, gov_mem_fastsink_khz);
+							gov_state.presink_khz = gov_state.ceil_khz;
+							gov_state.since_sink = 0;
+							gov_state.ceil_khz = gov_mem_fastsink_khz;
+							PWR_setCPUMaxFreq(gov_state.ceil_khz);
+							gov_mem_fastsink_khz = 0;
+						}
 					}
 					gov_frames = 0;
 				}
