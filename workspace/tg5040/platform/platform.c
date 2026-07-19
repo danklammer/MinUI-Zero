@@ -555,8 +555,26 @@ static void drawDebugOverlay(void) {
 		dbg.tex_w = dbg.w; dbg.tex_h = dbg.h;
 	}
 	if (!dbg.tex_top || !dbg.tex_bottom || !dbg_argb) return;
-	dbgConvert(dbg.tex_top, dbg.top);
-	dbgConvert(dbg.tex_bottom, dbg.bottom);
+	// convert+upload only when the strip content changed (text updates ~1Hz; doing this
+	// per frame measured ~1.9ms/frame — the HUD must not distort what it displays)
+	static uint16_t* prev_top = NULL; static uint16_t* prev_bot = NULL;
+	static int prev_n = 0;
+	int strip_n = dbg.stride * dbg.h;
+	if (prev_n != strip_n) {
+		free(prev_top); free(prev_bot);
+		prev_top = malloc(strip_n * 2); prev_bot = malloc(strip_n * 2);
+		if (prev_top) memset(prev_top, 0, strip_n * 2);
+		if (prev_bot) memset(prev_bot, 0, strip_n * 2);
+		prev_n = (prev_top && prev_bot) ? strip_n : 0;
+	}
+	if (!prev_n || memcmp(prev_top, dbg.top, strip_n * 2) != 0) {
+		dbgConvert(dbg.tex_top, dbg.top);
+		if (prev_n) memcpy(prev_top, dbg.top, strip_n * 2);
+	}
+	if (!prev_n || memcmp(prev_bot, dbg.bottom, strip_n * 2) != 0) {
+		dbgConvert(dbg.tex_bottom, dbg.bottom);
+		if (prev_n) memcpy(prev_bot, dbg.bottom, strip_n * 2);
+	}
 	// anchor to the game's panel rect (classic in-frame HUD hugged the game image):
 	// one scaled pixel of margin inside the frame edges, clamped to the panel
 	int S = DBG_OVERLAY_SCALE;

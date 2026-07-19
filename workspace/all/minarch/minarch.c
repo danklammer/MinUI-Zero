@@ -3270,6 +3270,8 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
 }
+static int dup_force_present = 0; // menu exit / sleep resume repaint identical bytes on purpose
+
 static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
 	// return;
 
@@ -3278,9 +3280,10 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// Duplicate-frame rate (ZERO_PRESENT_STATS=1): how often the core emits a frame
 	// byte-identical to the last one — the addressable win for present-skip (measure
 	// before building). memcmp+memcpy cost is why this is diagnostic-only.
+	int dup_frame = 0;
 	{
 		static int dup_on = -1;
-		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL);
+		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
 		if (dup_on && data) {
 			static void* prev = NULL; static size_t prev_sz = 0;
 			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
@@ -3288,7 +3291,7 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; }
 			if (prev && prev_sz == sz) {
 				df_n++;
-				if (memcmp(prev, data, sz) == 0) df_dup++;
+				if (memcmp(prev, data, sz) == 0) { df_dup++; dup_frame = 1; }
 				else memcpy(prev, data, sz);
 			}
 			uint32_t df_now = SDL_GetTicks();
@@ -3322,6 +3325,27 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 	// eg. PS@10 60/240
 	
 	if (!data) return;
+
+	// Present-skip prototype (ZERO_DUP_SKIP=1): a byte-identical frame changes nothing
+	// on screen — skip upload/submit/swap entirely and let the CPU idle sooner. Pacing
+	// is owned by the audio block (vsync is the secondary clock in the serial path).
+	// Rails: never during FF (limitFF owns that), never with the HUD on (it must
+	// measure the true pipeline and repaints per second), always honor a forced
+	// present (menu exit / sleep resume repaint the same bytes on purpose), and
+	// present at least every 30th frame so PLAT-side per-flip duties (undervolt
+	// reassert) keep their cadence on long-static screens.
+	{
+		static int skip_on = -1;
+		if (skip_on == -1) skip_on = (getenv("ZERO_DUP_SKIP") != NULL);
+		static int dup_streak = 0;
+		if (skip_on && dup_frame && !show_debug && !fast_forward
+			&& !dup_force_present && dup_streak < 30) {
+			dup_streak++;
+			return;
+		}
+		dup_streak = 0;
+		dup_force_present = 0;
+	}
 
 	fps_ticks += 1;
 	
@@ -3775,6 +3799,7 @@ void Menu_afterSleep(void) {
 	// sleep interval cannot be classified as a gameplay slowdown on resume.
 	RunLoop_resetWindow();
 	Gov_restore();
+	dup_force_present = 1; // wake repaint may be byte-identical; present it anyway
 }
 
 typedef struct MenuList MenuList;
@@ -5295,6 +5320,7 @@ static void Menu_loop(void) {
 		}
 		GFX_setEffect(screen_effect);
 		GFX_clear(screen);
+		dup_force_present = 1; // same bytes as before the menu, but the screen must repaint
 		video_refresh_callback(renderer.src, renderer.true_w, renderer.true_h, renderer.src_p);
 		
 		Gov_restore();
