@@ -82,5 +82,6 @@ void gov_burst(GovState* st, const GovProfile* p);
 
 // Read the CPU thermal zone in Celsius, or -1 if unavailable. Exposed for logging/tests.
 int gov_read_temp_c(void);
+int gov_read_cur_khz(void); // live scaling_cur_freq in kHz (-1 if unreadable)
 
 #endif // GOVERNOR_H

@@ -28,6 +28,7 @@ void PLAT_setCPUVoltForCeil(int khz);
 
 // CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
+#define GOV_CUR_FREQ   "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
 
 // MEASURED OPP table (device 2026-06-30): 408 600 816 1008 1200 1416 1608 1800 2000 MHz.
 // 2000000 is exposed but is the OC we avoid (never require overclocking); cap at 1800.
@@ -46,6 +47,15 @@ int gov_read_temp_c(void) {
 	if (fscanf(f, "%d", &mc) != 1) mc = -1;
 	fclose(f);
 	return mc < 0 ? -1 : mc / 1000; // milli-C -> C
+}
+
+int gov_read_cur_khz(void) {
+	FILE* f = fopen(GOV_CUR_FREQ, "r");
+	if (!f) return -1;
+	int khz = -1;
+	if (fscanf(f, "%d", &khz) != 1) khz = -1;
+	fclose(f);
+	return khz;
 }
 
 void gov_init(GovState* st, const GovProfile* p) {

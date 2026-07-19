@@ -3323,11 +3323,21 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		sprintf(debug_text, "%i,%i %ix%i", renderer.dst_x,renderer.dst_y, renderer.src_w*scale,renderer.src_h*scale);
 		blitBitmapText(debug_text,-x,y,(uint16_t*)data,pitch/2, width,height);
 	
-		// governor dashboard: ceiling / temp / generation-vs-target fps / % of total CPU
+		// governor dashboard: live clock/ceiling / temp / generation-vs-target fps / % of total CPU
 		static int hud_temp = -1;
+		static int hud_cur_khz = -1;
 		static uint32_t hud_temp_at = 0;
 		uint32_t hud_now = SDL_GetTicks();
-		if (hud_now - hud_temp_at >= 1000) { hud_temp = gov_read_temp_c(); hud_temp_at = hud_now; }
+		if (hud_now - hud_temp_at >= 1000) {
+			hud_temp = gov_read_temp_c();
+			hud_cur_khz = gov_read_cur_khz();
+			hud_temp_at = hud_now;
+		}
+		// cur/ceil: what schedutil picked this second vs the governor's cap. On fixed
+		// brackets (8-bit 1008/1008) the cap never moves — the live clock is the story.
+		char hud_mhz[24];
+		if (hud_cur_khz > 0) sprintf(hud_mhz, "%i/%iMHZ", hud_cur_khz/1000, gov_state.ceil_khz/1000);
+		else sprintf(hud_mhz, "%iMHZ", gov_state.ceil_khz/1000);
 		if (thread_video && core.fps > 0) {
 			// threaded mode: core-thread utilization + LIVE smoothness counters —
 			// D = duplicated frames/s (present starved), S = skipped frames/s (core
