@@ -21,6 +21,10 @@
 // One real OPP step in kHz (MEASURED gaps 192-216MHz; shared with per-game governor memory)
 #define GOV_STEP_KHZ 216000
 
+// Ticks of slack before sinking (sink slow = no hunting; the gov-memory accelerated
+// ladder waives exactly this dwell, never the other gates)
+#define GOV_DN_DWELL 4
+
 // Per-system ceiling bracket, in kHz. The controller keeps the ceiling within [f_min,f_max].
 // f_max must be a verified-stock OPP — never an overclock (no 2.0GHz on tg5040).
 typedef struct {
