@@ -14,4 +14,6 @@ cd "$HOME"
 # closed-loop governor clock bracket (kHz); see docs/thermal-governor-design.md
 export MINARCH_FMIN=1008000
 export MINARCH_FMAX=1008000
+# audio ring capacity ~= latency under audio-block pacing; 8-bit worst stall ~20ms fsync
+export MINARCH_SND_RING_MS=100
 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"

@@ -3297,7 +3297,11 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 			uint32_t df_now = SDL_GetTicks();
 			if (!df_at) df_at = df_now;
 			else if (df_now - df_at >= 1000) {
-				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%)\n", df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0);
+				static long df_ur0 = 0;
+				SND_Stats dfs; SND_getStats(&dfs);
+				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
+					df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
+				df_ur0 = dfs.underruns;
 				df_n = df_dup = 0; df_at = df_now;
 			}
 		}

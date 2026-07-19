@@ -1451,6 +1451,21 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	                         // set by the production/consumption balance. 5 frames (83ms)
 	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
 	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
+	{	// per-system capacity (MINARCH_SND_RING_MS, exported by the pak launch.sh like
+		// MINARCH_FMIN): audio-block pacing runs the ring near-full, so capacity IS the
+		// steady-state latency. The 200ms default absorbs pcsx stalls; 8-bit cores'
+		// worst stall is a ~20ms SRAM fsync — they can ride much lower.
+		char* ring_ms = getenv("MINARCH_SND_RING_MS");
+		if (ring_ms && frame_rate > 0) {
+			int ms = atoi(ring_ms);
+			if (ms >= 67 && ms <= 500) {
+				int frames = (int)((ms * frame_rate) / 1000.0 + 0.5);
+				if (frames < 4) frames = 4;
+				snd.buffer_seconds = frames;
+				LOG_info("SND ring capacity override: %dms (%d frames)\n", ms, frames);
+			}
+		}
+	}
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
 	
