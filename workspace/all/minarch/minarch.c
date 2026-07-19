@@ -271,6 +271,49 @@ static void ta_write_verdict(int v) {
 	putFile(path, v ? "1" : "0");
 	LOG_info("auto-thread: verdict %s persisted\n", v ? "THREADED" : "single");
 }
+
+// ---- per-game governor memory: every session re-converges from f_max, spending the
+// hottest minute of play re-learning a floor the last session already proved. Remember
+// each game's settled ceiling (the time-dominant one, not the exit snapshot) in a .gov
+// sidecar beside the .thread verdict, and start the next session one OPP step above it.
+// Safety is the existing machinery: BIGSLIP jumps to f_max within ~1s if the memory is
+// stale, and scene-change bursts are unaffected. ZERO_NO_GOV_MEMORY disables.
+static int gov_mem_on = 1;
+static int gov_mem_hist_khz[16];
+static uint32_t gov_mem_hist_n[16];
+static void gov_mem_path(char* out) {
+	sprintf(out, "%s/%s.gov", core.config_dir, game.name);
+}
+static int gov_mem_read(void) {
+	char path[MAX_PATH];
+	gov_mem_path(path);
+	return exists(path) ? getInt(path) : 0;
+}
+static void gov_mem_note(int khz) {
+	for (int i=0; i<16; i++) {
+		if (gov_mem_hist_n[i]==0 || gov_mem_hist_khz[i]==khz) {
+			gov_mem_hist_khz[i] = khz;
+			gov_mem_hist_n[i]++;
+			return;
+		}
+	}
+}
+static void gov_mem_save(void) {
+	if (!gov_mem_on) return; // an empty histogram (governor never ran) exits below anyway
+	uint32_t total = 0, best_n = 0; int best = 0;
+	for (int i=0; i<16; i++) {
+		total += gov_mem_hist_n[i];
+		if (gov_mem_hist_n[i] > best_n) { best_n = gov_mem_hist_n[i]; best = gov_mem_hist_khz[i]; }
+	}
+	if (total < 60 || best <= 0) return; // under ~30s of ticks: not representative
+	if (best == gov_mem_read()) return;  // unchanged: spare the card write
+	char path[MAX_PATH];
+	gov_mem_path(path);
+	char val[16];
+	sprintf(val, "%d", best);
+	putFile(path, val);
+	LOG_info("gov-memory: settled ceiling %d kHz persisted (%u of %u ticks)\n", best, best_n, total);
+}
 static void Game_open(char* path) {
 	LOG_info("Game_open\n");
 	memset(&game, 0, sizeof(game));
@@ -1193,7 +1236,19 @@ static void Gov_start(void) {
 	}
 	gov_init(&gov_state, &gov_profile);
 	gov_active = 1;
-	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
+	gov_mem_on = (getenv("ZERO_NO_GOV_MEMORY") == NULL);
+	if (gov_profile.f_min == gov_profile.f_max) gov_mem_on = 0; // fixed bracket: nothing to learn
+	int start_khz = gov_profile.f_max; // default: start high so the first frames never starve
+	if (gov_mem_on) {
+		int mem = gov_mem_read();
+		if (mem >= gov_profile.f_min && mem < gov_profile.f_max) {
+			start_khz = mem + GOV_STEP_KHZ; // one step of headroom over the remembered floor
+			if (start_khz > gov_profile.f_max) start_khz = gov_profile.f_max;
+			gov_state.ceil_khz = start_khz;
+			LOG_info("gov-memory: starting at %d kHz (remembered floor %d)\n", start_khz, mem);
+		}
+	}
+	PWR_setCPUMaxFreq(start_khz);
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
 }
 static void Gov_restore(void) {
@@ -5910,6 +5965,12 @@ int main(int argc , char* argv[]) {
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
+					gov_mem_note(gov_state.ceil_khz);
+					{ // checkpoint the memory every ~2min of ticks: survives battery pulls
+					  // and SIGKILL; gov_mem_save dedupes so repeat writes are skipped
+						static int gm_ticks = 0;
+						if (++gm_ticks >= 240) { gm_ticks = 0; gov_mem_save(); }
+					}
 					gov_frames = 0;
 				}
 			}
@@ -6074,6 +6135,7 @@ int main(int argc , char* argv[]) {
 		}
 	}
 
+	gov_mem_save(); // persist this session's settled ceiling for the next launch
 	Menu_quit();
 	QuitSettings();
 
