@@ -44,7 +44,7 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup
+.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-telemetry:
@@ -59,6 +59,8 @@ test-reproducibility:
 	sh ./workspace/all/cores/run-source-verifier-tests.sh
 test-wakeup:
 	sh ./workspace/all/common/run-wakeup-tests.sh
+test-gov-memory:
+	sh ./workspace/all/common/run-gov-memory-tests.sh
 
 build:
 	# ----------------------------------------------------

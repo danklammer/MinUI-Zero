@@ -21,6 +21,7 @@
 #include "save_io.h"
 #include "scaler.h"
 #include "governor.h"
+#include "gov_memory.h"
 #include "telemetry.h"
 
 ///////////////////////////////////////
@@ -280,18 +281,11 @@ static void ta_write_verdict(int v) {
 // sidecar beside the .thread verdict, and start the next session one OPP step above it.
 // Safety is the existing machinery: BIGSLIP jumps to f_max within ~1s if the memory is
 // stale, and scene-change bursts are unaffected. ZERO_NO_GOV_MEMORY disables.
-static int gov_mem_on = 1;
-static int gov_mem_fastsink_khz = 0; // armed by Gov_start, consumed by the accelerated ladder
-static unsigned rate_seq = 0;        // bumped by trackFPS each time cpu_double refreshes
-static int gov_mem_window_dirty = 1; // ceiling moved inside the current rate window: votes are unattributable
-static void gov_mem_cancel(const char* why) { // scene changed: the remembered floor is no longer evidence
-	if (gov_mem_fastsink_khz) {
-		LOG_info("gov-memory: fast-sink canceled (%s)\n", why);
-		gov_mem_fastsink_khz = 0;
-	}
-}
-static int gov_mem_hist_khz[16];
-static uint32_t gov_mem_hist_n[16];
+// The policy itself (arm / accelerated ladder / vote attribution) lives in the PURE
+// gov_memory unit with its own host matrix (review round 4). minarch owns only the
+// sidecar file I/O, env gating, burst-site policy, and logging.
+static GovMemState gov_mem;
+static unsigned rate_seq = 0; // bumped by trackFPS each time cpu_double refreshes
 static void gov_mem_path(char* out) {
 	sprintf(out, "%s/%s.gov", core.config_dir, game.name);
 }
@@ -300,31 +294,18 @@ static int gov_mem_read(void) {
 	gov_mem_path(path);
 	return exists(path) ? getInt(path) : 0;
 }
-static void gov_mem_note(int khz) {
-	for (int i=0; i<16; i++) {
-		if (gov_mem_hist_n[i]==0 || gov_mem_hist_khz[i]==khz) {
-			gov_mem_hist_khz[i] = khz;
-			gov_mem_hist_n[i]++;
-			return;
-		}
-	}
-}
 static void gov_mem_save(void) {
-	if (!gov_mem_on) return; // an empty histogram (governor never ran) exits below anyway
-	uint32_t total = 0, best_n = 0; int best = 0;
-	for (int i=0; i<16; i++) {
-		total += gov_mem_hist_n[i];
-		if (gov_mem_hist_n[i] > best_n) { best_n = gov_mem_hist_n[i]; best = gov_mem_hist_khz[i]; }
-	}
-	if (total < 60 || best <= 0) return; // under ~30s of ticks: not representative
-	if (best == gov_mem_read()) return;  // unchanged: spare the card write
+	int best = govmem_best(&gov_mem, 60); // <~30s of qualified votes: not representative
+	if (best <= 0) return;
+	if (best == gov_mem_read()) return;   // unchanged: spare the card write
 	char path[MAX_PATH];
 	gov_mem_path(path);
 	char val[16];
 	sprintf(val, "%d", best);
 	putFile(path, val);
-	LOG_info("gov-memory: settled ceiling %d kHz persisted (%u of %u ticks)\n", best, best_n, total);
+	LOG_info("gov-memory: settled ceiling %d kHz persisted\n", best);
 }
+// (gov_scene_burst is defined after Gov_start: it needs gov_state/gov_profile)
 static void Game_open(char* path) {
 	LOG_info("Game_open\n");
 	memset(&game, 0, sizeof(game));
@@ -1247,23 +1228,16 @@ static void Gov_start(void) {
 	}
 	gov_init(&gov_state, &gov_profile);
 	gov_active = 1;
-	gov_mem_on = (getenv("ZERO_NO_GOV_MEMORY") == NULL);
-	if (gov_profile.f_min == gov_profile.f_max) gov_mem_on = 0; // fixed bracket: nothing to learn
-	{ // no controller = nothing can ever climb back (review 1); value semantics match governor.c ("0" = enabled)
-		const char* gd = getenv("GOV_DISABLE");
-		if (gd && gd[0] && gd[0] != '0') gov_mem_on = 0;
-	}
-	// FAST-SINK, not start-low (review finding 3): boot always starts at f_max — some cores
-	// do heavy pre-video work and the resize burst only fires after the first frame. The
-	// remembered floor is ARMED instead, and applied by the tick loop after the first
-	// healthy (SLACK, non-FF) sample — one ~0.5s tick at f_max, then straight down.
-	if (gov_mem_on) {
-		int mem = gov_mem_read();
-		if (mem >= gov_profile.f_min && mem < gov_profile.f_max) {
-			gov_mem_fastsink_khz = mem + GOV_STEP_KHZ; // one step of headroom over the remembered floor
-			if (gov_mem_fastsink_khz > gov_profile.f_max) gov_mem_fastsink_khz = gov_profile.f_max;
-			LOG_info("gov-memory: fast-sink armed to %d kHz (remembered floor %d)\n", gov_mem_fastsink_khz, mem);
-		}
+	// FAST-SINK, not start-low (reviews r1-r4): boot always starts at f_max; the pure
+	// unit arms the remembered floor and the tick loop descends one OPP per fresh
+	// healthy sample. Range/fixed-bracket/disable validation lives in govmem_init.
+	{
+		int gm_enabled = (getenv("ZERO_NO_GOV_MEMORY") == NULL);
+		const char* gd = getenv("GOV_DISABLE"); // value semantics match governor.c ("0" = enabled)
+		if (gd && gd[0] && gd[0] != '0') gm_enabled = 0;
+		govmem_init(&gov_mem, gm_enabled, gm_enabled ? gov_mem_read() : 0, &gov_profile);
+		if (govmem_arm_khz(&gov_mem))
+			LOG_info("gov-memory: fast-sink armed to %d kHz\n", govmem_arm_khz(&gov_mem));
 	}
 	PWR_setCPUMaxFreq(gov_profile.f_max); // start high so the first frames never starve
 	LOG_info("governor: f_min=%d f_max=%d kHz\n", gov_profile.f_min, gov_profile.f_max);
@@ -1271,6 +1245,15 @@ static void Gov_start(void) {
 static void Gov_restore(void) {
 	if (gov_active) PWR_setCPUMaxFreq(gov_state.ceil_khz);
 	else setOverclock(overclock);
+}
+// The ONLY way to burst: every burst invalidates the in-flight vote window (an f_max
+// burst still changes the workload the window measured — review r4); arm cancellation
+// is caller policy (later geometry + FF toggles cancel, initial geometry does not).
+static void gov_scene_burst(const char* why, int cancel_arm) {
+	int had_arm = govmem_arm_khz(&gov_mem);
+	govmem_on_burst(&gov_mem, cancel_arm);
+	if (had_arm && cancel_arm) LOG_info("gov-memory: fast-sink canceled (%s)\n", why);
+	gov_burst(&gov_state, &gov_profile);
 }
 static int* g_drc_ppm_ptr = NULL;
 static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
@@ -2071,7 +2054,7 @@ static int setFastForward(int enable) {
 	// clock for minutes after FF ended (Dr. Mario stuck at 1008 for 85s+, fresh session
 	// descended normally). Burst clears fail/futile state and re-finds the floor honestly
 	// in either direction.
-	if (changed && gov_active) { gov_burst(&gov_state, &gov_profile); gov_mem_cancel("ff toggle"); }
+	if (changed && gov_active) gov_scene_burst("ff toggle", 1);
 	// PS1's presentation-drop catch-up protects normal-play audio, but deliberately
 	// outrunning presentation during FF must not be mistaken for a delivery underrun.
 	if (changed && presentation_drop_supported) GFX_setPresentationDrop(!enable);
@@ -3463,10 +3446,9 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		selectScaler(width, height, pitch);
 		GFX_clearAll();
 		if (size_changed) { // provision before the cost lands
-			gov_burst(&gov_state, &gov_profile);
 			// initial geometry acquisition is how every session begins — only a LATER
-			// real dimension change invalidates the remembered floor (review r3)
-			if (!first_geometry) gov_mem_cancel("scene change");
+			// real dimension change invalidates the remembered floor (reviews r3/r4)
+			gov_scene_burst("scene change", !first_geometry);
 		}
 	}
 	
@@ -6012,49 +5994,15 @@ int main(int argc , char* argv[]) {
 					}
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
-					if (gov_state.ceil_khz != prev_ceil) { // ceiling moved: log, and poison the current vote window
+					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
-						gov_mem_window_dirty = 1;
-					}
-					// gov-memory: LEARN only qualified windows — target held (SLACK or BUSY)
-					// at normal speed, voted AT MOST ONCE per published rate sample, and only
-					// when the ceiling stayed constant across the whole sampled window (a
-					// window spanning a ceiling change measured neither ceiling — review r3).
 					{
-						static unsigned gm_seen_seq = 0;
-						if (rate_seq != gm_seen_seq) {
-							if (!gov_mem_window_dirty && !fast_forward
-								&& (frame_overrun == GOV_SIGNAL_SLACK || frame_overrun == GOV_SIGNAL_BUSY))
-								gov_mem_note(prev_ceil);
-							gm_seen_seq = rate_seq;
-							gov_mem_window_dirty = 0;
-						}
-					}
-					// gov-memory ACCELERATED LADDER (review round 2): while armed, waive only
-					// the sink DWELL — one OPP per tick, and only on a tick whose SLACK verdict
-					// came from a FRESH cpu_double sample (rate_seq advanced since our last
-					// accelerated step). Every other gate — predictive fit, fail-memory,
-					// thermal, presink-undo — is the normal machinery, because the sink happens
-					// through gov_tick itself on the NEXT pass (slack_run pre-load). A SLIP
-					// disarms (scene heavier than memory); bursts cancel via gov_mem_cancel;
-					// the arm expires after ~2min unconsumed.
-					if (gov_mem_fastsink_khz > 0) {
-						static int gm_arm_ticks = 0;
-						static unsigned gm_last_seq = 0;
-						if (++gm_arm_ticks > 240) gov_mem_cancel("arm expired");
-						else if (fast_forward) { /* hold: FF retarget owns the ceiling */ }
-						else if (frame_overrun == GOV_SIGNAL_SLIP || frame_overrun == GOV_SIGNAL_BIGSLIP)
-							gov_mem_cancel("slip before target");
-						else if (gov_state.ceil_khz <= gov_mem_fastsink_khz) {
-							LOG_info("gov-memory: reached remembered floor %d kHz\n", gov_mem_fastsink_khz);
-							gov_mem_fastsink_khz = 0;
-						}
-						else if (frame_overrun == GOV_SIGNAL_SLACK && rate_seq != gm_last_seq) {
-							gm_last_seq = rate_seq;
-							// waive the dwell for the NEXT tick's sink decision; gov_step still
-							// applies cool_enough, fail-memory, and f_min clamps itself
-							if (gov_state.slack_run < GOV_DN_DWELL - 1) gov_state.slack_run = GOV_DN_DWELL - 1;
-						}
+						int gm = govmem_post_tick(&gov_mem, frame_overrun, fast_forward, rate_seq, prev_ceil, gov_state.ceil_khz);
+						if ((gm & GOVMEM_PRELOAD_DWELL) && gov_state.slack_run < GOV_DN_DWELL - 1)
+							gov_state.slack_run = GOV_DN_DWELL - 1; // waive ONLY the dwell; gov_step keeps every other gate
+						if (gm & GOVMEM_REACHED) LOG_info("gov-memory: reached remembered floor\n");
+						if (gm & GOVMEM_DISARMED_SLIP) LOG_info("gov-memory: fast-sink canceled (slip before target)\n");
+						if (gm & GOVMEM_EXPIRED) LOG_info("gov-memory: fast-sink expired unconsumed\n");
 					}
 					gov_frames = 0;
 				}
