@@ -11,12 +11,14 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include <msettings.h>
 
 #include <time.h>
 #include "defines.h"
 #include "api.h"
+#include "ff_audio_rate.h"
 #include "utils.h"
 
 ///////////////////////////////
@@ -221,6 +223,14 @@ void GFX_startFrame(void) {
 uint32_t GFX_getFrameWorkUs(void) {
 	return frame_work_us;
 }
+void GFX_finishFrameWork(void) {
+	// present-skip path: the frame did real work even though it will not flip — close
+	// the sample so per-frame work consumers (governor batch) never read a stale value
+	if (frame_start_us) {
+		frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us);
+		frame_start_us = 0;
+	}
+}
 int GFX_didOverrun(void) {
 	return frame_overran;
 }
@@ -230,6 +240,12 @@ static uint32_t SND_lastBatchMs(void); // last producer write, for the menu/paus
 static uint32_t gfx_flip_wait_us_store; // defined below GFX_flip via alias
 #define gfx_flip_wait_us gfx_flip_wait_us_store
 static int gfx_drop_active = 0; // presentation-drop state (game path only); menu flips clear it
+static int gfx_drop_enabled = 0;
+void GFX_setPresentationDrop(int enabled) {
+	gfx_drop_enabled = enabled;
+	gfx_drop_active = 0;
+	LOG_info("presentation-drop: %s\n", enabled ? "enabled" : "disabled");
+}
 void GFX_flip(SDL_Surface* screen) {
 	// UNCONDITIONAL present — the menu/UI/single-shot path. Presentation-drop must never
 	// apply here: menu screens render once and then wait for input, so one skipped
@@ -251,6 +267,12 @@ void GFX_flip(SDL_Surface* screen) {
 }
 void GFX_flipGame(SDL_Surface* screen) {
 	// GAME-RUN-LOOP present: the ONLY path where presentation-drop may skip.
+	// Catch-up was measured on PS1, but Supafaust's healthy queue also crosses the
+	// PS1-tuned 50% threshold in steady state. Never drop another system's frames.
+	if (!gfx_drop_enabled) {
+		GFX_flip(screen);
+		return;
+	}
 	//
 	// PRESENTATION-DROP CATCH-UP (task #13 phase 1 — "presentation-drop catch-up").
 	// The v1.3 vsync-skip here was a NO-OP on tg5040: the renderer is created with
@@ -343,6 +365,7 @@ FALLBACK_IMPLEMENTATION void PLAT_setCPUVoltForCeil(int khz) { } // voltage auth
 FALLBACK_IMPLEMENTATION void PLAT_restoreCPUVolt(void) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_emergencyRestoreCPUVolt(void) { } // no-op
 FALLBACK_IMPLEMENTATION void PLAT_uvReassert(void) { } // no-op
+FALLBACK_IMPLEMENTATION void PLAT_setSystemRumble(int strength) { PLAT_setRumble(strength); }
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding) {
 	int text_width;
@@ -1088,6 +1111,10 @@ static struct SND_Context {
 	int rate_adjust_ppm;    // dynamic rate control: pace the core to the panel's true rate
 	
 	int buffer_seconds;     // current_audio_buffer_size
+	int ring_override_ms;   // MINARCH_SND_RING_MS: ring capacity in DAC-output milliseconds (0 = default sizing)
+	atomic_int paused;      // device closed for sleep: producers drop instead of waiting. Atomic:
+	                        // the entry guard reads it pre-lock and a future concurrent CORE
+	                        // producer must not race SND_pause/SND_resume (review r3)
 	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
@@ -1097,14 +1124,35 @@ static struct SND_Context {
 	int frame_in;     // buf_w
 	int frame_out;    // buf_r
 	int frame_filled; // max_buf_w
-	// audio-health counters (benchmark telemetry; benign cross-thread race, stats only)
-	volatile long underruns;
-	volatile long overruns;
-	volatile long wait_ms;
+	// Audio-health counters are consumed by MAIN and the depth-2 CORE work sampler.
+	// Atomics keep telemetry and governor timing defined without taking the DAC lock.
+	_Atomic long underruns;
+	_Atomic long overruns;
+	_Atomic long wait_ms;
+
+	int resample_diff;
+	SND_Frame resample_prev;
+	FFAudioRate ff_rate;
+	int ff_active;
+	int ff_audible;
 	
 	SND_Resampler resample;
 } snd = {0};
+static _Atomic int snd_ff_nonblock = 0;
 static void SND_publishOccupancy(void); // defined with the ring helpers below
+// Event-driven producer backpressure: SND_batchSamples waits here (never while holding
+// the SDL audio lock) and the callback signals freed capacity once per consume pass.
+// The generation counter closes the signal-before-wait race window.
+static pthread_mutex_t snd_space_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t snd_space_cv = PTHREAD_COND_INITIALIZER;
+static unsigned snd_space_gen = 0;
+static void SND_signalSpace(void) {
+	pthread_mutex_lock(&snd_space_mx);
+	snd_space_gen++;
+	pthread_cond_broadcast(&snd_space_cv);
+	pthread_mutex_unlock(&snd_space_mx);
+}
+
 static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // plat_sound_callback
 	
 	// return (void)memset(stream,0,len); // TODO: tmp, silent
@@ -1129,8 +1177,9 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 		if (snd.frame_out>=snd.frame_count) snd.frame_out = 0;
 	}
 	SND_publishOccupancy(); // consumer side of the presentation-drop snapshot
+	SND_signalSpace(); // wake a producer blocked on a full ring
 
-	if (len>0) snd.underruns++; // ring drained before the request was filled (audible crackle)
+	if (len>0) atomic_fetch_add_explicit(&snd.underruns, 1, memory_order_relaxed); // ring drained before the request was filled (audible crackle)
 	int zero = len>0 && len==SAMPLES;
 	if (zero) return (void)memset(out,0,len*(sizeof(int16_t) * 2));
 	// else if (len>=5) LOG_info("%8i BUFFER UNDERRUN (%i/%i frames)\n", ms(), len,full_len);
@@ -1145,6 +1194,12 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 	size_t old_frame_count = snd.frame_count;
 	size_t new_frame_count = snd.buffer_seconds * snd.sample_rate_in / snd.frame_rate;
+	if (snd.ring_override_ms > 0 && snd.sample_rate_out > 0) {
+		// capacity requested in wall-clock ms: the ring holds output-rate frames
+		new_frame_count = (size_t)snd.ring_override_ms * snd.sample_rate_out / 1000;
+		LOG_info("SND ring capacity override: %dms (%zu frames at %dHz out)\n",
+			snd.ring_override_ms, new_frame_count, snd.sample_rate_out);
+	}
 	if (new_frame_count==0) return;
 	
 	// LOG_info("frame_count: %i (%i * %i / %f)\n", snd.frame_count, snd.buffer_seconds, snd.sample_rate_in, snd.frame_rate);
@@ -1169,6 +1224,7 @@ static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 	snd.frame_filled = snd.frame_count - 1;
 	
 	SDL_UnlockAudio();
+	SND_signalSpace(); // reshaped ring = new space; a waiter must see it (review 5)
 }
 static int SND_resampleNone(SND_Frame frame) { // audio_resample_passthrough
 	snd.buffer[snd.frame_in++] = frame;
@@ -1176,18 +1232,17 @@ static int SND_resampleNone(SND_Frame frame) { // audio_resample_passthrough
 	return 1;
 }
 static int SND_resampleNear(SND_Frame frame) { // audio_resample_nearest
-	static int diff = 0;
 	int consumed = 0;
 
-	if (diff < snd.sample_rate_out) {
+	if (snd.resample_diff < snd.sample_rate_out) {
 		snd.buffer[snd.frame_in++] = frame;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in_adj;
+		snd.resample_diff += snd.sample_rate_in_adj;
 	}
 
-	if (diff >= snd.sample_rate_out) {
+	if (snd.resample_diff >= snd.sample_rate_out) {
 		consumed++;
-		diff -= snd.sample_rate_out;
+		snd.resample_diff -= snd.sample_rate_out;
 	}
 
 	return consumed;
@@ -1198,23 +1253,21 @@ static int SND_resampleLinear(SND_Frame frame) { // audio_resample_linear
 	// Two multiplies per sample — audibly smoother on non-native rates (GBA 32.8kHz,
 	// PS1 44.1kHz -> 48kHz) for effectively zero CPU. Sinc/libsamplerate rejected:
 	// real CPU cost for fidelity this speaker can't reproduce.
-	static SND_Frame prev = {0,0};
-	static int diff = 0;
 	int consumed = 0;
 
-	if (diff < snd.sample_rate_out) {
+	if (snd.resample_diff < snd.sample_rate_out) {
 		SND_Frame out;
-		out.left  = prev.left  + (int16_t)(((int32_t)(frame.left  - prev.left ) * diff) / snd.sample_rate_out);
-		out.right = prev.right + (int16_t)(((int32_t)(frame.right - prev.right) * diff) / snd.sample_rate_out);
+		out.left  = snd.resample_prev.left  + (int16_t)(((int64_t)(frame.left  - snd.resample_prev.left ) * snd.resample_diff) / snd.sample_rate_out);
+		out.right = snd.resample_prev.right + (int16_t)(((int64_t)(frame.right - snd.resample_prev.right) * snd.resample_diff) / snd.sample_rate_out);
 		snd.buffer[snd.frame_in++] = out;
 		if (snd.frame_in >= snd.frame_count) snd.frame_in = 0;
-		diff += snd.sample_rate_in_adj;
+		snd.resample_diff += snd.sample_rate_in_adj;
 	}
 
-	if (diff >= snd.sample_rate_out) {
+	if (snd.resample_diff >= snd.sample_rate_out) {
 		consumed++;
-		diff -= snd.sample_rate_out;
-		prev = frame;
+		snd.resample_diff -= snd.sample_rate_out;
+		snd.resample_prev = frame;
 	}
 
 	return consumed;
@@ -1230,10 +1283,17 @@ static void SND_selectResampler(void) { // plat_sound_select_resampler
 		snd.resample = SND_resampleLinear;
 	}
 }
+static void SND_updateAdjustedRate(void) {
+	int64_t adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
+	if (atomic_load(&snd_ff_nonblock))
+		adjusted = adjusted * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	if (adjusted < 1) adjusted = 1;
+	snd.sample_rate_in_adj = (int)adjusted;
+	SND_selectResampler();
+}
 void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc block)
 	snd.rate_adjust_ppm = ppm;
-	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + ppm) / 1000000);
-	SND_selectResampler();
+	SND_updateAdjustedRate();
 }
 // Torn-free ring-occupancy snapshot for the flip path ("presentation-drop catch-up"):
 // producer (SND_batchSamples, under SDL_LockAudio) and consumer (SDL callback) each
@@ -1242,26 +1302,119 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 // unsynchronized (audit finding). 100 when audio is closed so catch-up can never engage
 // against a dead ring.
 static volatile int snd_ring_pct = 100;
+// Upper 32 bits = ring capacity, lower 32 bits = queued frames. Published wherever
+// producer/consumer indices move so SND_getStats never races those plain ring fields.
+static _Atomic uint64_t snd_ring_frames = 0;
 static volatile uint32_t snd_last_batch_ms = 0; // SDL_GetTicks of the last producer write
 static uint32_t SND_lastBatchMs(void) {
 	return __atomic_load_n(&snd_last_batch_ms, __ATOMIC_ACQUIRE);
 }
 static void SND_publishOccupancy(void) {
 	int pct = 100;
+	uint32_t count = 0;
+	uint32_t queued = 0;
 	if (snd.initialized && snd.frame_count > 0) {
-		int queued = snd.frame_in - snd.frame_out;
-		if (queued < 0) queued += snd.frame_count;
-		pct = (int)((int64_t)queued * 100 / snd.frame_count);
+		int q = snd.frame_in - snd.frame_out;
+		if (q < 0) q += snd.frame_count;
+		queued = (uint32_t)q;
+		count = (uint32_t)snd.frame_count;
+		pct = (int)((int64_t)queued * 100 / count);
 	}
+	atomic_store_explicit(&snd_ring_frames, ((uint64_t)count << 32) | queued,
+	                      memory_order_release);
 	__atomic_store_n(&snd_ring_pct, pct, __ATOMIC_RELEASE);
 }
 static int SND_ringPct(void) {
 	return __atomic_load_n(&snd_ring_pct, __ATOMIC_ACQUIRE);
 }
+
+// FF input arrives faster than the DAC can consume it. Measure that actual production rate
+// and drive the existing integer linear resampler at the same multiplier, evenly selecting
+// samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
+// remains as a safety valve while the first 50ms estimate converges or a core changes speed.
+static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
+static void SND_reprimeLocked(void) {
+	if (snd.initialized && snd.buffer && snd.frame_count>0) {
+		snd.frame_out = snd.frame_in;
+		snd.frame_filled = (snd.frame_in + snd.frame_count - 1) % snd.frame_count;
+		snd.prefilling = 1;
+		SDL_PauseAudio(1);
+		SND_publishOccupancy();
+	}
+}
+void SND_setFastForward(int active, int audible) {
+	active = active ? 1 : 0;
+	audible = active && audible ? 1 : 0;
+	if (active == snd.ff_active && audible == snd.ff_audible) return;
+	if (!snd.initialized) {
+		// Silent fallback after SDL_OpenAudio failure: retain logical mode for callers,
+		// but there is no device, producer, or resampler transaction to synchronize.
+		snd.ff_active = active;
+		snd.ff_audible = audible;
+		atomic_store_explicit(&snd_ff_nonblock, 0, memory_order_relaxed);
+		return;
+	}
+
+	// At depth two MAIN toggles FF while CORE is the audio producer. Serialize every
+	// resampler/rate/ring mutation with SND_batchSamples and the DAC callback.
+	SDL_LockAudio();
+	int was_active = snd.ff_active;
+	int was_audible = snd.ff_active && snd.ff_audible;
+	int will_be_audible = active && audible;
+	snd.ff_active = active;
+	snd.ff_audible = audible;
+	atomic_store(&snd_ff_nonblock, will_be_audible);
+
+	if (will_be_audible && !was_audible) {
+		FFAudioRate_begin(&snd.ff_rate, SDL_GetTicks());
+		snd.resample_diff = 0;
+		SND_updateAdjustedRate();
+	}
+	else if (!will_be_audible && was_audible) {
+		FFAudioRate_end(&snd.ff_rate);
+		snd.resample_diff = 0;
+		SND_updateAdjustedRate();
+	}
+
+	// Silent FF must pause instead of draining into underruns. Every FF exit discards
+	// stale compressed audio and uses the normal 40% prefill gate for a clean handoff.
+	if ((active && !audible) || (!active && was_active)) SND_reprimeLocked();
+	SDL_UnlockAudio();
+	// Wake only after the complete mode/ring transaction is visible. A blocked producer
+	// then observes either FF nonblocking mode or the reprime's newly-created space.
+	SND_signalSpace();
+}
+static void SND_measureFastForward(size_t frames) {
+	if (!atomic_load(&snd_ff_nonblock)) return;
+	if (!FFAudioRate_accumulate(&snd.ff_rate, frames, snd.sample_rate_in)) return;
+	if (FFAudioRate_measure(&snd.ff_rate, snd.sample_rate_in, SDL_GetTicks())) {
+		SND_updateAdjustedRate();
+		static int debug = -1;
+		if (debug < 0) {
+			const char* env = getenv("ZERO_GOV_DEBUG");
+			debug = env && env[0] && env[0] != '0';
+		}
+		if (debug) LOG_info("ff-audio: measured rate %.2fx\n",
+			(double)snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16);
+	}
+}
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
-	if (!snd.initialized || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	// (paused: device closed for sleep — no consumer exists; writing would only queue
+	// stale audio for resume and leave a future concurrent producer waiting on timeouts)
+	// return frame_count; // TODO: tmp, silent
+
+	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
+
+	SDL_LockAudio();
+	SND_measureFastForward(frame_count);
+	// Hardened (v1.4 audit): the prefill gate reads ring indices + prefilling that the
+	// FF->normal drain (SND_setFastForward) mutates under the audio lock — check under the
+	// lock too, so a stale read can never unpause the DAC against just-emptied indices.
+	// (SDL_PauseAudio under SDL_LockAudio is safe: SDL2's audio mutex is recursive, and the
+	// same pattern already ships in SND_setFastForward.)
 	if (snd.prefilling) {
 		int queued = snd.frame_in - snd.frame_out;
 		if (queued < 0) queued += snd.frame_count;
@@ -1270,26 +1423,47 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 			SDL_PauseAudio(0);
 		}
 	}
-	
-	// return frame_count; // TODO: tmp, silent
-	
-	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
-	
-	SDL_LockAudio();
 
 	int consumed = 0;
 	int consumed_frames = 0;
 	while (frame_count > 0) {
-		int tries = 0;
 		int amount = MIN(BATCH_SIZE, frame_count);
-		
-		while (tries < 10 && snd.frame_in==snd.frame_filled) {
-			tries++;
+
+		// Event-driven backpressure (was: unlock/SDL_Delay(1)/relock poll — 5-15 relock
+		// wakeups per paced frame). This block IS audio pacing: wait for the callback's
+		// space signal under a dedicated mutex (never while holding the SDL audio lock,
+		// so there is no order inversion with the callback). A generation counter makes
+		// the wait race-free against a signal landing between unlock and wait, and the
+		// 20ms timedwait cap is lost-wakeup insurance plus the escape hatch for pause/
+		// quit/FF-toggle arriving while blocked (each iteration rechecks the ring and
+		// liveness under the audio lock). wait_ms keeps its meaning — wall ms blocked —
+		// which the governor's pure-work sensor and DRC consume as deltas.
+		uint32_t wait_t0 = 0;
+		while (!snd_ff_nonblock && snd.frame_in==snd.frame_filled) {
+			if (!wait_t0) { wait_t0 = SDL_GetTicks(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
+			pthread_mutex_lock(&snd_space_mx);
+			unsigned g0 = snd_space_gen;
 			SDL_UnlockAudio();
-			SDL_Delay(1);
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += 20 * 1000000L;
+			if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+			while (snd_space_gen == g0)
+				if (pthread_cond_timedwait(&snd_space_cv, &snd_space_mx, &ts) == ETIMEDOUT) break;
+			pthread_mutex_unlock(&snd_space_mx);
 			SDL_LockAudio();
+			if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0) { // torn down/paused while blocked
+				SDL_UnlockAudio();
+				return consumed;
+			}
 		}
-		if (tries) { snd.overruns++; snd.wait_ms += tries; } // buffer full: audio-blocking paced emulation
+		if (wait_t0) {
+			uint32_t waited = SDL_GetTicks() - wait_t0;
+			atomic_fetch_add_explicit(&snd.wait_ms, waited ? waited : 1, memory_order_relaxed);
+		}
+		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
+		// frames and return so emulation never blocks on audio during fast-forward.
+		if (snd_ff_nonblock && snd.frame_in==snd.frame_filled) break;
 		// if (tries) LOG_info("%8i waited %ims for buffer to get low...\n", ms(), tries);
 
 		while (amount && snd.frame_in != snd.frame_filled) {
@@ -1308,16 +1482,17 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	return consumed;
 }
 
+int SND_isActive(void) {
+	return snd.initialized;
+}
 void SND_getStats(SND_Stats* out) {
 	if (!out) return;
-	out->underruns = snd.underruns;
-	out->overruns = snd.overruns;
-	out->wait_ms = snd.wait_ms;
-	out->frame_count = (int)snd.frame_count;
-	// current ring fill (frames buffered, ready to play)
-	int q = snd.frame_in - snd.frame_out;
-	if (q < 0) q += (int)snd.frame_count;
-	out->queue_frames = (snd.frame_count > 0) ? q : 0;
+	out->underruns = atomic_load_explicit(&snd.underruns, memory_order_relaxed);
+	out->overruns = atomic_load_explicit(&snd.overruns, memory_order_relaxed);
+	out->wait_ms = atomic_load_explicit(&snd.wait_ms, memory_order_relaxed);
+	uint64_t ring = atomic_load_explicit(&snd_ring_frames, memory_order_acquire);
+	out->frame_count = (int)(ring >> 32);
+	out->queue_frames = (int)(uint32_t)ring;
 }
 void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("SND_init\n");
@@ -1333,6 +1508,8 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 #endif	
 	
 	memset(&snd, 0, sizeof(struct SND_Context));
+	atomic_store(&snd_ff_nonblock, 0);
+	FFAudioRate_init(&snd.ff_rate);
 	snd.frame_rate = frame_rate;
 
 	SDL_AudioSpec spec_in;
@@ -1356,22 +1533,35 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	                         // set by the production/consumption balance. 5 frames (83ms)
 	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
 	                         // chop at ANY clock, ear-found + counter-verified 2026-07-08)
+	{	// per-system capacity (MINARCH_SND_RING_MS, exported by the pak launch.sh like
+		// MINARCH_FMIN): audio-block pacing runs the ring near-full, so capacity IS the
+		// steady-state latency. Applied in SND_resizeBuffer against the DAC OUTPUT rate —
+		// the ring stores output-rate frames, so input-rate math would skew real latency
+		// by the resample ratio (Codex review finding 5).
+		char* ring_ms = getenv("MINARCH_SND_RING_MS");
+		if (ring_ms) {
+			int ms = atoi(ring_ms);
+			if (ms >= 67 && ms <= 500) snd.ring_override_ms = ms;
+		}
+	}
 	snd.sample_rate_in  = sample_rate;
 	snd.sample_rate_out = spec_out.freq;
-	snd.sample_rate_in_adj = (int)((int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000);
 	
-	SND_selectResampler();
+	SND_updateAdjustedRate();
 	SND_resizeBuffer();
 	
 	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
 
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
+	SND_publishOccupancy();
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
+	atomic_store(&snd.paused, 1); // no consumer exists now: producers drop instead of waiting (review 5/r3)
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
+	SND_signalSpace(); // a blocked producer wakes and exits via the paused check
 }
 void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffer was preserved
 	if (!snd.initialized) return;
@@ -1389,8 +1579,10 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 		// forever — drop to silent-but-safe instead (audit 2026-07-11)
 		LOG_info("SDL_OpenAudio error (resume): %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
+		atomic_store(&snd.paused, 0);
 		return;
 	}
+	atomic_store(&snd.paused, 0); // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
 void SND_quit(void) { // plat_sound_finish
@@ -1406,7 +1598,10 @@ void SND_quit(void) { // plat_sound_finish
 	snd.frame_count = 0;
 	snd.frame_in = snd.frame_out = snd.frame_filled = 0;
 	snd.initialized = 0;
+	atomic_store(&snd_ff_nonblock, 0);
+	FFAudioRate_end(&snd.ff_rate);
 	SND_publishOccupancy(); // reads 100 now — catch-up can never engage on a closed ring
+	SND_signalSpace(); // a producer blocked mid-teardown wakes and exits via its liveness recheck
 }
 
 ///////////////////////////////
@@ -1715,45 +1910,77 @@ int PAD_tappedMenu(uint32_t now) {
 static struct VIB_Context {
 	int initialized;
 	pthread_t pt;
+	pthread_mutex_t mx;
+	pthread_cond_t cv;
 	int queued_strength;
 	int strength;
+	int quit;
 } vib = {0};
 static void* VIB_thread(void *arg) {
-#define DEFER_FRAMES 3
-	static int defer = 0;
-	while(1) {
-		SDL_Delay(17);
-		if (vib.queued_strength!=vib.strength) {
-			if (defer<DEFER_FRAMES && vib.queued_strength==0) { // minimize vacillation between 0 and some number (which this motor doesn't like)
-				defer += 1;
-				continue;
-			}
-			vib.strength = vib.queued_strength;
-			defer = 0;
-
-			PLAT_setRumble(vib.strength);
+	// Event-driven: the worker sleeps on the condvar until a strength change or quit —
+	// ZERO idle wakeups (the old loop woke every 17ms forever, ~59/s). The deferred-off
+	// behavior survives as a bounded timedwait: a request for 0 is held ~51ms (the old
+	// DEFER_FRAMES*17ms) and abandoned if a non-zero request arrives in that window,
+	// because this motor dislikes 0<->N vacillation.
+#define VIB_DEFER_OFF_MS 51
+	pthread_mutex_lock(&vib.mx);
+	while (!vib.quit) {
+		if (vib.queued_strength == vib.strength) {
+			pthread_cond_wait(&vib.cv, &vib.mx); // blocks indefinitely; wakes on change/quit
+			continue;
 		}
+		int target = vib.queued_strength;
+		if (target == 0) {
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += VIB_DEFER_OFF_MS * 1000000L;
+			if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += 1; ts.tv_nsec -= 1000000000L; }
+			while (!vib.quit && vib.queued_strength == 0)
+				if (pthread_cond_timedwait(&vib.cv, &vib.mx, &ts) == ETIMEDOUT) break;
+			if (vib.quit) break;
+			if (vib.queued_strength != 0) continue; // rescued within the window: skip the off
+		}
+		vib.strength = target;
+		pthread_mutex_unlock(&vib.mx);
+		PLAT_setRumble(target); // device write outside the lock: setters never block on i2c/sysfs
+		pthread_mutex_lock(&vib.mx);
 	}
+	pthread_mutex_unlock(&vib.mx);
 	return 0;
 }
 void VIB_init(void) {
 	vib.queued_strength = vib.strength = 0;
+	vib.quit = 0;
+	pthread_mutex_init(&vib.mx, NULL);
+	pthread_cond_init(&vib.cv, NULL);
 	pthread_create(&vib.pt, NULL, &VIB_thread, NULL);
 	vib.initialized = 1;
 }
 void VIB_quit(void) {
 	if (!vib.initialized) return;
-	
-	VIB_setStrength(0);
-	pthread_cancel(vib.pt);
-	pthread_join(vib.pt, NULL);
+	pthread_mutex_lock(&vib.mx);
+	vib.quit = 1;
+	pthread_cond_broadcast(&vib.cv);
+	pthread_mutex_unlock(&vib.mx);
+	pthread_join(vib.pt, NULL); // deterministic teardown (was pthread_cancel mid-SDL_Delay)
+	PLAT_setRumble(0);          // motor off regardless of what was in flight
+	vib.initialized = 0;
 }
 void VIB_setStrength(int strength) {
-	if (vib.queued_strength==strength) return;
-	vib.queued_strength = strength;
+	if (!vib.initialized) return;
+	pthread_mutex_lock(&vib.mx);
+	if (vib.queued_strength != strength) {
+		vib.queued_strength = strength;
+		pthread_cond_signal(&vib.cv);
+	}
+	pthread_mutex_unlock(&vib.mx);
 }
 int VIB_getStrength(void) {
-	return vib.strength;
+	if (!vib.initialized) return 0;
+	pthread_mutex_lock(&vib.mx);
+	int v = vib.strength;
+	pthread_mutex_unlock(&vib.mx);
+	return v;
 }
 
 ///////////////////////////////
@@ -1828,6 +2055,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	static uint32_t checked_charge_at = 0; // timestamp of last time checking charge
 	static uint32_t setting_shown_at = 0; // timestamp when settings started being shown
 	static uint32_t power_pressed_at = 0; // timestamp when power button was just pressed
+	static int power_press_is_wake = 0; // short post-resume presses must not immediately re-sleep
 	static uint32_t mod_unpressed_at = 0; // timestamp of last time settings modifier key was NOT down
 	static uint32_t was_muted = -1;
 	if (was_muted==-1) was_muted = GetMute();
@@ -1851,25 +2079,21 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (PAD_justReleased(BTN_POWEROFF) || (power_pressed_at && now-power_pressed_at>=1000)) {
 		// Haptic power cue (idea from SpruceOS): a short buzz the moment the quicksave+
 		// shutdown commits — feel it and let go. Keep holding regardless and the PMIC
-		// hardware long-hold cut remains the force-off escape hatch. (Rumble respects the
-		// mute switch by platform convention, matching stock behavior.)
-		PLAT_setRumble(1);
+		// hardware long-hold cut remains the force-off escape hatch. This system cue bypasses
+		// FN mute; game rumble still respects it.
+		PLAT_setSystemRumble(1);
 		SDL_Delay(150);
-		PLAT_setRumble(0);
+		PLAT_setSystemRumble(0);
 		if (before_sleep) before_sleep();
 		PWR_powerOff();
 	}
 	
 	if (PAD_justPressed(BTN_POWER)) {
-		// on deep-sleep platforms a wake arrives as a power press; debounce it so we don't
-		// immediately re-sleep / power off after resuming. Inert elsewhere (original behavior).
-		if (PLAT_supportsDeepSleep() && now - pwr.resume_tick < 1000) {
-			LOG_debug("ignoring spurious power button press (just resumed)\n");
-			power_pressed_at = 0;
-		} else {
-			power_pressed_at = now;
-		}
+		power_pressed_at = now;
+		power_press_is_wake = PLAT_supportsDeepSleep() && pwr.resume_tick && now-pwr.resume_tick<1000;
+		if (power_press_is_wake) LOG_debug("guarding power button release (just resumed)\n");
 	}
+	int power_released = PAD_justReleased(BTN_POWER);
 
 	#define SLEEP_DELAY 30000 // 30 seconds
 	if (now-last_input_at>=SLEEP_DELAY && PWR_preventAutosleep()) last_input_at = now;
@@ -1877,7 +2101,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && (!PLAT_supportsDeepSleep() || power_pressed_at)) // manual sleep (resume-press guard only where deep sleep is on)
+		(pwr.can_sleep && power_released && (!PLAT_supportsDeepSleep() || (power_pressed_at && !power_press_is_wake))) // manual sleep (resume-press guard only where deep sleep is on)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
@@ -1886,7 +2110,11 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 		
 		last_input_at = now = SDL_GetTicks();
 		power_pressed_at = 0;
+		power_press_is_wake = 0;
 		dirty = 1;
+	} else if (power_released) {
+		power_pressed_at = 0;
+		power_press_is_wake = 0;
 	}
 	
 	int was_dirty = dirty; // dirty list (not including settings/battery)

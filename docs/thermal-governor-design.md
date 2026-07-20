@@ -1,7 +1,9 @@
 # Closed-loop thermal/perf governor — designed on assumptions, self-correcting on first boot
 
 > **STATUS (2026-07-01): shipped + validated on-device.** The hybrid governor (ceiling + `schedutil`)
-> runs on a real Brick — **~4–5°C cooler than stock**, GBC sinks to the 408 floor, PS1 rides ~1416–1800.
+> runs on a real Brick — **~4–5°C cooler than stock**. The hardware still idles at 408 MHz. Low-end
+> systems leave a 1008 MHz stock ceiling so schedutil can service short GLES present bursts; PS1
+> rides ~1416–1800.
 > On-device lesson **D14 (race-to-idle)**: the ceiling caps spikes but must NOT drive schedutil below the
 > clock where it can finish-the-frame-and-idle. The "confirm on-device later" items below are done.
 
@@ -53,8 +55,8 @@ and the governor) sets the cap, so no governor-mode switching is needed.
 #define DN_DWELL     4       // ticks of slack before sinking (sink slow = no hunting)
 
 typedef struct { int f_min, f_max; } sys_profile; // f_max <= STOCK_MAX_KHZ (no OC)
-static const sys_profile P_8BIT  = {  480000, 1008000 }; // NES/GB/GBC/SMS/GG/PCE
-static const sys_profile P_16BIT = {  600000, 1320000 }; // SNES/Genesis/GBA
+static const sys_profile P_8BIT  = { 1008000, 1008000 }; // NES/GB/GBC/SMS/GG/PCE; schedutil still idles below the ceiling
+static const sys_profile P_16BIT = {  600000, 1416000 }; // SNES/Genesis/GBA
 static const sys_profile P_PS1   = { 1008000, 1800000 }; // capped at stock, was 2000000
 ```
 

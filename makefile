@@ -19,7 +19,7 @@ endif
 ###########################################################
 
 BUILD_HASH:=$(shell git rev-parse --short HEAD)
-ZERO_VERSION=v1.3.1
+ZERO_VERSION=v1.5.0
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
@@ -44,15 +44,46 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry test-undervolt test-reproducibility
+.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory check-threading-policy
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
+test-save-io:
+	sh ./workspace/all/common/run-save-io-tests.sh
+test-ff-audio:
+	sh ./workspace/all/common/run-ff-audio-tests.sh
 test-undervolt:
 	sh ./workspace/tg5040/undervolt/run-tests.sh
 test-reproducibility:
 	sh ./workspace/all/cores/run-source-verifier-tests.sh
+test-wakeup:
+	sh ./workspace/all/common/run-wakeup-tests.sh
+test-gov-memory:
+	sh ./workspace/all/common/run-gov-memory-tests.sh
+check-threading-policy:
+	sh ./workspace/all/common/check-threading-policy.sh
+# threading v2 framering protocol module (host; TSan/ASan are SEPARATE builds per contract)
+.PHONY: test-frame-pool test-framering test-framering-tsan test-framering-asan
+test-frame-pool:
+	sh ./workspace/all/common/run-frame-pool-tests.sh
+test-framering:
+	sh ./workspace/all/common/run-framering-tests.sh plain
+test-framering-tsan:
+	sh ./workspace/all/common/run-framering-tests.sh tsan
+test-framering-asan:
+	sh ./workspace/all/common/run-framering-tests.sh asan
+# threading v2 frontend_core lifecycle engine (host; F31 cleanup oracle + adversarial runtime)
+.PHONY: test-frontend-core test-frontend-core-tsan test-frontend-core-asan
+test-frontend-core:
+	sh ./workspace/all/common/run-frontend-core-tests.sh plain
+test-frontend-core-tsan:
+	sh ./workspace/all/common/run-frontend-core-tests.sh tsan
+test-frontend-core-asan:
+	sh ./workspace/all/common/run-frontend-core-tests.sh asan
+.PHONY: check-forbidden-globals
+check-forbidden-globals:
+	sh ./workspace/all/common/check-forbidden-globals.sh
 
 build:
 	# ----------------------------------------------------

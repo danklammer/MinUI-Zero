@@ -20,21 +20,22 @@ void PLAT_setCPUVoltForCeil(int khz);
 // bad brackets at runtime, (3) the conservative ceiling bounds the downside to "too cautious".
 #define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
 #define GOV_T_CEIL_C   72      // hard back-off above this — always wins
-#define GOV_STEP_KHZ   216000  // one real OPP step (MEASURED gaps 192-216MHz; 108k snapped back up)
-#define GOV_DN_DWELL   4       // ticks of slack before sinking (sink slow = no hunting)
+// GOV_STEP_KHZ lives in governor.h (shared with minarch's per-game governor memory)
+// GOV_DN_DWELL lives in governor.h (shared with the gov-memory accelerated ladder)
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
                                // -> 600 slip -> ... = periodic slowdown bursts; Contra 2026-07-01)
 
 // CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
+#define GOV_CUR_FREQ   "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
 
 // MEASURED OPP table (device 2026-06-30): 408 600 816 1008 1200 1416 1608 1800 2000 MHz.
 // 2000000 is exposed but is the OC we avoid (never require overclocking); cap at 1800.
 #define GOV_STOCK_MAX_KHZ 1800000
 
 // ---- Per-system ceiling brackets (f_min/f_max are real OPPs; f_max <= stock cap, no OC) ----
-const GovProfile GOV_P_8BIT   = {  408000, 1008000 }; // MEASURED: 408 is the real OPP floor
+const GovProfile GOV_P_8BIT   = { 1008000, 1008000 }; // schedutil still idles below this; the ceiling preserves short GLES bursts
 const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
 const GovProfile GOV_P_PS1    = { 1008000, 1800000 };
 const GovProfile GOV_P_DEFAULT = { 600000, 1800000 };
@@ -46,6 +47,15 @@ int gov_read_temp_c(void) {
 	if (fscanf(f, "%d", &mc) != 1) mc = -1;
 	fclose(f);
 	return mc < 0 ? -1 : mc / 1000; // milli-C -> C
+}
+
+int gov_read_cur_khz(void) {
+	FILE* f = fopen(GOV_CUR_FREQ, "r");
+	if (!f) return -1;
+	int khz = -1;
+	if (fscanf(f, "%d", &khz) != 1) khz = -1;
+	fclose(f);
+	return khz;
 }
 
 void gov_init(GovState* st, const GovProfile* p) {

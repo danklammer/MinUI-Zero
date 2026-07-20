@@ -161,12 +161,14 @@ int GFX_hdmiChanged(void);
 void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen); // menu/UI/single-shot presents: never skippable (invisible-menu fix 2026-07-13)
 void GFX_flipGame(SDL_Surface* screen); // game run loop ONLY: presentation-drop catch-up may skip this present
+void GFX_setPresentationDrop(int enabled); // measured PS1 audio protection; disabled for other systems
 #define GFX_supportsOverscan PLAT_supportsOverscan // (void)
 void GFX_sync(void); // call this to maintain 60fps when not calling GFX_flip() this frame
 void GFX_setPacePeriodUs(uint32_t us); // dynamic rate control: pace GFX_sync above the panel (0 = stock)
 uint32_t GFX_getFlipWaitUs(void); // how long the last flip blocked on vsync (panel-lock signal)
 int GFX_didOverrun(void); // 1 if the most recent frame's CPU work exceeded the frame budget (closed-loop governor signal)
 uint32_t GFX_getFrameWorkUs(void); // benchmark: us of CPU work in the last frame (GFX_startFrame->GFX_flip)
+void GFX_finishFrameWork(void); // present-skip: close the work sample for a frame that will not flip
 void GFX_quit(void);
 
 enum {
@@ -212,6 +214,7 @@ typedef struct SND_Frame {
 
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
+void SND_setFastForward(int active, int audible);
 void SND_setRateAdjustPPM(int ppm); // dynamic rate control: scale audio-paced core speed
 void SND_pause(void);  // close the audio device during sleep (thread fully stops)
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
@@ -219,6 +222,7 @@ void SND_quit(void);
 // audio-health telemetry (benchmark): cumulative counters + current ring fill.
 typedef struct SND_Stats { long underruns; long overruns; long wait_ms; int queue_frames; int frame_count; } SND_Stats;
 void SND_getStats(SND_Stats* out);
+int SND_isActive(void); // audio device open and pacing (present-skip is only legal while true)
 
 ///////////////////////////////
 
@@ -338,6 +342,13 @@ void PLAT_vsync(int remaining);
 scaler_t PLAT_getScaler(GFX_Renderer* renderer);
 void PLAT_blitRenderer(GFX_Renderer* renderer);
 void PLAT_flip(SDL_Surface* screen, int sync);
+// debug HUD strips (RGB565, native res, presented at DBG_OVERLAY_SCALE anchored to the
+// game's panel rect); NULL top disables. w = used columns (game width / scale), stride =
+// the buffer's allocated row width. 0xF81F = transparent.
+#define DBG_OVERLAY_SCALE 3
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride);
+// panel-coordinate rect of the most recently presented game frame (0s before first flip)
+void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);
 
 SDL_Surface* PLAT_initOverlay(void);
@@ -360,6 +371,7 @@ void PLAT_restoreCPUVolt(void);         // always-safe stock restore (clean quit
 void PLAT_emergencyRestoreCPUVolt(void); // lock-free variant for signal handlers ONLY
 void PLAT_uvReassert(void);             // per-frame: rewrite the lean voltage if the kernel re-stocked it
 void PLAT_setRumble(int strength);
+void PLAT_setSystemRumble(int strength);
 int PLAT_pickSampleRate(int requested, int max);
 
 char* PLAT_getModel(void);
