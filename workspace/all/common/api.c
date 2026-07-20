@@ -1323,7 +1323,7 @@ static int SND_ringPct(void) {
 // samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
 // remains as a safety valve while the first 50ms estimate converges or a core changes speed.
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
-static void SND_reprime(void) {
+void SND_reprime(void) { // exported: state loads need the same clean handoff as FF exits
 	if (snd.initialized && snd.buffer && snd.frame_count>0) {
 		SDL_LockAudio();
 		snd.frame_out = snd.frame_in;
