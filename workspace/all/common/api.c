@@ -1124,10 +1124,11 @@ static struct SND_Context {
 	int frame_in;     // buf_w
 	int frame_out;    // buf_r
 	int frame_filled; // max_buf_w
-	// audio-health counters (benchmark telemetry; benign cross-thread race, stats only)
-	volatile long underruns;
-	volatile long overruns;
-	volatile long wait_ms;
+	// Audio-health counters are consumed by MAIN and the depth-2 CORE work sampler.
+	// Atomics keep telemetry and governor timing defined without taking the DAC lock.
+	_Atomic long underruns;
+	_Atomic long overruns;
+	_Atomic long wait_ms;
 
 	int resample_diff;
 	SND_Frame resample_prev;
@@ -1178,7 +1179,7 @@ static void SND_audioCallback(void* userdata, uint8_t* stream, int len) { // pla
 	SND_publishOccupancy(); // consumer side of the presentation-drop snapshot
 	SND_signalSpace(); // wake a producer blocked on a full ring
 
-	if (len>0) snd.underruns++; // ring drained before the request was filled (audible crackle)
+	if (len>0) atomic_fetch_add_explicit(&snd.underruns, 1, memory_order_relaxed); // ring drained before the request was filled (audible crackle)
 	int zero = len>0 && len==SAMPLES;
 	if (zero) return (void)memset(out,0,len*(sizeof(int16_t) * 2));
 	// else if (len>=5) LOG_info("%8i BUFFER UNDERRUN (%i/%i frames)\n", ms(), len,full_len);
@@ -1301,17 +1302,26 @@ void SND_setRateAdjustPPM(int ppm) { // dynamic rate control (see minarch drc bl
 // unsynchronized (audit finding). 100 when audio is closed so catch-up can never engage
 // against a dead ring.
 static volatile int snd_ring_pct = 100;
+// Upper 32 bits = ring capacity, lower 32 bits = queued frames. Published wherever
+// producer/consumer indices move so SND_getStats never races those plain ring fields.
+static _Atomic uint64_t snd_ring_frames = 0;
 static volatile uint32_t snd_last_batch_ms = 0; // SDL_GetTicks of the last producer write
 static uint32_t SND_lastBatchMs(void) {
 	return __atomic_load_n(&snd_last_batch_ms, __ATOMIC_ACQUIRE);
 }
 static void SND_publishOccupancy(void) {
 	int pct = 100;
+	uint32_t count = 0;
+	uint32_t queued = 0;
 	if (snd.initialized && snd.frame_count > 0) {
-		int queued = snd.frame_in - snd.frame_out;
-		if (queued < 0) queued += snd.frame_count;
-		pct = (int)((int64_t)queued * 100 / snd.frame_count);
+		int q = snd.frame_in - snd.frame_out;
+		if (q < 0) q += snd.frame_count;
+		queued = (uint32_t)q;
+		count = (uint32_t)snd.frame_count;
+		pct = (int)((int64_t)queued * 100 / count);
 	}
+	atomic_store_explicit(&snd_ring_frames, ((uint64_t)count << 32) | queued,
+	                      memory_order_release);
 	__atomic_store_n(&snd_ring_pct, pct, __ATOMIC_RELEASE);
 }
 static int SND_ringPct(void) {
@@ -1323,29 +1333,37 @@ static int SND_ringPct(void) {
 // samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
 // remains as a safety valve while the first 50ms estimate converges or a core changes speed.
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
-static void SND_reprime(void) {
+static void SND_reprimeLocked(void) {
 	if (snd.initialized && snd.buffer && snd.frame_count>0) {
-		SDL_LockAudio();
 		snd.frame_out = snd.frame_in;
 		snd.frame_filled = (snd.frame_in + snd.frame_count - 1) % snd.frame_count;
 		snd.prefilling = 1;
 		SDL_PauseAudio(1);
 		SND_publishOccupancy();
-		SDL_UnlockAudio();
 	}
 }
 void SND_setFastForward(int active, int audible) {
 	active = active ? 1 : 0;
 	audible = active && audible ? 1 : 0;
 	if (active == snd.ff_active && audible == snd.ff_audible) return;
+	if (!snd.initialized) {
+		// Silent fallback after SDL_OpenAudio failure: retain logical mode for callers,
+		// but there is no device, producer, or resampler transaction to synchronize.
+		snd.ff_active = active;
+		snd.ff_audible = audible;
+		atomic_store_explicit(&snd_ff_nonblock, 0, memory_order_relaxed);
+		return;
+	}
 
+	// At depth two MAIN toggles FF while CORE is the audio producer. Serialize every
+	// resampler/rate/ring mutation with SND_batchSamples and the DAC callback.
+	SDL_LockAudio();
 	int was_active = snd.ff_active;
 	int was_audible = snd.ff_active && snd.ff_audible;
 	int will_be_audible = active && audible;
 	snd.ff_active = active;
 	snd.ff_audible = audible;
 	atomic_store(&snd_ff_nonblock, will_be_audible);
-	SND_signalSpace(); // a producer blocked on a full ring must re-evaluate the FF drop path
 
 	if (will_be_audible && !was_audible) {
 		FFAudioRate_begin(&snd.ff_rate, SDL_GetTicks());
@@ -1360,8 +1378,11 @@ void SND_setFastForward(int active, int audible) {
 
 	// Silent FF must pause instead of draining into underruns. Every FF exit discards
 	// stale compressed audio and uses the normal 40% prefill gate for a clean handoff.
-	if ((active && !audible) || (!active && was_active)) SND_reprime();
-	SND_signalSpace(); // AFTER the reprime: the ring-space it creates must reach a waiter (review 5)
+	if ((active && !audible) || (!active && was_active)) SND_reprimeLocked();
+	SDL_UnlockAudio();
+	// Wake only after the complete mode/ring transaction is visible. A blocked producer
+	// then observes either FF nonblocking mode or the reprime's newly-created space.
+	SND_signalSpace();
 }
 static void SND_measureFastForward(size_t frames) {
 	if (!atomic_load(&snd_ff_nonblock)) return;
@@ -1383,13 +1404,12 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
 	// (paused: device closed for sleep — no consumer exists; writing would only queue
 	// stale audio for resume and leave a future concurrent producer waiting on timeouts)
-	SND_measureFastForward(frame_count);
-
 	// return frame_count; // TODO: tmp, silent
 
 	// LOG_info("%8i batching samples (%i frames)\n", ms(), frame_count);
 
 	SDL_LockAudio();
+	SND_measureFastForward(frame_count);
 	// Hardened (v1.4 audit): the prefill gate reads ring indices + prefilling that the
 	// FF->normal drain (SND_setFastForward) mutates under the audio lock — check under the
 	// lock too, so a stale read can never unpause the DAC against just-emptied indices.
@@ -1420,7 +1440,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		// which the governor's pure-work sensor and DRC consume as deltas.
 		uint32_t wait_t0 = 0;
 		while (!snd_ff_nonblock && snd.frame_in==snd.frame_filled) {
-			if (!wait_t0) { wait_t0 = SDL_GetTicks(); snd.overruns++; }
+			if (!wait_t0) { wait_t0 = SDL_GetTicks(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
 			pthread_mutex_lock(&snd_space_mx);
 			unsigned g0 = snd_space_gen;
 			SDL_UnlockAudio();
@@ -1439,7 +1459,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		}
 		if (wait_t0) {
 			uint32_t waited = SDL_GetTicks() - wait_t0;
-			snd.wait_ms += waited ? waited : 1;
+			atomic_fetch_add_explicit(&snd.wait_ms, waited ? waited : 1, memory_order_relaxed);
 		}
 		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
 		// frames and return so emulation never blocks on audio during fast-forward.
@@ -1467,14 +1487,12 @@ int SND_isActive(void) {
 }
 void SND_getStats(SND_Stats* out) {
 	if (!out) return;
-	out->underruns = snd.underruns;
-	out->overruns = snd.overruns;
-	out->wait_ms = snd.wait_ms;
-	out->frame_count = (int)snd.frame_count;
-	// current ring fill (frames buffered, ready to play)
-	int q = snd.frame_in - snd.frame_out;
-	if (q < 0) q += (int)snd.frame_count;
-	out->queue_frames = (snd.frame_count > 0) ? q : 0;
+	out->underruns = atomic_load_explicit(&snd.underruns, memory_order_relaxed);
+	out->overruns = atomic_load_explicit(&snd.overruns, memory_order_relaxed);
+	out->wait_ms = atomic_load_explicit(&snd.wait_ms, memory_order_relaxed);
+	uint64_t ring = atomic_load_explicit(&snd_ring_frames, memory_order_acquire);
+	out->frame_count = (int)(ring >> 32);
+	out->queue_frames = (int)(uint32_t)ring;
 }
 void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("SND_init\n");
@@ -1536,6 +1554,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
+	SND_publishOccupancy();
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)

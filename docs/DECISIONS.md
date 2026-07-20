@@ -1028,3 +1028,84 @@ the floor. Both boundaries now reset frame-rate, governor work-batch, process-us
 wake/menu exit also restore the controller's exact saved ceiling rather than the static CPU option.
 Failure memory itself is retained, so opening a menu cannot force a known-bad clock to be re-probed.
 These are serial-path defects present in v1.4.0; they are independent of threading v2.
+
+## D62 — Threading v2 returns as a PS-only v1.5 candidate (2026-07-20)
+The v1.3 mailbox implementation remains retired. The replacement is the reviewed v2.4
+ownership model: when `ZERO_FTV2_DEPTH=2` is requested, one CORE thread registers every
+libretro callback and owns every libretro call through unload/deinit; MAIN owns input polling,
+menus, SDL/audio lifecycle, scaler/GLES state, and presentation. A credit ring allows CORE to
+run epoch N+1 while MAIN presents N. Systems that do not request depth two use the existing
+plain serial path and never initialize the engine. Only `PS.pak` requests depth two; its
+governor bracket remains the verified-stock 1008-1800 MHz range, with no 2.0 GHz OC and no
+title-derived hard cap.
+
+The integration closes the implementation-specific ownership holes found after the paper
+reviews. Save/load/reset, controller changes, SRAM/RTC flushes, and disc replacement run as
+parked CORE services. Geometry/AV changes are immutable ordered events applied by MAIN before
+the corresponding frame; a complete AV timing transaction ends in a synchronous barrier, and
+rumble changes are persistent ordered events. The same MAIN dispatcher applies both run-epoch
+commands and quiescent bootstrap/runtime-service products; this prevents an auto-resume,
+load/reset, or disc AV barrier from releasing while its timing or geometry payload remains
+unapplied. CORE copies transient
+video into a bounded, credit-owned pool; published frames retire exactly once on normal,
+discard, stop, and teardown paths, while a
+true allocation failure exits with the canary armed rather than continuing with corrupt or
+frozen video. Input and FF controls cross in per-epoch snapshots; FF transitions park at an
+epoch boundary and serialize resampler/ring changes with the audio producer. Audio health and
+occupancy telemetry are atomic snapshots, so CORE work timing never races the DAC callback.
+Governor work and generation samples advance on `RUN_DONE`, never on non-progressing MAIN
+polls. Depth-two FF applies its speed budget once per completed epoch and publishes visuals at
+an achieved-rate cadence capped at the nominal display rate. This keeps the strict-vsync
+presenter from capping emulation to normal speed without dropping extra visuals when a heavy
+scene cannot reach the requested FF multiplier. The exact pinned pcsx_rearmed source
+(`050981b`) was audited with the tg5040 patch applied: it emits one libretro video callback at
+the end of each `retro_run`, performs geometry/AV and rumble callbacks on that same execution
+path, and does not move frontend callbacks onto its GPU/SPU workers.
+
+The per-game crash canary is keyed by a normalized content-path hash (the sibling `.m3u` path
+when present), not a collision-prone basename. Creation/removal sync both file and parent
+directory. After one unclean depth-two session, one serial session must reach a durable autosave
+or clean gameplay exit before depth two retries. A second consecutive depth-two failure writes a
+durable build-scoped disable; clean serial exits do not clear it, while a new build automatically
+requalifies the game. The marker records whether the interrupted attempt was depth two or its
+serial fallback, so a serial crash cannot be miscounted as a threaded failure. Canary or crash-
+count persistence failure fails closed to serial.
+
+Release status is deliberately **candidate, not device-approved**. The pure framering and
+lifecycle engines must pass their plain/TSan/ASan harnesses, the current governor/audio/save
+suites, forbidden-global audit, guard-on and guard-off tg5040 builds, and the Brick + Smart Pro
+PS gauntlet before merge to a release branch. Hardware gates include boot/load failure, normal
+play, 480i resolution churn, menu/save/load/reset, disc change, audible FF at fractional and
+integer caps, repeated sleep/resume, quicksave-poweroff, crash-canary fallback/recovery, clean
+exit, and artifact-hash verification. The same artifact must also pass serial-parity sessions
+on GBC, SFC, and SUPA on both devices, with no v2 initialization in their logs; matched
+guard-on/unset-depth versus guard-off runs must show no meaningful generation, audio, menu,
+clock, or process-work regression on those light systems. Earlier BR2
+measurements justify the candidate; they do not waive these composed-release gates.
+
+## D63 — SNES frontend threading stays off pending a new energy A/B (2026-07-20)
+Neither SNES launcher opts into frontend depth two. `SFC.pak` uses the pinned
+`snes9x2005_plus` source at `b6035697`; it creates no emulation/render worker and emits video and
+audio synchronously from `retro_run`. `SUPA.pak` uses the pinned Supafaust source at `2b93c0d7`,
+whose libretro load path explicitly selects the `mt` renderer and whose config already separates
+emulation (`0x3`) from PPU rendering (`0xc`).
+Enabling frontend pipelining for SUPA would therefore stack a third active frontend/present
+threading layer on top of the core's own PPU worker.
+
+Historical DKC/Yoshi measurements used the retired mailbox implementation and are not a v2
+release receipt. They showed lower reported ceilings in some scenes, but not a repeatable
+total-device temperature/energy win across both devices. After PS is qualified, SFC and SUPA
+may be tested separately with same-state, pinned-OPP and dynamic-governor A/Bs. Default-on needs
+equal input/audio/save/sleep behavior plus lower charge drain or equilibrium temperature, not
+merely a lower CPU ceiling. Until then both remain on the plain serial frontend path.
+
+## D64 — Libretro bootstrap callback hardening (2026-07-20)
+The final threading callback audit found two serial-path defects shared by every mode.
+`RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL` lacked a `break`, fell through to
+`GET_SYSTEM_DIRECTORY`, and wrote an eight-byte directory pointer through the core's integer
+argument. `Input_init` also tested uninitialized availability entries for buttons omitted from
+a core's descriptor list. Finally, the audio and frame-time registration stubs returned true
+without retaining or invoking the supplied callbacks. The performance hint is now accepted
+without fallthrough, the availability table is zero-initialized, and unsupported callback
+registration returns false so cores retain their synchronous fallback. These are correctness
+fixes, not threading policy.
