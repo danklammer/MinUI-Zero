@@ -15,6 +15,7 @@ cd "$HOME"
 # fits. Keep the verified-stock 1008 ceiling; schedutil still idles at 408 (D61).
 export MINARCH_FMIN=1008000
 export MINARCH_FMAX=1008000
-# audio ring capacity ~= latency under audio-block pacing; 8-bit worst stall ~20ms fsync
-export MINARCH_SND_RING_MS=100
+# NOTE: MINARCH_SND_RING_MS=100 was measured a NET LOSS here (Bionic 4-cell, both
+# devices: skip-on underruns 0-1 at the default ring vs 75-87 at 100ms) — the
+# override mechanism remains for future per-system receipts; the default stays.
 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"

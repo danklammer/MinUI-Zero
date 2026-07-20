@@ -3363,8 +3363,12 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		static int dup_streak = 0;
 		static unsigned clean_gen = 0;
 		int geometry_dirty = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h);
+		// NOTE: show_debug deliberately NOT consulted — the HUD is an observer and must
+		// not change the policy it displays (Codex device-gate finding: the old rail
+		// invalidated every skip measurement taken with the HUD on). The ~31-frame
+		// forced present keeps the 1Hz HUD text adequately live during skip runs.
 		if (skip_on && dup_frame && !geometry_dirty && clean_gen == present_dirty_gen
-			&& !show_debug && !fast_forward && !presentation_drop_supported
+			&& !fast_forward && !presentation_drop_supported
 			&& SND_isActive() && !dup_force_present && dup_streak < 30) {
 			dup_streak++;
 			GFX_finishFrameWork(); // close this frame's work sample for the governor batch
