@@ -31,7 +31,11 @@ static void test_later_geometry_cancels_and_dirties(void) {
 	CHECK(govmem_arm_khz(&m) == 0, "arm survived a real geometry change");
 	seq++;
 	govmem_post_tick(&m, GOV_SIGNAL_SLACK, 0, seq, 1416000, 1416000);
-	CHECK(govmem_best(&m, 1) == 0 || m.hist_n[0] <= 1, "mixed window voted"); // the burst window must not vote
+	{	// the burst window must not vote AT ALL — zero total votes, not merely few
+		uint32_t total = 0;
+		for (int i = 0; i < GOVMEM_HIST; i++) total += m.hist_n[i];
+		CHECK(total == 0, "mixed window voted (%u votes)", total);
+	}
 }
 static void test_ff_invalidates_and_cancels(void) {
 	printf("[case 3] FF entry/exit invalidates the window and cancels the arm\n");
