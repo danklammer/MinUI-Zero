@@ -216,7 +216,6 @@ void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
 void SND_setFastForward(int active, int audible);
 void SND_reprime(void); // drain the ring + re-arm the 40% prefill gate (clean handoff after any audio discontinuity)
-void SND_reprimeDeep(void); // reprime with a one-shot 80% restart cushion (state loads: resume-time work spikes)
 void SND_setRateAdjustPPM(int ppm); // dynamic rate control: scale audio-paced core speed
 void SND_pause(void);  // close the audio device during sleep (thread fully stops)
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init

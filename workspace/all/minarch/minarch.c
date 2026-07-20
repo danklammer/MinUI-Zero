@@ -693,10 +693,10 @@ static int State_read(void) { // from picoarch
 	}
 	result = 1;
 	// the ring still holds pre-load audio; the restored emulation continues from a
-	// different moment — drain, then restart the DAC only at an 80% cushion: a 40%
-	// prime restarted into the post-load work spike and merely traded the old
-	// discontinuity blip for resume jitter (Dan's ear, RC2)
-	SND_reprimeDeep();
+	// different moment — drain and re-prefill for a clean handoff instead of the
+	// long-standing discontinuity blip (Dan's ear, v1.4.2 gate pass; same machinery
+	// as the FF-exit handoff)
+	SND_reprime();
 
 error:
 	if (state) free(state);
