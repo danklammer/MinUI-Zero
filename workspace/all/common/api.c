@@ -1115,7 +1115,6 @@ static struct SND_Context {
 	atomic_int paused;      // device closed for sleep: producers drop instead of waiting. Atomic:
 	                        // the entry guard reads it pre-lock and a future concurrent CORE
 	                        // producer must not race SND_pause/SND_resume (review r3)
-	int prefill_pct;        // DAC restart threshold for the CURRENT prime (40 default; deep primes use 80, one-shot)
 	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
@@ -1324,7 +1323,7 @@ static int SND_ringPct(void) {
 // samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
 // remains as a safety valve while the first 50ms estimate converges or a core changes speed.
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
-void SND_reprime(void) {
+static void SND_reprime(void) {
 	if (snd.initialized && snd.buffer && snd.frame_count>0) {
 		SDL_LockAudio();
 		snd.frame_out = snd.frame_in;
@@ -1334,12 +1333,6 @@ void SND_reprime(void) {
 		SND_publishOccupancy();
 		SDL_UnlockAudio();
 	}
-}
-void SND_reprimeDeep(void) { // state loads: clean handoff AND a deep cushion — post-load
-	// work (menu repaint, burst, SD reads) spikes exactly when a 40% prime would restart
-	// the DAC, which traded the old discontinuity blip for resume jitter (Dan's ear, RC2)
-	SND_reprime();
-	if (snd.initialized) snd.prefill_pct = 80;
 }
 void SND_setFastForward(int active, int audible) {
 	active = active ? 1 : 0;
@@ -1405,10 +1398,8 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	if (snd.prefilling) {
 		int queued = snd.frame_in - snd.frame_out;
 		if (queued < 0) queued += snd.frame_count;
-		int pct = snd.prefill_pct > 0 ? snd.prefill_pct : 40;
-		if (queued >= (int)(snd.frame_count * pct / 100)) { // threshold met: start the DAC
+		if (queued >= snd.frame_count * 2 / 5) { // ~40% full: start the DAC
 			snd.prefilling = 0;
-			snd.prefill_pct = 40; // deep primes are one-shot; FF handoffs keep their tuned 40%
 			SDL_PauseAudio(0);
 		}
 	}
