@@ -54,10 +54,22 @@ static void run_workload(GovState* st, const GovProfile* p, int f_req, int temp_
 	*tail_min = tmin; *tail_max = tmax; *tail_overruns = oruns;
 }
 
+static void test_profile_brackets(void) {
+	printf("[profiles] low-end ceiling preserves schedutil burst headroom\n");
+	CHECK(GOV_P_8BIT.f_min == 1008000,
+	      "8-bit f_min should preserve the proven 1008 MHz burst ceiling, got %d", GOV_P_8BIT.f_min);
+	CHECK(GOV_P_8BIT.f_max == 1008000,
+	      "8-bit f_max changed unexpectedly: %d", GOV_P_8BIT.f_max);
+}
+
+// Controller-mechanics tests need room to move even though the shipping low-end
+// profile deliberately leaves schedutil under one fixed stock ceiling.
+static const GovProfile TEST_WIDE_8BIT = { 408000, 1008000 };
+
 // ---- scenario 1: cold / idle — should sink to f_min and stay ----
 static void test_cold_idle(void) {
 	printf("[cold/idle] sinks to f_min and stays there\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	int tmin, tmax, oruns;
 	// f_req at f_min: the clock always holds frame rate, so the controller is free to sink.
@@ -204,6 +216,36 @@ static void test_converges_to_lowest_stable(void) {
 }
 
 // ---- scenario 5: gov_tick I/O path smoke test (temp sensor absent -> -1) ----
+
+// ---- capped fractional FF must settle BELOW f_max once its target holds (Codex v1.4-ff #1) ----
+// Models minarch's new mapping: enabling a reachable 1.25x target first reads as a gross deficit
+// (BIGSLIP -> f_max), then, while the target HOLDS, capped FF emits SLACK (generation-rate-driven)
+// so the ladder probes down; a probe that slips is undone and remembered. The old mapping emitted
+// BUSY forever -> pinned f_max for the whole FF session.
+static void test_capped_ff_settles_below_max(void) {
+	printf("[ff-capped] reachable FF target converges below f_max after the initial jump\n");
+	const GovProfile* p = &GOV_P_PS1; // 1008000..1800000
+	int f_req = 1500000;              // the 75fps (1.25x) workload: holds at 1608, slips below
+	GovState st; gov_init(&st, p);
+	int a,b,c;
+	run_workload(&st, p, 1008000, 45, 120, 10, &a, &b, &c); // normal 60fps play settled low
+	int khz = gov_step(&st, p, 45, GOV_SIGNAL_BIGSLIP);      // user enables 1.25x: initial deficit
+	CHECK(khz == p->f_max, "initial FF deficit must jump to f_max, got %d", khz);
+	// FF held for a long session; signals per the new minarch mapping (slip iff below f_req)
+	int tail_min = p->f_max, tail_max = 0, tail_overruns = 0;
+	for (int i = 0; i < 400; i++) {
+		int slipping = (st.ceil_khz < f_req);
+		khz = gov_step(&st, p, 45, slipping ? GOV_SIGNAL_SLIP : GOV_SIGNAL_SLACK);
+		if (i >= 360) {
+			if (khz < tail_min) tail_min = khz;
+			if (khz > tail_max) tail_max = khz;
+			if (khz < f_req) tail_overruns++;
+		}
+	}
+	CHECK(tail_max < p->f_max, "capped FF must settle BELOW f_max (old behavior pinned 1800), tail_max=%d", tail_max);
+	CHECK(tail_min >= f_req || tail_overruns <= 1, "settled clock must hold the FF target (tail_min=%d overruns=%d)", tail_min, tail_overruns);
+}
+
 static void test_tick_io(void) {
 	printf("[gov_tick] device entry point writes a clock via PLAT_setCPUMaxFreq\n");
 	const GovProfile* p = &GOV_P_8BIT;
@@ -219,7 +261,7 @@ static void test_tick_io(void) {
 
 static void test_boot_slip_at_max_still_sinks(void) {
 	printf("[boot-slip] slips at f_max must not arm fail memory (GBC 1008-pin, 2026-07-09)\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	// boot churn: several slip ticks while fully provisioned (load spikes at f_max)
 	for (int i = 0; i < 6; i++) gov_step(&st, p, 40, GOV_SIGNAL_SLIP);
@@ -233,7 +275,7 @@ static void test_boot_slip_at_max_still_sinks(void) {
 
 static void test_sink_despite_busy_noise(void) {
 	printf("[busy-noise] sporadic BUSY windows (fsync stalls) must not block sinking\n");
-	const GovProfile* p = &GOV_P_8BIT;
+	const GovProfile* p = &TEST_WIDE_8BIT;
 	GovState st; gov_init(&st, p);
 	// light game with a stall window every 3rd tick: SLACK,SLACK,BUSY,repeat
 	for (int i = 0; i < 120; i++)
@@ -298,6 +340,7 @@ static void test_scene_burst_resets_floor_memory(void) {
 
 int main(void) {
 	printf("== governor synthetic harness ==\n");
+	test_profile_brackets();
 	test_cold_idle();
 	test_boot_slip_at_max_still_sinks();
 	test_sink_despite_busy_noise();
@@ -310,6 +353,7 @@ int main(void) {
 	test_boundary_no_limit_cycle();
 	test_predictive_sink_gate();
 	test_converges_to_lowest_stable();
+	test_capped_ff_settles_below_max();
 	test_tick_io();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	if (g_fail) { printf("%d check(s) failed\n", g_fail); return 1; }

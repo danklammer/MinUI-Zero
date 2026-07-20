@@ -871,3 +871,241 @@ remains open but is no longer release-gating; the presentation-drop defends the 
 decode-side headroom is pursued on its own schedule. Lesson recorded: a mechanism verified
 as dead code is a defect in the feature that needed it, not a curiosity — the "no measured
 claim depended on it" framing hid a live user-facing bug for five days.
+
+## D56 — FF with sound (2026-07-14, feat/ff-audio)
+Fast-forward was silent since forever: `audio_sample*_callback` dropped audio when
+`fast_forward` (the old `// sound must be disabled for fast forward to work` note). The
+real reason is `SND_batchSamples` BLOCKS the emulation thread when the ring is full
+(SDL_Delay retry) — that block is what audio-paces normal play to real time, so feeding
+4x audio during FF throttled FF back to 1x. Fix (lean, no time-stretch): during FF the
+ring feeds NON-BLOCKING — `SND_setFastForward(1)` makes `SND_batchSamples` drop-on-full
+instead of block. The DAC plays the samples that land at 1x = the game audio temporally
+compressed (the expected sped-up/chipmunk FF sound); FF speed stays governed by
+`limitFF()`. On by default (`ff_audio=1`, no menu; set 0 for classic silent FF).
+NextUI parity confirmed against their tree: `ma_audio.c` gates on `(!fast_forward ||
+ff_audio)` and routes FF through `SND_batchSamples_fixed_rate` — an occupancy-adaptive
+non-blocking resampler (ON_TIME/LATE/VERY_LATE mode machine). Ours is the minimal
+equivalent: same non-blocking-drop principle, no adaptive resampler (chipmunk is the
+desired FF cue, not hi-fi). Interaction with the v1.3.1 presentation-drop catch-up is
+benign BY CONSTRUCTION: FF floods the ring, `SND_ringPct` rides high, catch-up (engages
+< 50%) never fires during FF — FF is never audio-starved. Device ear-test + engage=0
+confirmation pending (Brick asleep at implementation time).
+
+## D57 — Cadence mechanisms are content-scoped, including fast-forward (2026-07-17)
+The v1.3.1 PS1 presentation-drop thresholds were accidentally active for every core. Supafaust's
+healthy ring naturally crossed the PS-tuned 50% threshold while Mario 3 scrolled, so the frontend
+discarded valid presents and produced visible jitter. Presentation-drop is now enabled only for
+`PS`; the six-system Brick matrix logged it disabled everywhere else. During PS fast-forward it is
+temporarily disabled because deliberately outrunning presentation is not an audio delivery failure,
+then restored on FF exit. The BR2 trace confirmed enabled -> disabled -> enabled and normal-play
+catch-up resumed afterward.
+
+D45's rate correction is revived under Lenient vsync only for non-PS 58-61fps cores. PS remains
+excluded because the prior broad revival audibly chopped BR2 and THPS. Light systems converge at
+their efficient ceiling (Brick receipts: GBC +10050ppm at 408MHz; Genesis +6900ppm); games at their
+profile maximum remain ineligible and keep stock timing. Entering FF saves the learned ppm, runs at
+zero correction, and restores it once normal-play headroom returns. `ZERO_NO_DRC` and VSYNC_OFF
+remain kill switches. Automated transition/cadence coverage is green; the Mario gameplay eye-test
+after convergence and FF audio ear-test remain release gates.
+
+## D58 — Save publication is atomic through the directory entry (2026-07-17, v1.4)
+The first atomic-save pass serialized to `*.tmp`, called `fflush`/`fsync`, and renamed, but
+ignored every late error. A full buffered `fwrite` followed by ENOSPC/EIO from `fflush`,
+`fsync`, or `fclose` could therefore replace the last good save with incomplete data. State
+loading also used `state_size < fread(..., state_size)`, a condition that can never be true,
+and SRAM/RTC reads mutated live core memory before knowing whether the read completed.
+
+Decision: minarch's SRAM, RTC, state, and config writers share `save_io`: loop through short
+writes/EINTR, sync and close the complete temp file, atomically rename, then sync the parent
+directory. Every pre-rename failure preserves the old target and removes the temp. SRAM/RTC
+loads stage into temporary memory before committing; legacy size mismatches remain accepted
+for core/save compatibility. State files larger than the core's buffer are rejected, while a
+smaller file is still zero-padded for the existing mGBA/Wario Land 4 compatibility path. The
+crash handler remains async-signal-safe and now loops short writes, requires successful file
+sync/close before rename, and syncs its pre-opened save directory after publication.
+
+Callers also honor publication failure. Save & Quit exits only after the state is durable; menu
+Save/Load stays open when state I/O fails; auto-resume is advertised only after its state succeeds.
+Multi-disc manual saves use a durable `.txn` marker around the state + disc-sidecar pair, so a
+power cut between those files hides the slot until a successful retry instead of loading a new
+state against stale disc identity. Missing, empty, oversized, or unknown disc sidecars fail closed.
+The emergency crash writer is disarmed and its directory fd closed after the final SRAM/RTC flush,
+before `unload_game` invalidates its cached core pointers. Config reset changes in-memory values
+only after durable removal of the active config succeeds.
+
+No existing path, extension, or payload changed; `.txn` is an internal transient marker.
+Original MinUI extras and existing raw `.sav`/`.rtc`/`.stN` files remain compatible. The host
+ASan/UBSan fault harness covers partial I/O, EINTR, premature EOF,
+open/write/fsync/close/rename/unlink failures, old-target
+preservation, temp cleanup, and durable config deletion. The same harness passes on the
+Brick's real vfat `/mnt/SDCARD`, confirming directory `fsync` support. This closes transport
+and publication corruption; recognizing semantically corrupt legacy payloads remains a
+separate user-facing recovery task.
+
+## D59 — Measured-rate FF audio smoothing + the state-size compat decision (2026-07-17, v1.4 final review)
+Two closing decisions from the v1.4 ship review:
+1. **FF smoothing supersedes part of D56's rationale.** D56 fed FF audio by dropping arbitrary
+full-ring chunks ("no adaptive resampler"); e1a5a6e5 replaces that with a measured production
+rate (Q16 fixed-point multiplier on the existing linear resampler) so FF audio is evenly
+decimated instead of chopped. D56's "the ring rides full so catch-up can never fire during FF"
+guarantee is superseded — catch-up safety during FF now rests on D57's PS-only presentation-drop
+scoping (drop disabled during PS FF, restored on exit). Line-level review: Q16 math bounded
+(overflow/wrap/zero-guard verified, tick-wrap tested), estimator scoped to audible-FF windows,
+stale windows (menu/sleep) discarded, non-FF path bit-identical to v1.3.1 except where the old
+int32 resampler math overflowed (that was UB — the int64 cast is a fix). Device gate: the
+smoothing commit was host-tested + cross-compiled but ships only after an on-device ear test.
+2. **State_read keeps v1.3.1 compatibility (allow_larger=1).** D58's fail-closed read rejected
+states larger than the core's current serialize_size(); review flagged this as the one place
+v1.4 could refuse a save v1.3.1 accepted (cores with varying serialize_size — mgba). Decision:
+prefix-load stays (bounded read into a state_size buffer, v1.3.1's de-facto semantics); D58's
+fail-closed stance is kept for every other failure class (truncation, short reads, publish
+failures). Also closed by review: test-save-io added to release-checks CI; the stale -8 release
+zip (embedded pre-commit hash) discarded — release artifacts must embed the tagged HEAD's hash.
+
+## D60 — Fractional fast-forward speeds: 1.25x / 1.5x / 1.75x (2026-07-17, v1.4)
+FF speeds were integer-multiplier by construction (`index+1` in the pacer budget) — a harmless
+simplification in the silent-FF era, when 1.25x video was indistinguishable from 1x. FF-with-sound
+(D56) + measured-rate smoothing (D59) change the calculus twice over: (1) speech stays intelligible
+at 1.25-1.75x, making them the "watchable" band for RPG/text play. Honest scope (Codex re-review):
+Max FF Speed is a CEILING — a scene hardware-limited to ~1.1x ran at ~1.1x under the old 2x cap too,
+and a fractional cap does not add speed there. What the fractional band demonstrably adds (device
+traces 2026-07-17): (a) watchable caps — titles that would exceed 1.25-1.75x are held at a followable
+speed instead of racing to 2-4x; (b) gentler audio pitch at those caps; (c) LOWER CLOCKS for titles
+capable of exceeding the cap — Advance Wars at a 1.5x cap settles at 600-768MHz where the old 2x+
+caps provisioned higher (the capped-target descent, below). Heavy-scene reality (BR2): intro reaches
+1.5x, fights deliver ~1.1x best-effort under any cap. GOVERNOR: capped-FF targets get a generation-
+rate-driven descent (SLACK when holding) — CONTAINED to the fractional band for v1.4.0 because the
+governor tick runs per generated frame while the rate sampler is 1Hz wall: at <2x the sink dwell
+(1.14-1.6s) stays >= the sample period (validated regime); at 2x-8x the dwell compresses to
+0.25-1.0s and fail-holds to 7.5-30s at 60fps, with the stale-sample risk strongest at the higher
+caps (multiple probes per stale sample = wobble), so integer caps
+keep the previously-shipped BUSY hold. Wall-clock-invariant FF governor timing is a follow-up item
+that lifts the containment. This was a v1.3.1
+limitation, not a regression — audible FF merely exposed it. Implementation: a multiplier table
+(`max_ff_mults`, index-aligned with the labels) replaces `index+1` at the two math sites (limitFF
+budget, governor FF target); "None"=0 stays uncapped and divide-guarded. Config compatibility is
+free by construction: cfgs persist the LABEL STRING and resolve by string match, so inserting
+entries cannot remap a saved speed; the in-code default index moves 3->6 to keep the 4x default.
+Device gate: pacing feel + FF-audio ear check at each fractional speed, PS1 (heavy title) included.
+
+## D61 — Low-end burst headroom and transition-window hygiene (2026-07-18, v1.4.1)
+v1.4 used 408 MHz as both the hardware idle floor and the minimum low-end gameplay ceiling. Those
+are not equivalent under the hybrid controller: a low `scaling_max_freq` prevents schedutil from
+servicing short GLES upload/submit bursts that the frontend's pure-work sensor does not see. The
+full Pokémon Gold matrix reproduced 55-58 fps episodes at both 600 and 816 MHz ceilings, with DRC
+enabled and disabled; 1008 recovered immediately. This matches the earlier pipeline finding that a
+low ceiling starves bursty work despite modest average CPU time. GB/GBC/FC/SMS/GG/PCE therefore keep
+the verified-stock 1008 MHz ceiling. This does not pin a frequency: schedutil remains authoritative
+beneath the cap and the 816-ceiling trace sampled 408/600 MHz in 101 of 104 one-second windows. It
+does stop the frontend from deliberately probing a ceiling now proven to miss realtime.
+
+The same matrix invalidated D57's broad Lenient-vsync DRC revival. Against the enlarged 200 ms audio
+ring, the audio-block signal has enough lag to wind the integrator beyond +6000 ppm; Pokémon then
+fell to 55 fps and forced a governor recovery. That path was not human-validated after its Lenient
+gate was revived. DRC is default-off again for v1.4.1 and remains available only through the
+`ZERO_ENABLE_DRC=1` diagnostic environment variable pending an anti-windup controller and a full
+cross-system gauntlet. Presentation-drop scoping from D57 is independent and remains enabled only
+for PS1.
+
+The first FC regression trace also exposed a separate upgrade trap: this device's persisted
+`FC-fceumm` config still selected upstream's `High` sound-quality path, overriding the `Low` pak
+default fixed in D25. That path previously measured roughly 400 MHz more expensive and seven times
+the audio underruns. v1.4.1 performs a verified one-time `High` to `Low` migration across saved FC
+configs; the completion marker is published only after every matching file was rewritten, so a
+failed card write retries on the next boot.
+
+The in-game menu is not the GPU-dark launcher. It composites a paused game frame, TTF text, and
+state previews through GLES, so the 600 MHz menu ceiling made redraws visibly lag. It now uses the
+existing 1200 MHz powersave ceiling; schedutil remains free to idle beneath it. State previews are
+decoded only when the selected slot changes, and invalid images fail to the existing No Preview
+state instead of reaching `SDL_ConvertSurface(NULL)`. On Brick, ordinary redraw latency improved
+from ~129 ms to ~66 ms and a repeated Save/Load preview from ~135 ms to ~35 ms.
+
+Finally, menu and sleep are explicit measurement boundaries. A sleep interval previously remained
+inside the one-second generation-rate window: the Contra trace reported a synthetic 21/60 fps
+sample after wake, promoted a healthy 600 MHz session to 1008 MHz, and armed failure memory against
+the floor. Both boundaries now reset frame-rate, governor work-batch, process-use, and DRC baselines;
+wake/menu exit also restore the controller's exact saved ceiling rather than the static CPU option.
+Failure memory itself is retained, so opening a menu cannot force a known-bad clock to be re-probed.
+These are serial-path defects present in v1.4.0; they are independent of threading v2.
+
+## D62 — Threading v2 returns as a PS-only v1.5 candidate (2026-07-20)
+The v1.3 mailbox implementation remains retired. The replacement is the reviewed v2.4
+ownership model: when `ZERO_FTV2_DEPTH=2` is requested, one CORE thread registers every
+libretro callback and owns every libretro call through unload/deinit; MAIN owns input polling,
+menus, SDL/audio lifecycle, scaler/GLES state, and presentation. A credit ring allows CORE to
+run epoch N+1 while MAIN presents N. Systems that do not request depth two use the existing
+plain serial path and never initialize the engine. Only `PS.pak` requests depth two; its
+governor bracket remains the verified-stock 1008-1800 MHz range, with no 2.0 GHz OC and no
+title-derived hard cap.
+
+The integration closes the implementation-specific ownership holes found after the paper
+reviews. Save/load/reset, controller changes, SRAM/RTC flushes, and disc replacement run as
+parked CORE services. Geometry/AV changes are immutable ordered events applied by MAIN before
+the corresponding frame; a complete AV timing transaction ends in a synchronous barrier, and
+rumble changes are persistent ordered events. The same MAIN dispatcher applies both run-epoch
+commands and quiescent bootstrap/runtime-service products; this prevents an auto-resume,
+load/reset, or disc AV barrier from releasing while its timing or geometry payload remains
+unapplied. CORE copies transient
+video into a bounded, credit-owned pool; published frames retire exactly once on normal,
+discard, stop, and teardown paths, while a
+true allocation failure exits with the canary armed rather than continuing with corrupt or
+frozen video. Input and FF controls cross in per-epoch snapshots; FF transitions park at an
+epoch boundary and serialize resampler/ring changes with the audio producer. Audio health and
+occupancy telemetry are atomic snapshots, so CORE work timing never races the DAC callback.
+Governor work and generation samples advance on `RUN_DONE`, never on non-progressing MAIN
+polls. Depth-two FF applies its speed budget once per completed epoch and publishes visuals at
+an achieved-rate cadence capped at the nominal display rate. This keeps the strict-vsync
+presenter from capping emulation to normal speed without dropping extra visuals when a heavy
+scene cannot reach the requested FF multiplier. The exact pinned pcsx_rearmed source
+(`050981b`) was audited with the tg5040 patch applied: it emits one libretro video callback at
+the end of each `retro_run`, performs geometry/AV and rumble callbacks on that same execution
+path, and does not move frontend callbacks onto its GPU/SPU workers.
+
+The per-game crash canary is keyed by a normalized content-path hash (the sibling `.m3u` path
+when present), not a collision-prone basename. Creation/removal sync both file and parent
+directory. After one unclean depth-two session, one serial session must reach a durable autosave
+or clean gameplay exit before depth two retries. A second consecutive depth-two failure writes a
+durable build-scoped disable; clean serial exits do not clear it, while a new build automatically
+requalifies the game. The marker records whether the interrupted attempt was depth two or its
+serial fallback, so a serial crash cannot be miscounted as a threaded failure. Canary or crash-
+count persistence failure fails closed to serial.
+
+Release status is deliberately **candidate, not device-approved**. The pure framering and
+lifecycle engines must pass their plain/TSan/ASan harnesses, the current governor/audio/save
+suites, forbidden-global audit, guard-on and guard-off tg5040 builds, and the Brick + Smart Pro
+PS gauntlet before merge to a release branch. Hardware gates include boot/load failure, normal
+play, 480i resolution churn, menu/save/load/reset, disc change, audible FF at fractional and
+integer caps, repeated sleep/resume, quicksave-poweroff, crash-canary fallback/recovery, clean
+exit, and artifact-hash verification. The same artifact must also pass serial-parity sessions
+on GBC, SFC, and SUPA on both devices, with no v2 initialization in their logs; matched
+guard-on/unset-depth versus guard-off runs must show no meaningful generation, audio, menu,
+clock, or process-work regression on those light systems. Earlier BR2
+measurements justify the candidate; they do not waive these composed-release gates.
+
+## D63 — SNES frontend threading stays off pending a new energy A/B (2026-07-20)
+Neither SNES launcher opts into frontend depth two. `SFC.pak` uses the pinned
+`snes9x2005_plus` source at `b6035697`; it creates no emulation/render worker and emits video and
+audio synchronously from `retro_run`. `SUPA.pak` uses the pinned Supafaust source at `2b93c0d7`,
+whose libretro load path explicitly selects the `mt` renderer and whose config already separates
+emulation (`0x3`) from PPU rendering (`0xc`).
+Enabling frontend pipelining for SUPA would therefore stack a third active frontend/present
+threading layer on top of the core's own PPU worker.
+
+Historical DKC/Yoshi measurements used the retired mailbox implementation and are not a v2
+release receipt. They showed lower reported ceilings in some scenes, but not a repeatable
+total-device temperature/energy win across both devices. After PS is qualified, SFC and SUPA
+may be tested separately with same-state, pinned-OPP and dynamic-governor A/Bs. Default-on needs
+equal input/audio/save/sleep behavior plus lower charge drain or equilibrium temperature, not
+merely a lower CPU ceiling. Until then both remain on the plain serial frontend path.
+
+## D64 — Libretro bootstrap callback hardening (2026-07-20)
+The final threading callback audit found two serial-path defects shared by every mode.
+`RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL` lacked a `break`, fell through to
+`GET_SYSTEM_DIRECTORY`, and wrote an eight-byte directory pointer through the core's integer
+argument. `Input_init` also tested uninitialized availability entries for buttons omitted from
+a core's descriptor list. Finally, the audio and frame-time registration stubs returned true
+without retaining or invoking the supplied callbacks. The performance hint is now accepted
+without fallthrough, the availability table is zero-initialized, and unsupported callback
+registration returns false so cores retain their synchronous fallback. These are correctness
+fixes, not threading policy.

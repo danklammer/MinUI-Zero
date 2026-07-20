@@ -70,9 +70,9 @@ Zero-native diagnostics version, see above.)
 
 ## 💡 Key insight
 MyMinUI *raised* its menu clock ~2× on weak SoCs (miyoomini/my282) because ultra-low felt
-sluggish. That floor does **not** apply to the Brick's far stronger A133P — our GPU-dark menu is
-already "super fast" at 600 MHz (owner-confirmed). Menu responsiveness is a solved problem on our
-hardware; don't spend watts chasing it.
+sluggish. The Brick's GPU-dark **launcher** remains fast at 600 MHz. The in-game menu is a
+different GLES/compositing workload and now uses the measured 1200 MHz powersave ceiling (D61);
+do not conflate the two when benchmarking menu responsiveness.
 
 ## Charging screen polish (v1.2 candidate, from NextUI triage 2026-07-05)
 Stock's charge-while-off screen is a bare icon. NextUI's battery experience looks nicer but
@@ -87,6 +87,9 @@ haptic cue buzzes on the SP after the update. If still silent: check FN mute sta
 probe the motor sysfs directly.
 
 ## Multithreaded minarch (v1.3 research frontier) — EXPERIMENT DONE 2026-07-07
+**Historical evidence only.** The mailbox implementation described below was retired. The
+reviewed v2 candidate and its current release gates are D62; SNES remains serial per D63.
+
 Stock MinUI already ships core/render threading: the "Prioritize Audio" option
 (minarch_thread_video, default off) runs core.run() on its own thread. A/B on THPS2 attract
 (Brick, HUD): threading WORKS (61/60 stable, 22% total CPU) but our governor mis-instruments
@@ -100,7 +103,11 @@ audio-crackle insurance. Also fix: the core thread busy-spins when paused (shoul
 NextUI ships rewind (workspace/all/minarch/ma_rewind.c) — port-or-adapt candidate for the
 core-features list; evaluate its RAM/CPU cost against the efficiency charter on small cores.
 
-## Auto-threading (v1.4 candidate) — "measure, decide, remember" applied to threading
+## Auto-threading (historical proposal; not selected)
+This proposal targeted the retired runtime-toggle implementation and is not current policy.
+The v2 candidate is explicit PS-only depth two with crash-canary fallback (D62); no user toggle,
+trial, or persisted threaded boot verdict ships.
+
 Replace per-system threading defaults with a runtime verdict, same philosophy as the governor
 (the machine answers, not a menu). Design, riding entirely on existing machinery:
 1. Every game launches single-threaded (safe for any core, incl. sideloaded ones).

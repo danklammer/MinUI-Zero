@@ -63,6 +63,38 @@ if [ ! -f "$_gpu_migration" ]; then
 fi
 unset _cfg _gpu_migration _gpu_migration_failed
 
+# v1.4.1 migration: old FC configs retain upstream's fceumm High sound-quality
+# setting even though the pak default moved to Low. High costs roughly 400 MHz and
+# measured substantially more underruns; saved configs otherwise override the fix.
+_fc_migration="$SHARED_USERDATA_PATH/.minui/migrated-v141-fceumm-low"
+if [ ! -f "$_fc_migration" ]; then
+	_fc_migration_failed=0
+	for _cfg in "$USERDATA_PATH/FC-fceumm"/*.cfg; do
+		[ -f "$_cfg" ] || continue
+		if grep -q "fceumm_sndquality = High" "$_cfg"; then
+			_fc_tmp="$_cfg.v141.tmp"
+			_fc_has_low=1
+			_fc_has_high=2
+			if sed "s/fceumm_sndquality = High/fceumm_sndquality = Low/" "$_cfg" > "$_fc_tmp"; then
+				grep -q "fceumm_sndquality = Low" "$_fc_tmp"; _fc_has_low=$?
+				grep -q "fceumm_sndquality = High" "$_fc_tmp"; _fc_has_high=$?
+			fi
+			if [ "$_fc_has_low" = "0" ] && [ "$_fc_has_high" = "1" ] && mv "$_fc_tmp" "$_cfg"; then
+				:
+			else
+				rm -f "$_fc_tmp"
+				_fc_migration_failed=1
+			fi
+		fi
+	done 2>/dev/null
+	if [ "$_fc_migration_failed" = "0" ]; then
+		sync
+		: > "$_fc_migration.tmp" && mv "$_fc_migration.tmp" "$_fc_migration"
+		sync
+	fi
+fi
+unset _cfg _fc_tmp _fc_has_low _fc_has_high _fc_migration _fc_migration_failed
+
 # dev: Stay Awake tool persistence (workspace/tg5040/dev-tools/, never shipped) — the
 # /tmp flag resets each boot, so re-arm from the shared flag. Inert unless a dev armed it.
 if [ -f "$SHARED_USERDATA_PATH/dev-stay-awake" ]; then

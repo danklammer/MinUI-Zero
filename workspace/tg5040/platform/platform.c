@@ -238,7 +238,7 @@ static void clearVideo(void) {
 }
 
 void PLAT_quitVideo(void) {
-	clearVideo();
+	if (!fb_present) clearVideo(); // direct-fb menu never scans the GLES buffers
 
 	SDL_FreeSurface(vid.screen);
 	SDL_FreeSurface(vid.buffer);
@@ -249,7 +249,29 @@ void PLAT_quitVideo(void) {
 	SDL_DestroyWindow(vid.window);
 
 	SDL_Quit();
-	system("cat /dev/zero > /dev/fb0 2>/dev/null");
+	// Preserve the old fb0 clear without spawning cat to stream /dev/zero through the
+	// device (~600ms). The direct-fb menu reuses its mapping; game/Smart Pro teardown
+	// briefly maps fb0 so a layer switch can never expose stale pre-game contents.
+	int clear_fd = fb_fd;
+	uint8_t* clear_mem = fb_mem;
+	size_t clear_size = clear_mem ? fb_finfo.smem_len : 0;
+	if (!clear_mem) {
+		struct fb_fix_screeninfo clear_finfo = {0};
+		clear_fd = open("/dev/fb0", O_RDWR);
+		if (clear_fd >= 0 && ioctl(clear_fd, FBIOGET_FSCREENINFO, &clear_finfo) == 0
+				&& clear_finfo.smem_len) {
+			clear_size = clear_finfo.smem_len;
+			clear_mem = mmap(0, clear_size, PROT_READ|PROT_WRITE, MAP_SHARED, clear_fd, 0);
+			if (clear_mem == MAP_FAILED) clear_mem = NULL;
+		}
+	}
+	if (clear_mem) {
+		memset(clear_mem, 0, clear_size);
+		munmap(clear_mem, clear_size);
+	}
+	if (clear_fd >= 0) close(clear_fd);
+	fb_mem = NULL;
+	fb_fd = -1;
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
@@ -283,6 +305,10 @@ static void resizeVideo(int w, int h, int p) {
 		for (int hs=2; hs<4; hs++) {
 			if (w*hs>=device_width || h*hs>=device_height) { hard_scale = hs; break; }
 		}
+	}
+	{ // dev A/B knob: force the Crisp prescale factor (ZERO_HARD_SCALE=1..4)
+		char* hs_env = getenv("ZERO_HARD_SCALE");
+		if (hs_env) { int v = atoi(hs_env); if (v >= 1 && v <= 4) hard_scale = v; }
 	}
 
 	LOG_info("resizeVideo(%i,%i,%i) hard_scale: %i crisp: %i\n",w,h,p, hard_scale,vid.sharpness==SHARPNESS_CRISP);
@@ -480,6 +506,91 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 	resizeVideo(vid.blit->true_w,vid.blit->true_h,vid.blit->src_p);
 }
 
+// Debug HUD strips: minarch renders bitmap text at native resolution and the GPU
+// composites them at 2x over the finished game frame — text size is constant on
+// every system instead of inheriting the game's scale (8x on GBC = unreadable).
+static struct {
+	uint16_t* top; uint16_t* bottom;
+	int w, h, stride;
+	SDL_Texture* tex_top; SDL_Texture* tex_bottom;
+	int tex_w, tex_h;
+	SDL_Rect game; // panel rect of the most recently presented frame
+} dbg;
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
+	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
+}
+void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
+	*x = dbg.game.x; *y = dbg.game.y; *w = dbg.game.w; *h = dbg.game.h;
+}
+#define DBG_KEY 0xF81F // magenta in the RGB565 strips = fully transparent
+static uint32_t* dbg_argb = NULL;
+static void dbgConvert(SDL_Texture* tex, uint16_t* px) {
+	for (int y = 0; y < dbg.h; y++) {
+		uint16_t* row = px + y * dbg.stride;
+		uint32_t* out = dbg_argb + y * dbg.w;
+		for (int x = 0; x < dbg.w; x++) {
+			uint16_t p = row[x];
+			out[x] = (p == DBG_KEY) ? 0x00000000
+				: 0xFF000000
+				| ((p & 0xF800) << 8) | ((p & 0xE000) << 3)   // R
+				| ((p & 0x07E0) << 5) | ((p & 0x0600) >> 1)   // G
+				| ((p & 0x001F) << 3) | ((p & 0x001C) >> 2);  // B
+		}
+	}
+	SDL_UpdateTexture(tex, NULL, dbg_argb, dbg.w * 4);
+}
+static void drawDebugOverlay(void) {
+	// convert+upload only when the strip content changed (text updates ~1Hz; doing this
+	// per frame measured ~1.9ms/frame — the HUD must not distort what it displays)
+	static uint16_t* prev_top = NULL; static uint16_t* prev_bot = NULL;
+	static int prev_n = 0;
+	if (!dbg.top || dbg.w <= 0 || dbg.stride < dbg.w) return;
+	if (dbg.tex_top && (dbg.tex_w != dbg.w || dbg.tex_h != dbg.h)) {
+		SDL_DestroyTexture(dbg.tex_top); SDL_DestroyTexture(dbg.tex_bottom);
+		dbg.tex_top = dbg.tex_bottom = NULL;
+		free(dbg_argb); dbg_argb = NULL;
+	}
+	if (!dbg.tex_top) {
+		dbg.tex_top = SDL_CreateTexture(vid.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, dbg.w, dbg.h);
+		dbg.tex_bottom = SDL_CreateTexture(vid.renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, dbg.w, dbg.h);
+		if (dbg.tex_top) SDL_SetTextureBlendMode(dbg.tex_top, SDL_BLENDMODE_BLEND);
+		if (dbg.tex_bottom) SDL_SetTextureBlendMode(dbg.tex_bottom, SDL_BLENDMODE_BLEND);
+		dbg_argb = malloc(dbg.w * dbg.h * sizeof(uint32_t));
+		dbg.tex_w = dbg.w; dbg.tex_h = dbg.h;
+		prev_n = 0; // fresh textures hold no pixels — the content cache must not claim otherwise
+	}
+	if (!dbg.tex_top || !dbg.tex_bottom || !dbg_argb) return;
+	int strip_n = dbg.stride * dbg.h;
+	if (prev_n != strip_n) {
+		free(prev_top); free(prev_bot);
+		prev_top = malloc(strip_n * 2); prev_bot = malloc(strip_n * 2);
+		if (prev_top) memset(prev_top, 0, strip_n * 2);
+		if (prev_bot) memset(prev_bot, 0, strip_n * 2);
+		prev_n = (prev_top && prev_bot) ? strip_n : 0;
+	}
+	if (!prev_n || memcmp(prev_top, dbg.top, strip_n * 2) != 0) {
+		dbgConvert(dbg.tex_top, dbg.top);
+		if (prev_n) memcpy(prev_top, dbg.top, strip_n * 2);
+	}
+	if (!prev_n || memcmp(prev_bot, dbg.bottom, strip_n * 2) != 0) {
+		dbgConvert(dbg.tex_bottom, dbg.bottom);
+		if (prev_n) memcpy(prev_bot, dbg.bottom, strip_n * 2);
+	}
+	// anchor to the game's panel rect (classic in-frame HUD hugged the game image):
+	// one scaled pixel of margin inside the frame edges, clamped to the panel
+	int S = DBG_OVERLAY_SCALE;
+	int m = S;
+	int gx = dbg.game.w > 0 ? dbg.game.x : 0;
+	int gy = dbg.game.h > 0 ? dbg.game.y : 0;
+	int gh = dbg.game.h > 0 ? dbg.game.h : device_height;
+	int ty = gy + m;
+	int by = gy + gh - dbg.h * S - m;
+	if (ty < 0) ty = 0;
+	if (by + dbg.h * S > device_height) by = device_height - dbg.h * S;
+	SDL_RenderCopy(vid.renderer, dbg.tex_top, NULL, &(SDL_Rect){gx, ty, dbg.w * S, dbg.h * S});
+	SDL_RenderCopy(vid.renderer, dbg.tex_bottom, NULL, &(SDL_Rect){gx, by, dbg.w * S, dbg.h * S});
+}
+
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	PLAT_uvReassert(); // voltage authority: out-persist the kernel (no-op unless armed)
 	
@@ -494,10 +605,17 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 
 	if (fb_game) { PLAT_flipFB_game(); vid.blit = NULL; return; } // GPU-dark software present for games
 
-	// uint32_t then = SDL_GetTicks();
+	// Present-stage instrumentation (ZERO_PRESENT_STATS=1): CPU-side block time of each
+	// stage, aggregated per second. These are API-call stalls (submit/backpressure), not
+	// GPU execution time — exactly the bursts D61 showed a low ceiling starves.
+	static int ps_on = -1;
+	if (ps_on == -1) ps_on = (getenv("ZERO_PRESENT_STATS") != NULL);
+	uint64_t ps_t0 = 0, ps_t1 = 0, ps_t2 = 0, ps_t3 = 0, ps_t4 = 0;
+	if (ps_on) ps_t0 = getMicroseconds();
+
 	SDL_UpdateTexture(vid.texture,NULL,vid.blit->src,vid.blit->src_p);
-	// LOG_info("blit blocked for %ims (%i,%i)\n", SDL_GetTicks()-then,vid.buffer->w,vid.buffer->h);
-	
+	if (ps_on) ps_t1 = getMicroseconds();
+
 	SDL_Texture* target = vid.texture;
 	int x = vid.blit->src_x;
 	int y = vid.blit->src_y;
@@ -513,6 +631,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		h *= hard_scale;
 		target = vid.target;
 	}
+	if (ps_on) ps_t2 = getMicroseconds();
 	
 	SDL_Rect* src_rect = &(SDL_Rect){x,y,w,h};
 	SDL_Rect* dst_rect = &(SDL_Rect){0,0,device_width,device_height};
@@ -548,14 +667,37 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	}
 	
 	SDL_RenderCopy(vid.renderer, target, src_rect, dst_rect);
-	
+
 	updateEffect();
 	if (vid.blit && effect.type!=EFFECT_NONE && vid.effect) {
 		SDL_RenderCopy(vid.renderer, vid.effect, &(SDL_Rect){0,0,dst_rect->w,dst_rect->h}, dst_rect);
 	}
-	// uint32_t then = SDL_GetTicks();
+	dbg.game = *dst_rect;
+	drawDebugOverlay();
+	if (ps_on) ps_t3 = getMicroseconds();
 	SDL_RenderPresent(vid.renderer);
-	// LOG_info("SDL_RenderPresent blocked for %ims\n", SDL_GetTicks()-then);
+	if (ps_on) {
+		ps_t4 = getMicroseconds();
+		static uint64_t s_up, s_pass, s_copy, s_pres;
+		static uint32_t m_up, m_pass, m_copy, m_pres;
+		static int s_n; static uint32_t s_at;
+		uint32_t up = (uint32_t)(ps_t1-ps_t0), pass = (uint32_t)(ps_t2-ps_t1);
+		uint32_t copy = (uint32_t)(ps_t3-ps_t2), pres = (uint32_t)(ps_t4-ps_t3);
+		s_up += up; s_pass += pass; s_copy += copy; s_pres += pres; s_n++;
+		if (up > m_up) m_up = up;
+		if (pass > m_pass) m_pass = pass;
+		if (copy > m_copy) m_copy = copy;
+		if (pres > m_pres) m_pres = pres;
+		uint32_t now = SDL_GetTicks();
+		if (!s_at) s_at = now;
+		else if (now - s_at >= 1000) {
+			LOG_info("present-stats: n=%d upload=%llu/%u pass=%llu/%u copy=%llu/%u present=%llu/%u us(avg/max) hs=%d\n",
+				s_n, s_up/s_n, m_up, s_pass/s_n, m_pass, s_copy/s_n, m_copy, s_pres/s_n, m_pres, hard_scale);
+			s_up = s_pass = s_copy = s_pres = 0; s_n = 0;
+			m_up = m_pass = m_copy = m_pres = 0;
+			s_at = now;
+		}
+	}
 	vid.blit = NULL;
 }
 
@@ -1083,14 +1225,16 @@ void PLAT_setUndervolt(int millivolts) { (void)millivolts; } // superseded by th
 
 #define RUMBLE_PATH "/sys/class/gpio/gpio227/value"
 #define RUMBLE_VOLTAGE_PATH "/sys/class/motor/voltage"
-void PLAT_setRumble(int strength) {
+static void setRumble(int strength, int respect_mute) {
 	// the motor needs a drive voltage before the enable pin does anything — the Brick
 	// boots with a usable default, the Smart Pro with none (silent motor). 1.5V per
 	// NextUI's tg5040 implementation. Set once, lazily, only when rumble is first used.
 	static int motor_powered = 0;
 	if (strength && !motor_powered) { putInt(RUMBLE_VOLTAGE_PATH, 1500000); motor_powered = 1; }
-	putInt(RUMBLE_PATH, (strength && !GetMute())?1:0);
+	putInt(RUMBLE_PATH, (strength && (!respect_mute || !GetMute()))?1:0);
 }
+void PLAT_setRumble(int strength) { setRumble(strength, 1); }
+void PLAT_setSystemRumble(int strength) { setRumble(strength, 0); }
 
 int PLAT_pickSampleRate(int requested, int max) {
 	return MIN(requested, max);

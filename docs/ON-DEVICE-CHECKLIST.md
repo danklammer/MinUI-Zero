@@ -47,7 +47,8 @@ unless noted:
       then settle at the lowest stable OPP; temp should plateau below `GOV_T_CEIL_C` (72°C).
 - [ ] Confirm it does **not** hunt audibly/visibly (frame-rate wobble). If it does, raise
       `GOV_DN_DWELL` or `GOV_STEP_KHZ`.
-- [ ] Confirm it runs cool on light systems (NES/GB): should sink toward `f_min` quickly.
+- [ ] Confirm it runs cool on light systems (NES/GB): schedutil should still idle below their
+      1008 MHz ceiling without the frontend probing a ceiling that clips present bursts (D61).
 - [ ] **Sub-60 Hz cores** (PAL titles, VB): `FRAME_BUDGET` is a fixed 60 Hz (17 ms) budget,
       so a frame that comfortably holds a 50 Hz core can still read as an overrun and keep
       the clock higher than necessary. Confirm whether this wastes power on those cores; if
@@ -71,7 +72,9 @@ unless noted:
 ## MEASURED (device session 2026-06-30) — recon complete
 Real values captured over SSH on the Brick; the ASSUMED placeholders above are now resolved:
 - **OPP table:** `408 600 816 1008 1200 1416 1608 1800 2000` MHz (floor 408, not 480). `GOV_STEP_KHZ`
-  set to 216000 (real gap ~192-216); 16-bit f_max -> 1416 (1320 was not an OPP); 8-bit f_min -> 408.
+  set to 216000 (real gap ~192-216); 16-bit f_max -> 1416 (1320 was not an OPP). The original
+  8-bit f_min=408 result is superseded by D61: 408 remains the idle floor, while low-end gameplay
+  retains a 1008 ceiling for burst headroom.
 - **schedutil: PRESENT and active** (`scaling_available_governors` includes it). Hybrid model confirmed:
   under Tony Hawk PS1, ceiling held 1800 while schedutil ran 816-1416 MHz (mostly 1008), 33-37C.
 - **Thermal zone: thermal_zone0 = cpu_thermal_zone** (confirmed). zone1=gpu, zone2=ddr, zone3=battery.
