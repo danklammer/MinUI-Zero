@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <zlib.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "libretro.h"
 #include "defines.h"
@@ -23,11 +24,159 @@
 #include "governor.h"
 #include "gov_memory.h"
 #include "telemetry.h"
+#include "ff_visual_cadence.h"
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+// ============================================================================
+// Threading v2 candidate (docs/threading-v2-design.md): one CORE thread owns every
+// libretro call from callback registration through teardown. MAIN owns input, menus,
+// SDL/GLES presentation, and lifecycle. PS.pak requests the depth-2 pipeline; systems
+// without ZERO_FTV2_DEPTH use the unchanged plain serial path and never initialize it.
+// ============================================================================
+#include "frontend_core.h" // pulls framering.h
+#include "frame_pool.h"
+
+// v2 engine handle + running flag declared HERE (early) because video_refresh_callback —
+// far above main() — references them for the frame divert. The rest of the engine
+// wiring (vtable, stubs, drain cb) lives in the block just before main() where core/game/
+// State_* are in scope.
+static fc zero_ftv2;          // engine handle (MAIN-side); ring/state live inside it
+static _Atomic int zero_ftv2_running; // published after fc_boot_finish; read by CORE/signal paths
+static int zero_ftv2_inited;  // fc_init succeeded far enough to own a CORE thread
+static void zero_ftv2_drain(void* ctx, const fr_event* ev);
+
+// WP-A depth-2 input. MAIN runs the input tick before the grant and packs the button/
+// analog snapshot; the CORE thread reads it from `zero_ftv2_isnap` (its per-epoch immutable copy,
+// set in zero_ftv2_run) instead of the live globals racing MAIN.
+static int zero_ftv2_depth2 = 0; // immutable after bootstrap publication
+static __thread uint64_t zero_ftv2_isnap[4] = {0};
+// Crash canary (depth-2 auto-fallback): armed on the way into a depth-2 session, cleared at every
+// known-good point — clean exit, and the parked sleep/poweroff autosave (Menu_beforeSleep is the
+// choke point for BOTH; re-armed on wake). One failed depth-2 attempt gets one clean serial
+// fallback before retrying. A second consecutive depth-2 failure disables it for this game and
+// build; a new build retries automatically. Self-healing, no UI, no user action.
+#define ZERO_FTV2_CRASH_LIMIT 2
+static char zero_ftv2_canary[MAX_PATH];
+static char zero_ftv2_failures[MAX_PATH];
+static int  zero_ftv2_canary_armed = 0;
+static int  zero_ftv2_canary_clearable = 1;
+
+// WP-B: the depth-2 frame pool. The CORE thread copies each produced frame into a free
+// buffer and rides its index in the FRAME payload; MAIN presents from it (present_frame) and
+// the D-a2 retirement hook (zero_pool_retire) frees it. Size = depth + spill (D-j2): more
+// than `depth` so a multi-video_refresh epoch has headroom; exhaustion DROPS the frame
+// (never blocks the core). CORE is the sole acquirer (no acquire/acquire race); MAIN only
+// retires. Buffers grow-only (realloc); freed at process exit.
+#define ZERO_FTV2_POOL (FR_MAX_DEPTH + 2)
+static frame_pool_buffer zero_pool_buffers[ZERO_FTV2_POOL];
+static frame_pool zero_pool = { zero_pool_buffers, ZERO_FTV2_POOL, realloc };
+static _Atomic int zero_ftv2_fatal;
+
+static int zero_pool_acquire(unsigned w, unsigned h, size_t pitch) {
+	int rc = frame_pool_acquire(&zero_pool, w, h, pitch);
+	if (rc == FRAME_POOL_OOM)
+		atomic_store_explicit(&zero_ftv2_fatal, 1, memory_order_release);
+	return rc;
+}
+static void zero_pool_retire(void* ctx, uint64_t payload) {  // MAIN, via the D-a2 hook
+	(void)ctx;
+	frame_pool_retire(&zero_pool, (size_t)payload);
+}
+
+// Pure CORE work per credit slot. CORE publishes before RUN_DONE; MAIN reads that slot from
+// the RUN_DONE callback before framering returns its credit, so it cannot be overwritten.
+static _Atomic uint32_t zero_ftv2_work_us[FR_MAX_DEPTH];
+// Depth-2 generation telemetry (Codex #5): epochs completed, counted on MAIN from non-cancelled
+// FR_EV_RUN_DONE events in the drain — the TRUE generation rate (duped frames count; a 30fps-
+// internal game generating 60 epochs/s reads 60, not 30). Replaces the old cross-thread
+// fps_ticks read at depth-2 (CORE-incremented, MAIN-reset = data race + wrong semantics).
+static uint32_t zero_ftv2_gen_ticks = 0;   // MAIN-only: read+reset by trackFPS
+// Per-epoch FF snapshot (Codex #6): CORE-side callbacks must not read the live `fast_forward`
+// global MAIN mutates — zero_ftv2_run stores this epoch's snap[3] here (CORE TLS).
+static __thread int zero_ftv2_ff_snap = 0;
+static __thread int zero_ftv2_emit_visual = 1;
+// Ordered CORE->MAIN state commands (Codex #3): SET_GEOMETRY / SET_SYSTEM_AV_INFO arrive on the
+// CORE thread mid-epoch; writing core.aspect_ratio/core.fps/renderer.dst_p there races MAIN's
+// present. Route them through FR_EV_CMD (never dropped, applied by the drain on MAIN in global
+// order against frames). Payload: op in the top byte, an IEEE-754 float's bits in the low 32.
+#define ZERO_CMD_ASPECT 1
+#define ZERO_CMD_FPS    2
+#define ZERO_CMD_SRATE  3
+#define ZERO_CMD_RUMBLE 4
+static uint64_t zero_cmd_pack(int op, float v) {
+	uint32_t bits; memcpy(&bits, &v, 4);
+	return ((uint64_t)op << 56) | bits;
+}
+// Durable canary write (Codex #11): putFile ignores failures and never syncs — a full card or
+// instant power cut could leave no marker and the next launch would wrongly retry depth-2.
+// Only report armed on a synced, complete write.
+static int zero_ftv2_sync_parent(const char* path) {
+	char parent[MAX_PATH];
+	if (snprintf(parent, sizeof(parent), "%s", path) >= (int)sizeof(parent)) return -1;
+	char* slash = strrchr(parent, '/');
+	if (!slash) return -1;
+	*slash = '\0';
+	int fd = open(parent, O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+	if (fd < 0) return -1;
+	int rc = fsync(fd);
+	close(fd);
+	return rc;
+}
+static int zero_ftv2_canary_write(const char* path, const char* state) {
+	return save_write_atomic(path, state, strlen(state));
+}
+static int zero_ftv2_canary_state(const char* path) {
+	char buf[16] = {0};
+	int fd = open(path, O_RDONLY|O_CLOEXEC);
+	if (fd < 0) return 0;
+	ssize_t n = read(fd, buf, sizeof(buf)-1);
+	close(fd);
+	if (n >= 6 && !memcmp(buf, "serial", 6)) return 2;
+	return 1; // legacy "armed" and malformed markers are conservatively depth-2 failures
+}
+static int zero_ftv2_canary_remove(const char* path) {
+	if (unlink(path)) return errno == ENOENT ? 0 : -1;
+	return zero_ftv2_sync_parent(path);
+}
+static int zero_ftv2_failures_read(const char* path) {
+	char buf[128] = {0}, build[96] = {0};
+	int count = 0;
+	int fd = open(path, O_RDONLY|O_CLOEXEC);
+	if (fd < 0) return 0;
+	ssize_t n = read(fd, buf, sizeof(buf)-1);
+	close(fd);
+	if (n <= 0 || sscanf(buf, "%95s %d", build, &count) != 2) return 0;
+	if (strcmp(build, BUILD_HASH) || count < 0 || count > ZERO_FTV2_CRASH_LIMIT) return 0;
+	return count;
+}
+static int zero_ftv2_failures_write(const char* path, int count) {
+	char buf[128];
+	int n = snprintf(buf, sizeof(buf), "%s %d\n", BUILD_HASH, count);
+	if (n < 0 || n >= (int)sizeof(buf)) return -1;
+	return save_write_atomic(path, buf, (size_t)n);
+}
+static void zero_ftv2_failures_clear(void) {
+	if (zero_ftv2_failures[0] && save_remove_file(zero_ftv2_failures))
+		LOG_error("threading v2: cannot clear crash count (%s)\n", strerror(errno));
+}
+// D61 pacer: MAIN-side count of frames actually presented (bumped in zero_ftv2_drain). At
+// depth-2 fc_pump is non-blocking, so the run loop uses the delta to decide whether to block
+// for the CORE (no present this tick) or let the vsync flip self-pace (a frame WAS presented).
+static uint64_t zero_ftv2_presented = 0;
+
+// Build fingerprint as a real string literal (a comment never reaches the binary):
+// `strings minarch.elf | grep threading-v2` distinguishes a guard-ON test build.
+static const char zero_ftv2_fingerprint[] __attribute__((used)) =
+	"threading-v2 depth-2 (CORE producer, credit-owned frame pool, MAIN presenter)";
+
+// The filled vtable and drain integration are defined just before main(), after the
+// core/game/State_*/Core_* functions they reference.
+#endif // ZERO_FRONTEND_THREADING_V2
 
 ///////////////////////////////////////
 
 static SDL_Surface* screen;
-static int quit = 0;
+static _Atomic int quit = 0;
 static int show_menu = 0;
 static int simple_mode = 0;
 static int thread_video = 0;
@@ -141,6 +290,12 @@ static struct Core {
 	void (*get_system_info)(struct retro_system_info *info);
 	void (*get_system_av_info)(struct retro_system_av_info *info);
 	void (*set_controller_port_device)(unsigned port, unsigned device);
+	void (*set_environment_callback)(retro_environment_t);
+	void (*set_video_refresh_callback)(retro_video_refresh_t);
+	void (*set_audio_sample_callback)(retro_audio_sample_t);
+	void (*set_audio_sample_batch_callback)(retro_audio_sample_batch_t);
+	void (*set_input_poll_callback)(retro_input_poll_t);
+	void (*set_input_state_callback)(retro_input_state_t);
 	
 	void (*reset)(void);
 	void (*run)(void);
@@ -156,6 +311,11 @@ static struct Core {
 	
 	// retro_audio_buffer_status_callback_t audio_buffer_status;
 } core;
+
+static void Core_flushMemory(void);
+static void Core_setController(unsigned device);
+static int zero_ftv2_core_enter(void);
+static void zero_ftv2_core_leave(int parked);
 
 ///////////////////////////////////////
 // based on picoarch/unzip.c
@@ -306,12 +466,44 @@ static void gov_mem_save(void) {
 	LOG_info("gov-memory: settled ceiling %d kHz persisted\n", best);
 }
 // (gov_scene_burst is defined after Gov_start: it needs gov_state/gov_profile)
+static int Game_findM3U(const char* path, char* out, size_t out_size) {
+	char dir[MAX_PATH];
+	if (snprintf(dir, sizeof(dir), "%s", path) >= (int)sizeof(dir)) return 0;
+	char* slash = strrchr(dir, '/');
+	if (!slash) return 0;
+	*slash = '\0';
+	const char* dirname = strrchr(dir, '/');
+	dirname = dirname ? dirname + 1 : dir;
+	int n = snprintf(out, out_size, "%s/%s.m3u", dir, dirname);
+	return n > 0 && (size_t)n < out_size && exists(out);
+}
+static void Game_getIdentity(const char* path, char* out, size_t out_size) {
+	const char* name = strrchr(path, '/');
+	name = name ? name + 1 : path;
+	snprintf(out, out_size, "%s", name);
+	char m3u[MAX_PATH];
+	if (Game_findM3U(path, m3u, sizeof(m3u))) {
+		name = strrchr(m3u, '/');
+		snprintf(out, out_size, "%s", name ? name + 1 : m3u);
+	}
+}
+static uint64_t Game_identityHash(const char* path) {
+	char m3u[MAX_PATH];
+	const char* identity = Game_findM3U(path, m3u, sizeof(m3u)) ? m3u : path;
+	if (!strncmp(identity, SDCARD_PATH, strlen(SDCARD_PATH))) identity += strlen(SDCARD_PATH);
+	uint64_t hash = UINT64_C(14695981039346656037);
+	for (const unsigned char* p = (const unsigned char*)identity; *p; p++) {
+		hash ^= *p;
+		hash *= UINT64_C(1099511628211);
+	}
+	return hash;
+}
 static void Game_open(char* path) {
 	LOG_info("Game_open\n");
 	memset(&game, 0, sizeof(game));
 	
 	strcpy((char*)game.path, path);
-	strcpy((char*)game.name, strrchr(path, '/')+1);
+	Game_getIdentity(path, (char*)game.name, sizeof(game.name));
 	
 	// if we have a zip file
 	if (suffixMatch(".zip", game.path)) {
@@ -438,34 +630,8 @@ static void Game_open(char* path) {
 		fclose(file);
 	}
 	
-	// m3u-based?
-	char* tmp;
-	char m3u_path[256];
-	char base_path[256];
-	char dir_name[256];
-
-	strcpy(m3u_path, game.path);
-	tmp = strrchr(m3u_path, '/') + 1;
-	tmp[0] = '\0';
-	
-	strcpy(base_path, m3u_path);
-	
-	tmp = strrchr(m3u_path, '/');
-	tmp[0] = '\0';
-
-	tmp = strrchr(m3u_path, '/');
-	strcpy(dir_name, tmp);
-	
-	tmp = m3u_path + strlen(m3u_path); 
-	strcpy(tmp, dir_name);
-	
-	tmp = m3u_path + strlen(m3u_path);
-	strcpy(tmp, ".m3u");
-	
-	if (exists(m3u_path)) {
-		strcpy(game.m3u_path, m3u_path);
-		strcpy((char*)game.name, strrchr(m3u_path, '/')+1);
-	}
+	// m3u-based multi-disc identity (the same helper keys the pre-core crash canary).
+	Game_findM3U(game.path, game.m3u_path, sizeof(game.m3u_path));
 	
 	game.is_open = 1;
 }
@@ -477,20 +643,33 @@ static void Game_close(void) {
 }
 
 static struct retro_disk_control_ext_callback disk_control_ext;
+static int Core_changeDisc(void);
 static void Game_changeDisc(char* path) {
 	
 	if (exactMatch(game.path, path) || !exists(path)) return;
+	int ftv2_parked = zero_ftv2_core_enter();
+	char original_path[MAX_PATH];
+	snprintf(original_path, sizeof(original_path), "%s", game.path);
 	
 	Game_close();
 	Game_open(path);
+	if (!game.is_open) {
+		LOG_error("Could not open replacement disc: %s\n", path);
+		Game_open(original_path);
+		zero_ftv2_core_leave(ftv2_parked);
+		return;
+	}
 	
-	struct retro_game_info game_info = {};
-	game_info.path = game.path;
-	game_info.data = game.data;
-	game_info.size = game.size;
-	
-	disk_control_ext.replace_image_index(0, &game_info);
-	putFile(CHANGE_DISC_PATH, path); // MinUI still needs to know this to update recents.txt
+	if (!Core_changeDisc())
+		putFile(CHANGE_DISC_PATH, path); // MinUI still needs to know this to update recents.txt
+	else {
+		LOG_error("Core rejected disc change: %s\n", path);
+		// replace_image_index failed, so CORE still owns the original disc. Restore MAIN's
+		// file/data identity before releasing it; callers can detect failure from game.path.
+		Game_close();
+		Game_open(original_path);
+	}
+	zero_ftv2_core_leave(ftv2_parked);
 }
 
 ///////////////////////////////////////
@@ -626,6 +805,27 @@ static int Crash_writeAll(int fd, const void* data, size_t size) {
 static void Crash_handler(int sig) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
 	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Codex #4: only the thread that OWNS core execution may emergency-save. At depth-2 a
+	// MAIN-side fault (present path) can fire while CORE is mid-mutation of emulated memory —
+	// writing the cached SRAM/RTC pointers then would atomically rename a TORN snapshot over
+	// the last good save. Non-core faults restore volts and die; the on-disk save stays good.
+	// fc_current_phase is CORE-TLS: NONE on MAIN, non-NONE while CORE owns libretro work.
+		int ring_idle = fr_get_state(&zero_ftv2.fr) == FR_QUIESCENT
+		             && !atomic_load_explicit(&zero_ftv2.fr.in_run, memory_order_relaxed)
+		             && !atomic_load_explicit(&zero_ftv2.fr.release_req, memory_order_relaxed)
+		             && !atomic_load_explicit(&zero_ftv2.fr.stop_req, memory_order_relaxed)
+		             && atomic_load_explicit(&zero_ftv2.fr.svc_acked, memory_order_relaxed)
+		                >= atomic_load_explicit(&zero_ftv2.fr.svc_requested, memory_order_relaxed);
+		if (zero_ftv2_inited && zero_ftv2_depth2 && zero_ftv2_running
+		 && fc_current_phase() == FCP_NONE && !ring_idle) {
+		static const char skip[] = "minarch: fatal signal on non-core thread — skipping emergency save (torn-write guard)\n";
+		write(STDERR_FILENO, skip, sizeof(skip)-1);
+		PLAT_emergencyRestoreCPUVolt();
+		raise(sig);
+		return;
+	}
+#endif
 	static const char msg[] = "minarch: fatal signal — emergency-saving SRAM/RTC\n";
 	write(STDERR_FILENO, msg, sizeof(msg)-1);
 	int renamed = 0;
@@ -679,13 +879,10 @@ static int state_slot = 0;
 static void State_getPath(char* filename) {
 	sprintf(filename, "%s/%s.st%i", core.states_dir, game.name, state_slot);
 }
-static int State_read(void) { // from picoarch
+static int State_readDirect(void) { // from picoarch; caller guarantees CORE ownership
 	size_t state_size = core.serialize_size();
 	if (!state_size) return 0;
 	int result = 0;
-
-	int was_ff = fast_forward;
-	fast_forward = 0;
 
 	void *state = calloc(1, state_size);
 	if (!state) {
@@ -728,17 +925,12 @@ static int State_read(void) { // from picoarch
 
 error:
 	if (state) free(state);
-	
-	fast_forward = was_ff;
 	return result;
 }
-static int State_write(void) { // from picoarch
+static int State_writeDirect(void) { // from picoarch; caller guarantees CORE ownership
 	size_t state_size = core.serialize_size();
 	if (!state_size) return 0;
 	int result = 0;
-	
-	int was_ff = fast_forward;
-	fast_forward = 0;
 
 	char filename[MAX_PATH];
 	void *state = calloc(1, state_size);
@@ -762,7 +954,41 @@ static int State_write(void) { // from picoarch
 
 error:
 	if (state) free(state);
-
+	return result;
+}
+static int State_read(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() != FCP_NONE)
+		return State_readDirect();
+#endif
+	int was_ff = fast_forward;
+	fast_forward = 0;
+	int result;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited)
+		result = fc_menu_op(&zero_ftv2, FC_OP_UNSERIALIZE, (uint64_t)state_slot,
+		                    zero_ftv2_drain, NULL) == 0;
+	else
+#endif
+		result = State_readDirect();
+	fast_forward = was_ff;
+	return result;
+}
+static int State_write(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() != FCP_NONE)
+		return State_writeDirect();
+#endif
+	int was_ff = fast_forward;
+	fast_forward = 0;
+	int result;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited)
+		result = fc_menu_op(&zero_ftv2, FC_OP_SERIALIZE, (uint64_t)state_slot,
+		                    zero_ftv2_drain, NULL) == 0;
+	else
+#endif
+		result = State_writeDirect();
 	fast_forward = was_ff;
 	return result;
 }
@@ -1291,7 +1517,20 @@ static void Config_syncFrontend(char* key, int value) {
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
-#ifdef ZERO_DISABLE_FRONTEND_THREADING
+	#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) {
+			thread_video = 0;
+			was_threaded = 0;
+			thread_auto = 0;
+			ta_phase = 2;
+			ta_decided_by_user = 1;
+			toggle_thread = 0;
+			config.frontend.options[FE_OPT_THREAD].value = 2;
+			config.frontend.options[FE_OPT_THREAD].lock = 1;
+		}
+		else {
+	#endif
+	#ifdef ZERO_DISABLE_FRONTEND_THREADING
 		// The current mailbox path mutates renderer/scaler state from the core thread.
 		// Keep it unreachable on the release platform until ownership is redesigned.
 		thread_video = 0;
@@ -1323,7 +1562,10 @@ static void Config_syncFrontend(char* key, int value) {
 				ta_phase = 0; ta_phase_at = 0; // back to Auto: re-observe
 			}
 		}
-#endif
+	#endif
+	#ifdef ZERO_FRONTEND_THREADING_V2
+		}
+	#endif
 		i = FE_OPT_THREAD;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_OVERCLOCK].key)) {
@@ -1447,7 +1689,7 @@ static void Config_readOptionsString(char* cfg) {
 	if (has_custom_controllers && Config_getValue(cfg,"minarch_gamepad_type",value,NULL)) {
 		gamepad_type = strtol(value, NULL, 0);
 		int device = strtol(gamepad_values[gamepad_type], NULL, 0);
-		core.set_controller_port_device(0, device);
+		Core_setController(device);
 	}
 	
 	for (int i=0; config.core.options[i].key; i++) {
@@ -1730,7 +1972,7 @@ static void Config_restore(void) {
 	
 	if (has_custom_controllers) {
 		gamepad_type = 0;
-		core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+		Core_setController(RETRO_DEVICE_JOYPAD);
 	}
 
 	for (int i=0; config.controls[i].name; i++) {
@@ -2027,9 +2269,14 @@ static void Menu_afterSleep(void);
 
 static int Menu_saveState(void);
 static int Menu_loadState(void);
+void Core_reset(void);
 
 static int setFastForward(int enable) {
 	int changed = (fast_forward != enable);
+	// Depth two may already have CORE inside core.run/audio while MAIN handles this input.
+	// Land the FF control and resampler transition at an epoch boundary so the next grant's
+	// snapshot and the audio mode change together. Serial/menu-held paths are no-ops here.
+	int ftv2_parked = changed ? zero_ftv2_core_enter() : 0;
 	{ // ZERO_GOV_DEBUG: trace every FF transition + caller context (FF-busted hunt 2026-07-10)
 		static int zfd = -1;
 		if (zfd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zfd = (e && e[0] && e[0] != '0') ? 1 : 0; }
@@ -2061,12 +2308,48 @@ static int setFastForward(int enable) {
 	// Match the audio reduction to the speed the core actually achieves. Ring-full writes
 	// remain non-blocking so audio can never throttle fast-forward back toward real time.
 	SND_setFastForward(enable, ff_audio);
+	zero_ftv2_core_leave(ftv2_parked);
 	return enable;
 }
 
 static uint32_t buttons = 0; // RETRO_DEVICE_ID_JOYPAD_* buttons
 static int ignore_menu = 0;
-static void input_poll_callback(void) {
+
+// Depth-2 MAIN-side core entry (sleep autosave, Save/Load/Reset shortcuts). At depth-2 the
+// CORE thread may be mid core.run() when MAIN touches core state (serialize/unserialize/reset/SRAM);
+// park it first so the op can't corrupt state. fr_park is NOT counted, so park+release ONLY when the
+// ring is actually RUNNING — a menu-context caller already parked (ring QUIESCENT) and an unbalanced
+// release would unpark it mid-menu. Depth-1 / guard-OFF: no-op (no CORE thread; serial already safe).
+#ifdef ZERO_FRONTEND_THREADING_V2
+static void zero_ftv2_drain(void* ctx, const fr_event* ev); // defined near the run loop; used by the park helper
+#endif
+static int zero_ftv2_core_enter(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() == FCP_NONE) {
+		pthread_mutex_lock(&zero_ftv2.fr.lk);
+		fr_state state = fr_get_state(&zero_ftv2.fr);
+		int owns_park = state == FR_RUNNING
+		              || atomic_load_explicit(&zero_ftv2.fr.release_req, memory_order_acquire);
+		pthread_mutex_unlock(&zero_ftv2.fr.lk);
+		if (!owns_park) return 0; // already held by the outer menu/sleep transaction
+		fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+		return 1;
+	}
+#endif
+	return 0;
+}
+static void zero_ftv2_core_leave(int parked) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (parked) fc_release(&zero_ftv2);
+#else
+	(void)parked;
+#endif
+}
+
+// The per-frame input tick: poll hardware, handle power/menu/FF/shortcuts, compute `buttons`.
+// On the plain path this runs from the libretro input_poll callback. At depth-2 it runs on
+// MAIN before a grant; core entries below route through the parked service channel.
+static void input_tick(void) {
 	PAD_poll();
 
 	int show_setting = 0;
@@ -2129,7 +2412,7 @@ static void input_poll_callback(void) {
 				switch (i) {
 					case SHORTCUT_SAVE_STATE: Menu_saveState(); break;
 					case SHORTCUT_LOAD_STATE: Menu_loadState(); break;
-					case SHORTCUT_RESET_GAME: core.reset(); break;
+					case SHORTCUT_RESET_GAME: Core_reset(); break;
 					case SHORTCUT_SAVE_QUIT:
 						if (Menu_saveState()) quit = 1;
 						break;
@@ -2199,7 +2482,34 @@ static void input_poll_callback(void) {
 	
 	// if (buttons) LOG_info("buttons: %i\n", buttons);
 }
+
+// The libretro input_poll callback. At depth-2 MAIN already ran input_tick before the grant, so
+// this is a no-op and the epoch reads its immutable snapshot. The plain path polls inline.
+static void input_poll_callback(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && zero_ftv2_depth2 && fc_current_phase() != FCP_NONE) return;
+#endif
+	input_tick();
+}
 static int16_t input_state_callback(unsigned port, unsigned device, unsigned index, unsigned id) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// WP-A: at depth-2 the core reads THIS epoch's immutable input snapshot (packed by MAIN into
+	// snap, delivered via run() -> zero_ftv2_isnap) rather than the live globals racing MAIN.
+	if (zero_ftv2_inited && zero_ftv2_depth2 && fc_current_phase() != FCP_NONE) {
+		uint32_t b = (uint32_t)zero_ftv2_isnap[0];
+		if (port==0 && device==RETRO_DEVICE_JOYPAD && index==0) {
+			if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)b;
+			return (b >> id) & 1;
+		}
+		if (port==0 && device==RETRO_DEVICE_ANALOG) {
+			int16_t lx=(int16_t)(zero_ftv2_isnap[1]>>16), ly=(int16_t)(uint16_t)zero_ftv2_isnap[1];
+			int16_t rx=(int16_t)(zero_ftv2_isnap[2]>>16), ry=(int16_t)(uint16_t)zero_ftv2_isnap[2];
+			if (index==RETRO_DEVICE_INDEX_ANALOG_LEFT)  { if(id==RETRO_DEVICE_ID_ANALOG_X) return lx; if(id==RETRO_DEVICE_ID_ANALOG_Y) return ly; }
+			if (index==RETRO_DEVICE_INDEX_ANALOG_RIGHT) { if(id==RETRO_DEVICE_ID_ANALOG_X) return rx; if(id==RETRO_DEVICE_ID_ANALOG_Y) return ry; }
+		}
+		return 0;
+	}
+#endif
 	if (port==0 && device==RETRO_DEVICE_JOYPAD && index==0) {
 		if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return buttons;
 		return (buttons >> id) & 1;
@@ -2229,7 +2539,7 @@ static void Input_init(const struct retro_input_descriptor *vars) {
 	puts("---------------------------------");
 
 	const char* core_button_names[RETRO_BUTTON_COUNT] = {0};
-	int present[RETRO_BUTTON_COUNT];
+	int present[RETRO_BUTTON_COUNT] = {0};
 	int core_mapped = 0;
 	if (vars) {
 		core_mapped = 1;
@@ -2279,6 +2589,13 @@ static void Input_init(const struct retro_input_descriptor *vars) {
 
 static bool set_rumble_state(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
 	// TODO: handle other args? not sure I can
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Keep the physical effect ordered with this epoch's frame. The event is persistent:
+	// a menu/sleep park may discard visuals, but it must still converge the motor state.
+	if (zero_ftv2_inited && zero_ftv2_depth2 && fc_current_phase() != FCP_NONE)
+		return fc_emit_cmd(&zero_ftv2, FR_EVF_PERSISTENT,
+		                   zero_cmd_pack(ZERO_CMD_RUMBLE, (float)strength)) != FR_DROPPED;
+#endif
 	VIB_setStrength(strength);
 	return 1;
 }
@@ -2316,6 +2633,7 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 	case RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL: { /* 8 */
 		// puts("RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL");
 		// TODO: used by fceumm at least
+		break;
 	}
 	case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: { /* 9 */
 		const char **out = (const char **)data;
@@ -2388,11 +2706,15 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 	}
 	case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK: { /* 21 */
 		// LOG_info("%i: RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK\n", cmd);
-		break;
+		// MinArch does not retain or invoke this callback. Claiming support makes the core
+		// switch to a timing path the frontend never services.
+		return false;
 	}
 	case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK: { /* 22 */
 		// LOG_info("%i: RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK\n", cmd);
-		break;
+		// Audio is driven synchronously from retro_run through the sample callbacks.
+		// Returning true here would advertise an asynchronous callback we never invoke.
+		return false;
 	}
 	case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: { /* 23 */
 	        struct retro_rumble_interface *iface = (struct retro_rumble_interface*)data;
@@ -2593,10 +2915,25 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		// an SND re-init, left for if a real core needs it.)
 		const struct retro_system_av_info *info = (const struct retro_system_av_info *)data;
 		if (info) {
-			core.fps = info->timing.fps;
-			core.sample_rate = info->timing.sample_rate;
 			double a = info->geometry.aspect_ratio;
 			if (a<=0) a = (double)info->geometry.base_width / info->geometry.base_height;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// Codex #3: at depth-2 this arrives ON THE CORE THREAD mid-epoch; writing the shared
+			// fields here races MAIN's in-flight present (torn double, lost scaler reset). Route
+			// through FR_EV_CMD — never dropped, applied by the drain on MAIN in global order
+			// against the frames, so the new geometry lands BEFORE the frame that uses it.
+			if (zero_ftv2_inited && zero_ftv2_depth2 && fc_current_phase() != FCP_NONE) {
+				fc_emit_cmd(&zero_ftv2, FR_EVF_PERSISTENT, zero_cmd_pack(ZERO_CMD_FPS,   (float)info->timing.fps));
+				fc_emit_cmd(&zero_ftv2, FR_EVF_PERSISTENT, zero_cmd_pack(ZERO_CMD_SRATE, (float)info->timing.sample_rate));
+				// AV/timing changes are synchronous in libretro: applying the final command as a
+				// barrier guarantees MAIN has consumed the entire ordered update before CORE
+				// continues producing audio or frames under the new timing.
+				fc_emit_barrier(&zero_ftv2, zero_cmd_pack(ZERO_CMD_ASPECT, (float)a));
+				break;
+			}
+#endif
+			core.fps = info->timing.fps;
+			core.sample_rate = info->timing.sample_rate;
 			core.aspect_ratio = a;
 			renderer.dst_p = 0; // force selectScaler() on the next frame (see :2837)
 		}
@@ -2609,6 +2946,14 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 		if (geom) {
 			double a = geom->aspect_ratio;
 			if (a<=0) a = (double)geom->base_width / geom->base_height;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// Codex #3: pcsx fires this on every PS1 resolution switch — on the CORE thread at
+			// depth-2. Ordered-command routing (see SET_SYSTEM_AV_INFO above for the rationale).
+			if (zero_ftv2_inited && zero_ftv2_depth2 && fc_current_phase() != FCP_NONE) {
+				fc_emit_cmd(&zero_ftv2, FR_EVF_PERSISTENT, zero_cmd_pack(ZERO_CMD_ASPECT, (float)a));
+				break;
+			}
+#endif
 			core.aspect_ratio = a;
 			renderer.dst_p = 0;
 		}
@@ -3032,7 +3377,8 @@ static uint32_t sec_start = 0;
 static unsigned run_window_epoch = 0;
 static int gov_frames = 0;
 static long gov_prev_wait_ms = 0;
-static uint32_t gov_work[GOV_TICK_FRAMES];
+#define GOV_WORK_CAP (GOV_TICK_FRAMES + 2) // depth-2 can drain two boundaries in one MAIN pump
+static uint32_t gov_work[GOV_WORK_CAP];
 static unsigned getUsage(void);
 
 static void RunLoop_resetWindow(void) {
@@ -3047,6 +3393,9 @@ static void RunLoop_resetWindow(void) {
 	gov_frames = 0;
 	gov_prev_wait_ms = as.wait_ms;
 	run_window_epoch++;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	zero_ftv2_gen_ticks = 0;
+#endif
 }
 
 #ifdef USES_SWSCALER
@@ -3327,7 +3676,7 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
 }
-static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
+static void present_frame(const void *data, unsigned width, unsigned height, size_t pitch, int do_flip) {
 	// return;
 
 	Special_render();
@@ -3455,8 +3804,6 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 			gov_scene_burst("scene change", !first_geometry);
 		}
 	}
-	
-	// debug
 	if (show_debug) {
 		int x = 2 + renderer.src_x;
 		int y = 2 + renderer.src_y;
@@ -3518,12 +3865,9 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		// cur/ceil: what schedutil picked this second vs the governor's cap. On fixed
 		// brackets (8-bit 1008/1008) the cap never moves — the live clock is the story.
 		char hud_mhz[24];
-		if (hud_cur_khz > 0) sprintf(hud_mhz, "%i/%iMHZ", hud_cur_khz/1000, gov_state.ceil_khz/1000);
-		else sprintf(hud_mhz, "%iMHZ", gov_state.ceil_khz/1000);
+		if (hud_cur_khz > 0) snprintf(hud_mhz, sizeof(hud_mhz), "%i/%iMHZ", hud_cur_khz/1000, gov_state.ceil_khz/1000);
+		else snprintf(hud_mhz, sizeof(hud_mhz), "%iMHZ", gov_state.ceil_khz/1000);
 		if (thread_video && core.fps > 0) {
-			// threaded mode: core-thread utilization + LIVE smoothness counters —
-			// D = duplicated frames/s (present starved), S = skipped frames/s (core
-			// overran), U = audio underruns/s. All three should read 0 when smooth.
 			uint64_t thr_sum = 0;
 			int thr_n = core_work_n < CORE_WORK_RING ? (int)core_work_n : CORE_WORK_RING;
 			for (int a=0; a<thr_n; a++) thr_sum += core_work_ring[a];
@@ -3538,9 +3882,13 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 				sm_u = (int)(ss.underruns - sm_u0); sm_u0 = ss.underruns;
 				sm_at = sm_now;
 			}
-			sprintf(debug_text, "%s %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
+			snprintf(debug_text, sizeof(debug_text), "%s %iC %.0f/%.0f %i%% THR %i%% D%i S%i U%i", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double, thr_util, sm_d, sm_s, sm_u);
 		}
-		else sprintf(debug_text, "%s %iC %.0f/%.0f %i%%", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double);
+	#ifdef ZERO_FRONTEND_THREADING_V2
+		else if (zero_ftv2_depth2)
+			snprintf(debug_text, sizeof(debug_text), "%s %iC %.0f/%.0f %i%% T2", hud_mhz, hud_temp, fps_double, core.fps, (int)use_double);
+	#endif
+		else snprintf(debug_text, sizeof(debug_text), "%s %iC %.0f/%.0f %i%%", hud_mhz, hud_temp, cpu_double, core.fps, (int)use_double);
 		blitBitmapText(debug_text,b_x,b_y,b_px,b_stride, b_w,b_h);
 
 		sprintf(debug_text, "%ix%i", renderer.dst_w,renderer.dst_h);
@@ -3558,17 +3906,102 @@ static void video_refresh_callback_main(const void *data, unsigned width, unsign
 		renderer.src = (void*)data;
 	}
 	renderer.dst = screen->pixels;
-	// LOG_info("video_refresh_callback: %ix%i@%i %ix%i@%i\n",width,height,pitch,screen->w,screen->h,screen->pitch);
-	
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_depth2 && do_flip) {
+		// Depth-2 present is always the never-skip GFX_flip: this vsync is the pipeline pacer.
+		GFX_blitRenderer(&renderer);
+		GFX_flip(screen);
+		return;
+	}
+#endif
 	GFX_blitRenderer(&renderer);
+	if (do_flip) {
+		// Route the present by context (v1.3.1 GFX_flip/GFX_flipGame split): a serial game-loop
+		// present may skip under presentation-drop catch-up (GFX_flipGame); a menu redraw (Menu_loop
+		// repaints the paused frame — show_menu) must NEVER skip or the menu goes invisible; and the
+		// depth-2 present IS the vsync pacer, also never-skip. Both of the latter take GFX_flip.
+		int never_skip = show_menu;
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) never_skip = 1;
+#endif
+		if (never_skip) GFX_flip(screen);
+		else            GFX_flipGame(screen);
+	}
+}
 
-	// game run-loop present: the ONLY path where presentation-drop may skip (menu/UI
-	// presents use GFX_flip and are never skippable — invisible-menu fix, 2026-07-13)
-	if (!thread_video) GFX_flipGame(screen);
+static void video_refresh_callback_main(const void *data, unsigned width, unsigned height, size_t pitch) {
+	// return;
+	
+	// static int tmp_frameskip = 0;
+	// if ((tmp_frameskip++)%2) return;
+	
+	static uint32_t last_flip_time = 0;
+	int ftv2_run_phase = 0;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	fc_phase phase = zero_ftv2_inited ? fc_current_phase() : FCP_NONE;
+	ftv2_run_phase = phase == FCP_RUN_EPOCH;
+	// A strict-vsync present in every pipelined FF epoch caps CORE at roughly realtime:
+	// with depth two, CORE can run only one epoch while MAIN is blocked in the flip. The
+	// achieved-rate cadence publishes at most nominal-fps visuals while every epoch's
+	// audio/input/emulation still runs. Under-target heavy scenes publish every frame.
+	if (zero_ftv2_inited && phase == FCP_RUN_EPOCH
+	    && zero_ftv2_ff_snap && !zero_ftv2_emit_visual) return;
+#endif
+
+	// Codex #6: on the CORE thread at depth-2 the live `fast_forward` global is MAIN-mutated —
+	// read this epoch's snapshot instead (delivered via snap[3], stored in CORE TLS).
+	int ff_now = fast_forward;
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (phase != FCP_NONE) ff_now = zero_ftv2_ff_snap;
+#endif
+	// 10 seems to be the sweet spot that allows 2x in NES and SNES and 8x in GB at 60fps
+	// 14 will let GB hit 10x but NES and SNES will drop to 1.5x at 30fps (not sure why)
+	// but 10 hurts PS...
+	// TODO: 10 was based on rg35xx, probably different results on other supported platforms
+	if (ff_now && !ftv2_run_phase && SDL_GetTicks()-last_flip_time<10) return;
+	
+	// FFVII menus 
+	// 16: 30/200
+	// 15: 30/180
+	// 14: 45/180
+	// 12: 30/150
+	// 10: 30/120 (optimize text off has no effect)
+	//  8: 60/210 (with optimize text off)
+	// you can squeeze more out of every console by turning prevent tearing off
+	// eg. PS@10 60/240
+	
+	if (!data) return;
+
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && phase != FCP_NONE) {
+		if (phase == FCP_RUN_EPOCH) {
+			// CORE is a pure producer: copy the core-owned transient framebuffer verbatim.
+			// Downsampling, scaler/HUD state, and GLES presentation remain MAIN-owned.
+			int buf = zero_pool_acquire(width, height, pitch);
+			if (buf < 0) fc_signal_dup(&zero_ftv2); // pool exhausted: retain the last visual frame
+			else {
+				memcpy(zero_pool_buffers[buf].px, data, (size_t)height * pitch);
+				if (fc_emit_frame(&zero_ftv2, (uint64_t)buf) != FR_OK)
+					zero_pool_retire(NULL, (uint64_t)buf); // no event exists to retire it on MAIN
+			}
+			last_flip_time = SDL_GetTicks();
+		}
+		// Frames emitted by serialize/unload/deinit have no visual epoch. Never enter the
+		// MAIN-owned renderer from a CORE service callback.
+		return;
+	}
+#endif
+	present_frame(data, width, height, pitch, !thread_video);
 	last_flip_time = SDL_GetTicks();
 }
 static void video_refresh_callback(const void *data, unsigned width, unsigned height, size_t pitch) {
-	if (!data) return;
+	if (!data) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_inited && fc_current_phase() == FCP_RUN_EPOCH)
+			fc_signal_dup(&zero_ftv2);
+#endif
+		return;
+	}
 	
 	if (thread_video) {
 		// the write buffer is core-thread-exclusive: alloc + copy happen OUTSIDE the lock
@@ -3602,11 +4035,28 @@ static void video_refresh_callback(const void *data, unsigned width, unsigned he
 // FF-with-sound (ff_audio, on by default): SND measures the actual FF production rate and
 // evenly resamples to the DAC rate, with non-blocking overflow only as a convergence
 // fallback. FF speed stays governed by limitFF(); ff_audio=0 restores silent FF.
+static inline int zero_ff_now(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() != FCP_NONE) return zero_ftv2_ff_snap;
+#endif
+	return fast_forward;
+}
+static size_t audio_submit(const SND_Frame* data, size_t frames) {
+	size_t accepted = SND_batchSamples(data, frames);
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() == FCP_RUN_EPOCH && accepted < frames) {
+		size_t shortfall = frames - accepted;
+		fc_signal_audio_shortfall(&zero_ftv2,
+			(uint32_t)(shortfall > UINT32_MAX ? UINT32_MAX : shortfall));
+	}
+#endif
+	return accepted;
+}
 static void audio_sample_callback(int16_t left, int16_t right) {
-	if (!fast_forward || ff_audio) SND_batchSamples(&(const SND_Frame){left,right}, 1);
+	if (!zero_ff_now() || ff_audio) audio_submit(&(const SND_Frame){left,right}, 1);
 }
 static size_t audio_sample_batch_callback(const int16_t *data, size_t frames) {
-	if (!fast_forward || ff_audio) return SND_batchSamples((const SND_Frame*)data, frames);
+	if (!zero_ff_now() || ff_audio) return audio_submit((const SND_Frame*)data, frames);
 	else return frames;
 };
 
@@ -3645,19 +4095,12 @@ void Core_open(const char* core_path, const char* tag_name) {
 	core.get_memory_data = dlsym(core.handle, "retro_get_memory_data");
 	core.get_memory_size = dlsym(core.handle, "retro_get_memory_size");
 	
-	void (*set_environment_callback)(retro_environment_t);
-	void (*set_video_refresh_callback)(retro_video_refresh_t);
-	void (*set_audio_sample_callback)(retro_audio_sample_t);
-	void (*set_audio_sample_batch_callback)(retro_audio_sample_batch_t);
-	void (*set_input_poll_callback)(retro_input_poll_t);
-	void (*set_input_state_callback)(retro_input_state_t);
-	
-	set_environment_callback = dlsym(core.handle, "retro_set_environment");
-	set_video_refresh_callback = dlsym(core.handle, "retro_set_video_refresh");
-	set_audio_sample_callback = dlsym(core.handle, "retro_set_audio_sample");
-	set_audio_sample_batch_callback = dlsym(core.handle, "retro_set_audio_sample_batch");
-	set_input_poll_callback = dlsym(core.handle, "retro_set_input_poll");
-	set_input_state_callback = dlsym(core.handle, "retro_set_input_state");
+	core.set_environment_callback = dlsym(core.handle, "retro_set_environment");
+	core.set_video_refresh_callback = dlsym(core.handle, "retro_set_video_refresh");
+	core.set_audio_sample_callback = dlsym(core.handle, "retro_set_audio_sample");
+	core.set_audio_sample_batch_callback = dlsym(core.handle, "retro_set_audio_sample_batch");
+	core.set_input_poll_callback = dlsym(core.handle, "retro_set_input_poll");
+	core.set_input_state_callback = dlsym(core.handle, "retro_set_input_state");
 
 	// every libretro core exports all of these; any NULL means a truncated/corrupt build
 	// and the calls below would segfault (audit 2026-07-12)
@@ -3666,25 +4109,15 @@ void Core_open(const char* core_path, const char* tag_name) {
 	 || !core.serialize_size || !core.serialize || !core.unserialize
 	 || !core.load_game || !core.load_game_special || !core.unload_game
 	 || !core.get_region || !core.get_memory_data || !core.get_memory_size
-	 || !set_environment_callback || !set_video_refresh_callback
-	 || !set_audio_sample_callback || !set_audio_sample_batch_callback
-	 || !set_input_poll_callback || !set_input_state_callback) {
+	 || !core.set_environment_callback || !core.set_video_refresh_callback
+	 || !core.set_audio_sample_callback || !core.set_audio_sample_batch_callback
+	 || !core.set_input_poll_callback || !core.set_input_state_callback) {
 		LOG_error("core %s is missing required libretro symbols\n", core_path);
 		exit(EXIT_FAILURE);
 	}
-
-	struct retro_system_info info = {};
-	core.get_system_info(&info);
 	
 	Core_getName((char*)core_path, (char*)core.name);
-	sprintf((char*)core.version, "%s (%s)", info.library_name, info.library_version);
 	strcpy((char*)core.tag, tag_name);
-	strcpy((char*)core.extensions, info.valid_extensions);
-	
-	core.need_fullpath = info.need_fullpath;
-	
-	LOG_info("core: %s version: %s tag: %s (valid_extensions: %s need_fullpath: %i)\n", core.name, core.version, core.tag, info.valid_extensions, info.need_fullpath);
-	
 	sprintf((char*)core.config_dir, USERDATA_PATH "/%s-%s", core.tag, core.name);
 	sprintf((char*)core.states_dir, SHARED_USERDATA_PATH "/%s-%s", core.tag, core.name);
 	sprintf((char*)core.saves_dir, SDCARD_PATH "/Saves/%s", core.tag);
@@ -3693,18 +4126,86 @@ void Core_open(const char* core_path, const char* tag_name) {
 	char cmd[512];
 	sprintf(cmd, "mkdir -p \"%s\"; mkdir -p \"%s\"", core.config_dir, core.states_dir);
 	system(cmd);
+}
+static void Core_registerCallbacks(void) {
+	core.set_environment_callback(environment_callback);
+	core.set_video_refresh_callback(video_refresh_callback);
+	core.set_audio_sample_callback(audio_sample_callback);
+	core.set_audio_sample_batch_callback(audio_sample_batch_callback);
+	core.set_input_poll_callback(input_poll_callback);
+	core.set_input_state_callback(input_state_callback);
+}
+static void Core_applyInfo(const struct retro_system_info* info) {
+	snprintf((char*)core.version, sizeof(core.version), "%s (%s)",
+		info->library_name ? info->library_name : "Unknown",
+		info->library_version ? info->library_version : "Unknown");
+	snprintf((char*)core.extensions, sizeof(core.extensions), "%s",
+		info->valid_extensions ? info->valid_extensions : "");
+	core.need_fullpath = info->need_fullpath;
+	LOG_info("core: %s version: %s tag: %s (valid_extensions: %s need_fullpath: %i)\n",
+		core.name, core.version, core.tag, core.extensions, core.need_fullpath);
+}
 
-	set_environment_callback(environment_callback);
-	set_video_refresh_callback(video_refresh_callback);
-	set_audio_sample_callback(audio_sample_callback);
-	set_audio_sample_batch_callback(audio_sample_batch_callback);
-	set_input_poll_callback(input_poll_callback);
-	set_input_state_callback(input_state_callback);
+enum {
+	ZERO_RT_FLUSH_MEMORY = 1,
+	ZERO_RT_SET_CONTROLLER,
+	ZERO_RT_CHANGE_DISC,
+};
+static int Core_runtimeDirect(uint32_t op, uint32_t arg) {
+	switch (op) {
+		case ZERO_RT_FLUSH_MEMORY:
+			SRAM_write();
+			RTC_write();
+			return 0;
+		case ZERO_RT_SET_CONTROLLER:
+			core.set_controller_port_device(0, arg);
+			return 0;
+		case ZERO_RT_CHANGE_DISC: {
+			if (!disk_control_ext.replace_image_index) return -1;
+			struct retro_game_info info = {0};
+			info.path = game.path;
+			info.data = game.data;
+			info.size = game.size;
+			return disk_control_ext.replace_image_index(0, &info) ? 0 : -1;
+		}
+		default:
+			return -1;
+	}
+}
+static int Core_runtime(uint32_t op, uint32_t arg) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() == FCP_NONE) {
+		uint64_t request = (uint64_t)op | ((uint64_t)arg << 8);
+		return fc_menu_op(&zero_ftv2, FC_OP_RUNTIME, request,
+		                  zero_ftv2_drain, NULL);
+	}
+#endif
+	return Core_runtimeDirect(op, arg);
+}
+static void Core_flushMemory(void) {
+	if (Core_runtime(ZERO_RT_FLUSH_MEMORY, 0))
+		LOG_error("Error flushing core memory\n");
+}
+static void Core_setController(unsigned device) {
+	if (Core_runtime(ZERO_RT_SET_CONTROLLER, device))
+		LOG_error("Error setting controller device %u\n", device);
+}
+static int Core_changeDisc(void) {
+	return Core_runtime(ZERO_RT_CHANGE_DISC, 0);
 }
 void Core_init(void) {
 	LOG_info("Core_init\n");
 	core.init();
 	core.initialized = 1;
+}
+static void Core_applyAV(const struct retro_system_av_info* av_info) {
+	core.fps = av_info->timing.fps;
+	core.sample_rate = av_info->timing.sample_rate;
+	double a = av_info->geometry.aspect_ratio;
+	if (a<=0) a = (double)av_info->geometry.base_width / av_info->geometry.base_height;
+	core.aspect_ratio = a;
+	LOG_info("aspect_ratio: %f (%ix%i) fps: %f\n", a,
+		av_info->geometry.base_width, av_info->geometry.base_height, core.fps);
 }
 int Core_load(void) {
 	LOG_info("Core_load\n");
@@ -3729,17 +4230,17 @@ int Core_load(void) {
 	struct retro_system_av_info av_info = {};
 	core.get_system_av_info(&av_info);
 	core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD); // set a default, may update after loading configs
-
-	core.fps = av_info.timing.fps;
-	core.sample_rate = av_info.timing.sample_rate;
-	double a = av_info.geometry.aspect_ratio;
-	if (a<=0) a = (double)av_info.geometry.base_width / av_info.geometry.base_height;
-	core.aspect_ratio = a;
-	
-	LOG_info("aspect_ratio: %f (%ix%i) fps: %f\n", a, av_info.geometry.base_width,av_info.geometry.base_height, core.fps);
+	Core_applyAV(&av_info);
 	return 1;
 }
 void Core_reset(void) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited && fc_current_phase() == FCP_NONE) {
+		if (fc_menu_op(&zero_ftv2, FC_OP_RESET, 0, zero_ftv2_drain, NULL))
+			LOG_error("Error resetting core\n");
+		return;
+	}
+#endif
 	core.reset();
 }
 void Core_unload(void) {
@@ -3869,10 +4370,14 @@ void Menu_quit(void) {
 }
 void Menu_beforeSleep(void) {
 	// LOG_info("beforeSleep\n");
-	SRAM_write();
-	RTC_write();
+	// depth-2: SRAM_write/RTC_write/State_autosave all read/serialize core state — park the CORE
+	// thread first so they can't race an in-flight core.run() (no-op at depth-1/guard-OFF, and no-op
+	// when already parked in a menu-context sleep). See zero_ftv2_core_enter.
+	int ftv2_parked = zero_ftv2_core_enter();
+	Core_flushMemory();
 	const char* resume_path = game.path + strlen(SDCARD_PATH);
 	int state_saved = State_autosave();
+	zero_ftv2_core_leave(ftv2_parked);
 	int marker_saved = state_saved
 		&& !save_write_atomic(AUTO_RESUME_PATH, resume_path, strlen(resume_path));
 	if (!marker_saved) {
@@ -3881,6 +4386,14 @@ void Menu_beforeSleep(void) {
 		if (save_remove_file(AUTO_RESUME_PATH))
 			LOG_error("Error clearing failed auto-resume marker (%s)\n", strerror(errno));
 	}
+	#ifdef ZERO_FRONTEND_THREADING_V2
+		// Known-good point: everything is saved. Clear the depth-2 crash canary so a poweroff from
+		// here (the quicksave flow never returns) doesn't read as a bad exit. Re-armed on wake.
+		if (marker_saved && zero_ftv2_canary_armed && zero_ftv2_canary_clearable) {
+			if (!zero_ftv2_canary_remove(zero_ftv2_canary)) zero_ftv2_canary_armed = 0;
+		}
+		if (marker_saved && zero_ftv2_depth2) zero_ftv2_failures_clear();
+	#endif
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
 }
 void Menu_afterSleep(void) {
@@ -3892,6 +4405,15 @@ void Menu_afterSleep(void) {
 	RunLoop_resetWindow();
 	Gov_restore();
 	dup_force_present = 1; // wake repaint may be byte-identical; present it anyway
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Woke back into a live depth-2 session: re-arm the crash canary (cleared by Menu_beforeSleep).
+	if (zero_ftv2_inited && zero_ftv2_depth2 && zero_ftv2_canary[0] && !zero_ftv2_canary_armed) {
+			if (zero_ftv2_canary_write(zero_ftv2_canary, "depth2\n") == 0)
+				zero_ftv2_canary_armed = 1;   // Codex #11: only on a synced, complete write
+		// (write failure: continue unprotected-but-running — the session was already depth-2;
+		// the next launch's arm attempt will fall back to serial if the card is still bad)
+	}
+#endif
 }
 
 typedef struct MenuList MenuList;
@@ -4138,7 +4660,7 @@ static int OptionControls_optionChanged(MenuList* list, int i) {
 	if (has_custom_controllers) {
 		gamepad_type = item->value;
 		int device = strtol(gamepad_values[item->value], NULL, 0);
-		core.set_controller_port_device(0, device);
+		Core_setController(device);
 	}
 	return MENU_CALLBACK_NOP;
 }
@@ -5082,8 +5604,7 @@ static void Menu_loop(void) {
 		screen = GFX_resize(DEVICE_WIDTH,DEVICE_HEIGHT,DEVICE_PITCH);
 	}
 	
-	SRAM_write();
-	RTC_write();
+	Core_flushMemory();
 	PWR_warn(0);
 	if (!HAS_POWER_BUTTON) PWR_enableSleep();
 	// This path composites the paused game, TTF text, and save previews through GLES.
@@ -5212,7 +5733,7 @@ static void Menu_loop(void) {
 				break;
 				case ITEM_OPTS: {
 					if (simple_mode) {
-						core.reset();
+						Core_reset();
 						status = STATUS_RESET;
 						show_menu = 0;
 					}
@@ -5473,6 +5994,14 @@ static void trackFPS(void) {
 	if (now - sec_start>=1000) {
 		double last_time = (double)(now - sec_start) / 1000;
 		fps_double = fps_ticks / last_time;
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) {
+			// Codex #5: depth-2 generation = epochs completed, counted on MAIN in the drain
+			// (non-cancelled RUN_DONE). No cross-thread counter, dupes count as generated.
+			fps_double = zero_ftv2_gen_ticks / last_time;
+			zero_ftv2_gen_ticks = 0;
+		}
+#endif
 		cpu_double = cpu_ticks / last_time;
 		rate_seq++; // generation-rate publication counter (gov-memory fast ladder freshness)
 
@@ -5486,10 +6015,39 @@ static void trackFPS(void) {
 			use_double = (use_ticks - last_use_ticks) / last_time / ncores;
 		}
 		last_use_ticks = use_ticks;
+
+		// MEASURE (A/B instrument): objective depth-2 vs depth-1 quality per second.
+		//   d   = 0 v1.3.1 / 1 WP depth-1 / 2 WP depth-2
+		//   fps = REAL frame rate (frames the core produced) — "slow" shows as < core.fps
+		//   cpu = MAIN loop rate (should track fps; a spin shows as huge)
+		//   use = CPU% of the whole quad
+		//   under/s = audio underruns/sec — THE "choppy" signal
+		//   dup/s   = duplicated (present-starved) frames/sec — pacing-quality signal
+		//   ceil = governor clock ceiling (MHz) — the energy signal
+		{
+			// Bench instrument, OPT-IN (ZERO_MEASURE=1): a log line every second is a file write
+			// to the SD card every second of EVERY session — I/O, wakeups, and card wear for data
+			// nobody is reading outside an A/B. The bench scripts export the env.
+			static int m_on = -1;
+			if (m_on < 0) { const char* e = getenv("ZERO_MEASURE"); m_on = (e && e[0] && e[0] != '0') ? 1 : 0; }
+			if (m_on) {
+				int m_depth = 0;
+#ifdef ZERO_FRONTEND_THREADING_V2
+				m_depth = zero_ftv2_depth2 ? 2 : 1;
+#endif
+				SND_Stats ss; SND_getStats(&ss);
+				static long m_u0 = 0; static int m_d0 = 0;
+				int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
+				int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
+				LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
+					m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+			}
+		}
+
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
-		
+
 		// LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
 	}
 }
@@ -5572,6 +6130,162 @@ static void* coreThread(void *arg) {
 	pthread_exit(NULL);
 }
 
+#ifdef ZERO_FRONTEND_THREADING_V2
+// zero_ftv2 handle declared early (near the frontend_core.h include) for video_refresh_callback
+
+// The vtable maps minarch's bootstrap/runtime operations onto the lifecycle engine.
+// Libretro operations execute on CORE; audio/renderer lifecycle stays on MAIN.
+// Result-passing decomposition: get_system_info/get_av_info fill these shared
+// statics on CORE; MAIN consumes them after the stage (serialised: CORE quiescent
+// between stages, MAIN blocked during — race-free).
+static struct retro_system_info    zero_ftv2_info;     // filled by GET_INFO stage
+static struct retro_system_av_info zero_ftv2_av;       // filled by AV stage
+
+// --- bootstrap stages (return 0 ok / <0 fail / >0 core-requested shutdown) ---
+static int  zero_ftv2_get_system_info(void* c) { (void)c; Core_registerCallbacks(); core.get_system_info(&zero_ftv2_info); return 0; }
+static int  zero_ftv2_init(void* c)            { (void)c; core.init(); core.initialized = 1; return 0; }
+static int  zero_ftv2_open_content(void* c)    { (void)c; /* content/path prep is MAIN work (Game_open) interleaved by the caller; nothing on CORE here */ return 0; }
+static int  zero_ftv2_load_game(void* c) {
+	(void)c;
+	struct retro_game_info gi;
+	gi.path = game.tmp_path[0]?game.tmp_path:game.path;
+	gi.data = game.data;
+	gi.size = game.size;
+	return core.load_game(&gi) ? 0 : -1; // <0 => bootstrap stops; MAIN runs the load-fail cleanup
+}
+static int  zero_ftv2_setup_memory(void* c)    { (void)c; SRAM_read(); RTC_read(); return 0; }
+static int  zero_ftv2_arm_crash(void* c)       { (void)c; Crash_install(); return 0; }
+static int  zero_ftv2_get_av_info(void* c) {
+	(void)c;
+	core.get_system_av_info(&zero_ftv2_av);
+	return 0;
+}
+static int  zero_ftv2_set_controller(void* c)  { (void)c; core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD); return 0; }
+// audio_init/renderer_init run MAIN-side (D57): SND_init needs core.sample_rate (ready
+// after the AV stage); the SDL renderer is set up in PLAT_initVideo already, so renderer
+// init is a no-op here on this platform (watch-point: confirm on device).
+static int  zero_ftv2_audio_init(void* c)      { (void)c; SND_init(core.sample_rate, core.fps); return 0; }
+static int  zero_ftv2_renderer_init(void* c)   { (void)c; /* SDL renderer already up (PLAT_initVideo); MAIN-side no-op */ return 0; }
+static int  zero_ftv2_resume(void* c)          { (void)c; State_resume(); return 0; /* nonfatal by policy */ }
+
+// --- runtime ---
+static void zero_ftv2_run(void* c, uint64_t gen, uint32_t slot, const uint64_t snap[4]) {
+	(void)c; (void)gen;
+	// WP-A: stash this epoch's input snapshot for input_state_callback (depth-2 reads it here
+	// instead of the live globals). Harmless at depth-1 (input still flows via input_tick on CORE).
+	zero_ftv2_isnap[0]=snap[0]; zero_ftv2_isnap[1]=snap[1]; zero_ftv2_isnap[2]=snap[2]; zero_ftv2_isnap[3]=snap[3];
+	zero_ftv2_ff_snap = (int)(snap[3] & 1);  // Codex #6: CORE callbacks read THIS, not the live global
+	static __thread FFVisualCadence visual_cadence;
+	uint64_t emu_t0 = getMicroseconds();
+	zero_ftv2_emit_visual = ff_visual_step(&visual_cadence, zero_ftv2_ff_snap,
+	                                      emu_t0, (uint32_t)(snap[3] >> 8));
+	SND_Stats snd0; SND_getStats(&snd0);
+	core.run();  // video_refresh copies the transient core frame into the credit-owned pool
+	uint32_t work = (uint32_t)(getMicroseconds() - emu_t0);
+	SND_Stats snd1; SND_getStats(&snd1);
+	long pace = (snd1.wait_ms - snd0.wait_ms) * 1000;
+	if (pace > 0 && (uint32_t)pace < work) work -= (uint32_t)pace;
+	atomic_store_explicit(&zero_ftv2_work_us[slot], work, memory_order_release);
+}
+static int  zero_ftv2_serialize(void* c, uint64_t a)   { (void)c; state_slot = (int)a; return State_writeDirect() ? 0 : -1; }
+static int  zero_ftv2_unserialize(void* c, uint64_t a) { (void)c; state_slot = (int)a; return State_readDirect() ? 0 : -1; }
+static void zero_ftv2_reset(void* c)           { (void)c; core.reset(); }
+static int  zero_ftv2_runtime_service(void* c, uint64_t a) {
+	(void)c;
+	return Core_runtimeDirect((uint32_t)(a & 0xFFu), (uint32_t)(a >> 8));
+}
+
+// --- teardown (oracle governs which are legal from the reached state) ---
+static void zero_ftv2_disarm_crash(void* c)    { (void)c; Crash_uninstall(); }
+static void zero_ftv2_unload_game(void* c)     { (void)c; core.unload_game(); }
+static void zero_ftv2_deinit(void* c)          { (void)c; core.deinit(); core.initialized = 0; }
+
+static const fc_vtable zero_ftv2_vt = {
+	.ctx             = NULL,
+	.get_system_info = zero_ftv2_get_system_info,
+	.init            = zero_ftv2_init,
+	.open_content    = zero_ftv2_open_content,
+	.load_game       = zero_ftv2_load_game,
+	.setup_memory    = zero_ftv2_setup_memory,
+	.arm_crash       = zero_ftv2_arm_crash,
+	.get_av_info     = zero_ftv2_get_av_info,
+	.set_controller  = zero_ftv2_set_controller,
+	.audio_init      = zero_ftv2_audio_init,
+	.renderer_init   = zero_ftv2_renderer_init,
+	.resume          = zero_ftv2_resume,
+	.run             = zero_ftv2_run,
+	.serialize       = zero_ftv2_serialize,
+	.unserialize     = zero_ftv2_unserialize,
+	.reset           = zero_ftv2_reset,
+	.runtime_service = zero_ftv2_runtime_service,
+	.disarm_crash    = zero_ftv2_disarm_crash,
+	.unload_game     = zero_ftv2_unload_game,
+	.deinit          = zero_ftv2_deinit,
+};
+
+// zero_ftv2_running is 0 until fc_boot_finish; it gates the frame divert. CORE copies
+// transient core frames into credit-owned pool buffers; MAIN drains, scales, and presents.
+// zero_ftv2_running declared early (near the frontend_core.h include) for video_refresh_callback
+static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
+	(void)ctx;
+	// v2 present is MAIN-only: the GLES blit+flip path is bound to MAIN's EGL context, so
+	// CORE just emits and MAIN does BOTH the scaler blit and the flip here. `renderer` is
+	// the global set by video_refresh_callback (still valid: depth-1 serial, core hasn't
+	// re-run). WP1 fix 2026-07-14: doing the blit on CORE left the screen black (present
+	// no-op'd off-context) while audio ran — Dan's "menu showed the game" confirmed the
+	// frame data was correct, only the on-CORE present failed.
+	// WP-B: present from the credit-indexed pool buffer named in the FRAME payload. The
+	// scaler config + HUD + flip all happen here on MAIN (present_frame). framering calls
+	// zero_pool_retire(payload) AFTER this returns (D-a2), freeing the buffer.
+	if (ev->kind == FR_EV_FRAME) {
+		int buf = (int)ev->payload;
+		if (buf >= 0 && buf < ZERO_FTV2_POOL) {
+			present_frame(zero_pool_buffers[buf].px, zero_pool_buffers[buf].w,
+			              zero_pool_buffers[buf].h, zero_pool_buffers[buf].pitch, 1);
+			zero_ftv2_presented++;  // D61 pacer: a frame reached the screen (vsync-paced) this tick
+		}
+	}
+	else if (fr_event_is_command(ev)) {
+		// Codex #3: ordered CORE->MAIN state commands (SET_GEOMETRY / SET_SYSTEM_AV_INFO).
+		// Applied HERE on MAIN, in global order against frames. Runtime service products
+		// (load/reset/disc) arrive as FR_EV_SERVICE and require the same dispatcher; otherwise
+		// their barrier could release while MAIN silently retained stale timing/geometry.
+		int op = (int)(ev->payload >> 56);
+		uint32_t bits = (uint32_t)(ev->payload & 0xFFFFFFFFu);
+		float v; memcpy(&v, &bits, 4);
+			switch (op) {
+				case ZERO_CMD_ASPECT: core.aspect_ratio = v; renderer.dst_p = 0; break;
+				case ZERO_CMD_FPS:    core.fps = v;          renderer.dst_p = 0; break;
+				case ZERO_CMD_SRATE:  core.sample_rate = v;  break;
+				case ZERO_CMD_RUMBLE: VIB_setStrength((int)v); break;
+			}
+	}
+	else if (ev->kind == FR_EV_RUN_DONE && !ev->cancelled) {
+		// The FF budget is per completed emulation epoch. Applying it in the outer MAIN loop
+		// would count no-progress pumps and double-throttle the visual cadence. A frame event's
+		// vsync time naturally satisfies most/all of this epoch's budget; duplicate/no-frame
+		// epochs wait only for the remaining fraction.
+		limitFF();
+		// Codex #5: the TRUE depth-2 generation rate — epochs the core completed, counted on
+		// MAIN (no cross-thread fps_ticks race; duped/undisplayed frames count as generated,
+		// so internally-low-fps games don't read as slipping). trackFPS reads+resets this.
+		zero_ftv2_gen_ticks++;
+		uint32_t slot = (uint32_t)(ev->seq % zero_ftv2.fr.depth);
+		uint32_t work = atomic_load_explicit(&zero_ftv2_work_us[slot], memory_order_acquire);
+		// Governor cadence is generated epochs, not MAIN pump iterations. A depth-2 pump can
+		// return without progress, so sampling in the outer loop would collapse a 30-frame
+		// window into milliseconds and make decisions from stale rate data.
+		if (gov_active && gov_frames < GOV_WORK_CAP) gov_work[gov_frames++] = work;
+		if (tlm_enabled()) {
+			SND_Stats as; SND_getStats(&as);
+			tlm_frame(work);
+			tlm_audio(as.queue_frames, as.underruns, as.overruns);
+		}
+	}
+}
+
+#endif // ZERO_FRONTEND_THREADING_V2
+
 int main(int argc , char* argv[]) {
 	LOG_info("MinArch\n");
 
@@ -5617,19 +6331,129 @@ int main(int argc , char* argv[]) {
 	// its controller has an anti-windup contract and a cross-system device gauntlet.
 	drc_system_allowed = !presentation_drop_supported && getenv("ZERO_ENABLE_DRC") != NULL;
 	GFX_setPresentationDrop(presentation_drop_supported);
+	simple_mode = exists(SIMPLE_MODE_PATH);
+
+	// Threading v2's engine (CORE thread + ring) is used ONLY at depth-2 (the pipelined energy
+	// win). At depth<2 (default, or ZERO_FTV2_DEPTH unset/1) we take the plain serial path — the
+	// SAME code a guard-off build runs (init/load/run/present/quit all on MAIN, F23-consistent) —
+	// so compiling the engine in adds ZERO overhead unless depth-2 is actually requested. When the
+	// guard is compiled out, use_ftv2 is a const 0 and every engine branch below folds away.
+	// (Measured: guard-on-depth-1 via the OLD always-engine path cost ~8pp more CPU than serial —
+	// the fc_pump rendezvous — so gating the engine on depth-2 is what makes a global ship free.)
+	#ifdef ZERO_FRONTEND_THREADING_V2
+		int ftv2_depth = 1;
+		{ const char* e = getenv("ZERO_FTV2_DEPTH"); if (e && atoi(e) >= 2) ftv2_depth = 2; }
+		if (ftv2_depth >= 2) {
+			// Crash policy (see decl): paths use the full game identity hash. The failure sidecar is
+			// scoped to BUILD_HASH so a fixed firmware automatically requalifies a disabled game.
+			// Inability to represent either complete path disables depth two for this session.
+			int canary_n = snprintf(zero_ftv2_canary, sizeof(zero_ftv2_canary),
+			                        "%s/.ftv2-%016llx.boot", core.states_dir,
+			                        (unsigned long long)Game_identityHash(rom_path));
+			int failures_n = snprintf(zero_ftv2_failures, sizeof(zero_ftv2_failures),
+			                         "%s/.ftv2-%016llx.fail", core.states_dir,
+			                         (unsigned long long)Game_identityHash(rom_path));
+			if (canary_n < 0 || canary_n >= (int)sizeof(zero_ftv2_canary)
+			 || failures_n < 0 || failures_n >= (int)sizeof(zero_ftv2_failures)) {
+				zero_ftv2_canary[0] = '\0';
+				zero_ftv2_failures[0] = '\0';
+				LOG_info("threading v2: crash-canary path is too long — running SERIAL this session\n");
+				ftv2_depth = 1;
+			}
+			else {
+				int failures = zero_ftv2_failures_read(zero_ftv2_failures);
+				if (failures >= ZERO_FTV2_CRASH_LIMIT) {
+					LOG_info("threading v2: disabled for this game after %d consecutive crashes in build %s\n",
+					         failures, BUILD_HASH);
+					if (exists(zero_ftv2_canary)) zero_ftv2_canary_remove(zero_ftv2_canary);
+					ftv2_depth = 1;
+				}
+				else if (exists(zero_ftv2_canary)) {
+					int state = zero_ftv2_canary_state(zero_ftv2_canary);
+					zero_ftv2_canary_armed = 1;
+					ftv2_depth = 1;
+					if (state == 1) {
+						failures++;
+						if (zero_ftv2_failures_write(zero_ftv2_failures, failures)) {
+							// Do not clear this marker after the serial fallback: without a durable
+							// count, retaining it is the only fail-safe way to prevent crash/retry loops.
+							zero_ftv2_canary_clearable = 0;
+							LOG_info("threading v2: cannot persist crash count — locked SERIAL by canary\n");
+						}
+						else if (failures >= ZERO_FTV2_CRASH_LIMIT) {
+							LOG_info("threading v2: second consecutive depth-2 crash — disabled for this game/build\n");
+						}
+						else if (zero_ftv2_canary_write(zero_ftv2_canary, "serial\n")) {
+							zero_ftv2_canary_clearable = 0;
+							LOG_info("threading v2: cannot mark serial fallback — retaining crash canary\n");
+						}
+						else {
+							LOG_info("threading v2: depth-2 crash %d/%d — running one SERIAL fallback\n",
+							         failures, ZERO_FTV2_CRASH_LIMIT);
+						}
+					}
+					else {
+						LOG_info("threading v2: serial fallback did not exit cleanly — remaining SERIAL\n");
+					}
+				}
+				else if (zero_ftv2_canary_write(zero_ftv2_canary, "depth2\n") == 0) {
+					zero_ftv2_canary_armed = 1;   // armed ONLY on a synced, complete write
+				}
+				else {
+					// Canary can't be persisted (full/RO card): running depth-2 without the net
+					// would mean a crash retries forever. Run serial instead — fail SAFE.
+					LOG_info("threading v2: cannot arm crash canary (write failed) — running SERIAL this session\n");
+					ftv2_depth = 1;
+				}
+			}
+		}
+	const int use_ftv2 = (ftv2_depth >= 2);
+#else
+	const int use_ftv2 = 0;
+#endif
+
+	// Strict libretro thread affinity starts at callback registration and get_system_info, not
+	// merely retro_init. Serial sessions perform both on MAIN; a depth-2 session creates CORE
+	// first and runs the complete registration/info stage there before MAIN consumes its result.
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		fc_init(&zero_ftv2, &zero_ftv2_vt, ftv2_depth);
+		fc_set_frame_retire_cb(&zero_ftv2, zero_pool_retire, NULL);
+		zero_ftv2_depth2 = (zero_ftv2.fr.depth >= 2);
+		zero_ftv2_inited = 1;
+		LOG_info("threading v2: depth=%u (PIPELINED)\n", zero_ftv2.fr.depth);
+		fc_boot_stage(&zero_ftv2, FC_OP_GET_INFO, zero_ftv2_drain, NULL);
+		if (fc_boot_failed(&zero_ftv2)) goto finish;
+		Core_applyInfo(&zero_ftv2_info);
+#endif
+	} else {
+		struct retro_system_info info = {0};
+		Core_registerCallbacks();
+		core.get_system_info(&info);
+		Core_applyInfo(&info);
+	}
+
+	// Game_open needs need_fullpath/valid_extensions from get_system_info. In particular,
+	// opening a PS image before that stage defaults need_fullpath to false and attempts to
+	// malloc/read the entire disc.
 	Game_open(rom_path); // nes tries to load gamegenie setting before this returns ffs
 	if (!game.is_open) goto finish;
-	
-	simple_mode = exists(SIMPLE_MODE_PATH);
-	
+
 	// restore options
 	Config_load(); // before init?
 	Config_init();
 	Config_readOptions(); // cores with boot logo option (eg. gb) need to load options early
 	setOverclock(overclock);
 	GFX_setVsync(prevent_tearing);
-	
-	Core_init();
+
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		fc_boot_stage(&zero_ftv2, FC_OP_INIT, zero_ftv2_drain, NULL);
+		if (fc_boot_failed(&zero_ftv2)) goto finish;
+#endif
+	} else {
+		Core_init();
+	}
 	
 	// TODO: find a better place to do this
 	// mixing static and loaded data is messy
@@ -5637,13 +6461,27 @@ int main(int argc , char* argv[]) {
 	// ah, because it's defined before options_menu...
 	options_menu.items[1].desc = (char*)core.version;
 	
-	if (!Core_load()) {
-		// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
-		// run, but an initialized core still owes retro_deinit before dlclose: call it
-		// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
-		core.deinit();
-		core.initialized = 0;
-		goto finish;
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		fc_boot_stage(&zero_ftv2, FC_OP_LOAD, zero_ftv2_drain, NULL);   // load_game returns -1 on failure (fc_boot_failed set)
+		if (fc_boot_failed(&zero_ftv2)) goto finish;
+		fc_boot_stage(&zero_ftv2, FC_OP_MEMORY, zero_ftv2_drain, NULL);      // SRAM_read + RTC_read
+		fc_boot_stage(&zero_ftv2, FC_OP_ARM_CRASH, zero_ftv2_drain, NULL);   // Crash_install (pointers valid now)
+		fc_boot_stage(&zero_ftv2, FC_OP_AV, zero_ftv2_drain, NULL);          // get_system_av_info on CORE
+		if (fc_boot_failed(&zero_ftv2)) goto finish;
+		Core_applyAV(&zero_ftv2_av);                  // consume the quiescent result on MAIN
+		fc_boot_stage(&zero_ftv2, FC_OP_CONTROLLER, zero_ftv2_drain, NULL);  // set_controller_port_device (after av, matches Core_load order)
+		if (fc_boot_failed(&zero_ftv2)) goto finish;
+#endif
+	} else {
+		if (!Core_load()) {
+			// game failed to load — bail cleanly. No game means SRAM/RTC/unload_game must not
+			// run, but an initialized core still owes retro_deinit before dlclose: call it
+			// here, then clear the flag so Core_quit skips the game teardown (audit 2026-07-11).
+			core.deinit();
+			core.initialized = 0;
+			goto finish;
+		}
 	}
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
@@ -5657,16 +6495,44 @@ int main(int argc , char* argv[]) {
 	}
 #endif
 	Config_free();
-		
-	SND_init(core.sample_rate, core.fps);
+
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		fc_boot_stage(&zero_ftv2, FC_OP_AUDIO, zero_ftv2_drain, NULL);    // = SND_init MAIN-side, D57 (sample_rate ready from AV)
+		fc_boot_stage(&zero_ftv2, FC_OP_RENDERER, zero_ftv2_drain, NULL); // MAIN-side no-op on this platform (SDL renderer already up)
+#endif
+	} else {
+		SND_init(core.sample_rate, core.fps);
+	}
 	InitSettings(); // after we initialize audio
 	Menu_init();
-	State_resume();
+	if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+		fc_boot_stage(&zero_ftv2, FC_OP_RESUME, zero_ftv2_drain, NULL);   // = State_resume (nonfatal)
+		fc_boot_finish(&zero_ftv2);                // QUIESCENT -> RUNNING; grants may now flow
+		zero_ftv2_running = 1;
+#endif
+	} else {
+		State_resume();
+	}
 	Menu_initState(); // make ready for state shortcuts
 	
-	{
-#ifdef ZERO_DISABLE_FRONTEND_THREADING
-		thread_video = 0;
+		{
+		if (use_ftv2) {
+			// v2 and the legacy mailbox are mutually exclusive by runtime contract, not
+			// merely by the release makefile. Keep hand-rolled guard builds safe too.
+			thread_video = 0;
+			was_threaded = 0;
+			thread_auto = 0;
+			ta_phase = 2;
+			ta_decided_by_user = 1;
+			toggle_thread = 0;
+			config.frontend.options[FE_OPT_THREAD].value = 2;
+			config.frontend.options[FE_OPT_THREAD].lock = 1;
+		}
+		else {
+	#ifdef ZERO_DISABLE_FRONTEND_THREADING
+			thread_video = 0;
 		was_threaded = 0;
 		thread_auto = 0;
 		ta_phase = 2;
@@ -5686,9 +6552,10 @@ int main(int argc , char* argv[]) {
 			int v = ta_read_verdict();
 			if (v == 1) { thread_video = 1; ta_phase = 2; }
 			else if (v == 0) ta_phase = 2; // decided: no benefit (re-decided only if sidecar removed)
+			}
+	#endif
 		}
-#endif
-	}
+		}
 	if (thread_video) {
 		core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 		core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
@@ -5721,8 +6588,54 @@ int main(int argc , char* argv[]) {
 		GFX_startFrame();
 		
 		if (!thread_video) {
-			core.run();
-			limitFF();
+			if (use_ftv2) {
+#ifdef ZERO_FRONTEND_THREADING_V2
+				// depth-2 pipelined: MAIN packs THIS epoch's input snapshot (buttons + both analog
+				// sticks + the FF control flag, F11; analog via uint16_t casts — shifting a negative
+				// signed axis is UB), the CORE thread runs core.run() concurrently and reads the
+				// snapshot via input_state_callback, MAIN drains + presents. The present's vsync is
+				// the SOLE pacer (present_frame routes depth-2 through the never-skip GFX_flip) — it
+				// blocks MAIN, overlapping the CORE's next epoch. fc_pump non-blocking (block=DEADLOCK).
+				static uint64_t snap[4];
+				// MAIN is the only credit-returning consumer. If the pipeline is full,
+				// fc_pump can only drain. Keep control/power cancellation responsive at a
+				// bounded 250Hz, but only publish a snapshot when a credit can be granted.
+				int can_grant = atomic_load_explicit(&zero_ftv2.fr.credits_out, memory_order_acquire)
+				                < zero_ftv2.fr.depth;
+				static uint32_t last_input_poll = 0;
+				uint32_t input_now = SDL_GetTicks();
+				if (can_grant || input_now - last_input_poll >= 4) {
+					input_tick();
+					last_input_poll = input_now;
+				}
+				if (can_grant) {
+					snap[0] = (uint32_t)buttons;
+					snap[1] = ((uint64_t)(uint16_t)pad.laxis.x << 16) | (uint16_t)pad.laxis.y;
+					snap[2] = ((uint64_t)(uint16_t)pad.raxis.x << 16) | (uint16_t)pad.raxis.y;
+					uint32_t visual_period_us = core.fps > 1.0
+						? (uint32_t)(1000000.0 / core.fps + 0.5) : 16667;
+					snap[3] = (uint64_t)(uint32_t)fast_forward
+					        | ((uint64_t)visual_period_us << 8);
+				}
+				uint64_t ftv2_p0 = zero_ftv2_presented;
+				fc_pump(&zero_ftv2, snap, zero_ftv2_drain, NULL);
+				if (atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire)) {
+					LOG_error("threading v2: frame-pool allocation failed; exiting for serial fallback\n");
+					quit = 1; // leave the armed canary in place
+				}
+				// No frame ready this tick (CORE at its floor, no headroom to buffer ahead): briefly
+				// idle instead of tight-spinning. 500us adds no perceptible latency; the vsync present
+				// still paces the real frames at 60. Takes MAIN off the ~4500/s spin -> lower CPU.
+				if (zero_ftv2_presented == ftv2_p0) {
+					struct timespec ts = {0, 500000};
+					nanosleep(&ts, NULL);
+				}
+#endif
+			} else {
+				core.run();  // depth<2 (and every guard-off build): plain serial, video_refresh
+				             // presents inline on MAIN — zero engine overhead (F23-consistent).
+			}
+				if (!use_ftv2) limitFF();
 			trackFPS();
 		}
 
@@ -5772,7 +6685,14 @@ int main(int argc , char* argv[]) {
 				LOG_info("auto-thread: trial aborted (menu opened mid-window)\n");
 			}
 			else if (thread_auto && ta_phase == 0) ta_phase_at = 0; // restart observation clock
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// park the CORE thread (drain pending frames) while the menu runs, release after
+			if (zero_ftv2_running) fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+#endif
 			Menu_loop();
+#ifdef ZERO_FRONTEND_THREADING_V2
+			if (zero_ftv2_running) fc_release(&zero_ftv2);
+#endif
 			// reset the rate window: a second that spans the menu would read as a false
 			// generation-rate drop and spuriously climb the governor on menu exit.
 			// (threaded mode resets before the resume signal instead — the core owns
@@ -5782,6 +6702,7 @@ int main(int argc , char* argv[]) {
 			}
 		}
 
+		if (use_ftv2) toggle_thread = 0;
 		if (toggle_thread) {
 			toggle_thread = 0;
 			if (was_threaded && !thread_video) {
@@ -5842,15 +6763,19 @@ int main(int argc , char* argv[]) {
 			// (gov_sink_fits: p95 pure work scaled to the next clock must fit 85% of budget) replaces
 			// both — quantitative race-to-idle instead of a binary guess.
 			if (gov_active) {
-				// per-frame PURE work: frame work minus the audio-pacing block inside core.run
-				// (blocked frames are pacing, not load — counting them as work over-holds the sink)
+				// Serial mode contributes one work sample per outer iteration. Depth-2 samples
+				// completed epochs in zero_ftv2_drain; pump-only iterations contribute nothing.
+#ifdef ZERO_FRONTEND_THREADING_V2
+				if (!zero_ftv2_depth2)
+#endif
 				{
 					SND_Stats as; SND_getStats(&as);
 					long pace_us = (as.wait_ms - gov_prev_wait_ms) * 1000; gov_prev_wait_ms = as.wait_ms;
 					uint32_t raw_us = GFX_getFrameWorkUs();
 					gov_work[gov_frames] = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
+					gov_frames++;
 				}
-				if (++gov_frames >= GOV_TICK_FRAMES) {
+				if (gov_frames >= GOV_TICK_FRAMES) {
 					// PRIMARY signal: the core's generation rate (core.run iterations/sec, from
 					// trackFPS) vs its target fps — jitter-immune ground truth of game speed.
 					// SECONDARY: the PREDICTIVE SINK GATE — sort the batch's pure work, take p95,
@@ -5866,11 +6791,15 @@ int main(int argc , char* argv[]) {
 					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
 					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
-					int fps_short = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.975);
-					int fps_gross = (cpu_double > 0 && gov_target_fps > 0 && cpu_double < gov_target_fps * 0.90);
-					// A menu/sleep reset deliberately clears cpu_double. Do not make a
+					double gov_gen = cpu_double;
+#ifdef ZERO_FRONTEND_THREADING_V2
+					if (zero_ftv2_depth2) gov_gen = fps_double;
+#endif
+					int fps_short = (gov_gen > 0 && gov_target_fps > 0 && gov_gen < gov_target_fps * 0.975);
+					int fps_gross = (gov_gen > 0 && gov_target_fps > 0 && gov_gen < gov_target_fps * 0.90);
+					// A menu/sleep reset deliberately clears the published generation rate. Do not make a
 					// sink decision until trackFPS publishes a fresh wall-clock sample.
-					if (cpu_double <= 0.5) { gov_frames = 0; continue; }
+					if (gov_gen <= 0.5) { gov_frames = 0; continue; }
 					int frame_overrun;
 					if (fps_gross) frame_overrun = GOV_SIGNAL_BIGSLIP; // >=10% under = audible now; jump to max
 					else if (fps_short) frame_overrun = GOV_SIGNAL_SLIP;
@@ -5930,7 +6859,7 @@ int main(int argc , char* argv[]) {
 							if (zgd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zgd = (e && e[0] && e[0] != '0') ? 1 : 0; }
 							if (zgd && (++zgd_n % 10) == 0)
 								LOG_info("gov-gate: p95=%dus budget=%dus next=%d signal=%d ceil=%d gen=%.1f\n",
-									p95, budget_us, next, frame_overrun, gov_state.ceil_khz, cpu_double);
+									p95, budget_us, next, frame_overrun, gov_state.ceil_khz, gov_gen);
 						}
 					}
 					// auto-threading state machine (evaluated at tick cadence; cheap).
@@ -5948,7 +6877,7 @@ int main(int argc , char* argv[]) {
 					if (thread_auto && ta_phase == 0 && fast_forward) {
 						ta_phase_at = 0;
 					}
-					if (thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
+					if (!use_ftv2 && thread_auto && ta_phase != 2 && !fast_forward && !was_threaded) {
 						uint32_t ta_now = SDL_GetTicks();
 						if (!ta_phase_at) ta_phase_at = ta_now;
 						if (ta_phase == 0 && ta_now - ta_phase_at >= TA_OBSERVE_MS) {
@@ -5999,7 +6928,7 @@ int main(int argc , char* argv[]) {
 					int prev_ceil = gov_state.ceil_khz;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
-						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, cpu_double, gov_target_fps);
+						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, gov_gen, gov_target_fps);
 					{
 						int gm = govmem_post_tick(&gov_mem, frame_overrun, fast_forward, rate_seq, prev_ceil, gov_state.ceil_khz);
 						if ((gm & GOVMEM_PRELOAD_DWELL) && gov_state.slack_run < GOV_DN_DWELL - 1)
@@ -6008,10 +6937,17 @@ int main(int argc , char* argv[]) {
 						if (gm & GOVMEM_DISARMED_SLIP) LOG_info("gov-memory: fast-sink canceled (slip before target)\n");
 						if (gm & GOVMEM_EXPIRED) LOG_info("gov-memory: fast-sink expired unconsumed\n");
 					}
-					gov_frames = 0;
+					int carry = gov_frames - GOV_TICK_FRAMES;
+					if (carry > 0)
+						memmove(gov_work, gov_work + GOV_TICK_FRAMES, (size_t)carry * sizeof(gov_work[0]));
+					gov_frames = carry;
 				}
 			}
-			if (tlm_enabled()) { // stats compute lives here: telemetry is its only consumer
+			if (tlm_enabled()
+#ifdef ZERO_FRONTEND_THREADING_V2
+			 && !zero_ftv2_depth2
+#endif
+			) { // depth-2 telemetry is recorded once per RUN_DONE in the drain
 				static long prev_wait_ms = 0;
 				SND_Stats as; SND_getStats(&as);
 				long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
@@ -6055,6 +6991,12 @@ int main(int argc , char* argv[]) {
 				// Lenient still presents through the same vsynced SDL renderer on tg5040;
 				// only explicit VSYNC_OFF removes the panel clock DRC synchronizes to.
 				&& GFX_getVsync()!=VSYNC_OFF);
+			int drc_threaded = thread_video;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			// Depth two owns audio production on CORE. MAIN may observe DRC telemetry,
+			// but it must never mutate the live resampler or CORE pacer.
+			drc_threaded = drc_threaded || zero_ftv2_depth2;
+#endif
 			int drc_eligible = (drc_supported && !fast_forward
 				// a ceiling-saturated game has no headroom to run +ppm faster — asking
 				// starves the audio ring on schedule (BR2 chop, ear-found 2026-07-08)
@@ -6066,9 +7008,11 @@ int main(int argc , char* argv[]) {
 			if (!drc_eligible) {
 				if (drc_ppm) { // revert cleanly while ineligible; FF restores it below
 					drc_ppm = 0;
-					SND_setRateAdjustPPM(0);
-					GFX_setPacePeriodUs(0);
-					core_pace_ppm = 0;
+					if (!drc_threaded) {
+						SND_setRateAdjustPPM(0);
+						GFX_setPacePeriodUs(0);
+						core_pace_ppm = 0;
+					}
 				}
 			}
 			else if (drc_restore_ppm >= 0) {
@@ -6077,10 +7021,12 @@ int main(int argc , char* argv[]) {
 				drc_frames = 0;
 				SND_Stats das; SND_getStats(&das);
 				drc_prev_wait = das.wait_ms;
-				SND_setRateAdjustPPM(drc_ppm);
-				core_pace_ppm = drc_ppm;
-				GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
-				LOG_info("drc: restored +%dppm after fast-forward\n", drc_ppm);
+					if (!drc_threaded) {
+						SND_setRateAdjustPPM(drc_ppm);
+						core_pace_ppm = drc_ppm;
+						GFX_setPacePeriodUs(drc_ppm ? (1000000/63) : 0);
+					}
+					LOG_info("drc: restored +%dppm after fast-forward\n", drc_ppm);
 			}
 			else if (++drc_frames >= 30) { // ~2Hz
 				drc_frames = 0;
@@ -6130,7 +7076,7 @@ int main(int argc , char* argv[]) {
 						drc_log_at = dl_now;
 					}
 				}
-				if (thread_video) { drc_ppm = prev; } // threaded: telemetry-only for now —
+					if (drc_threaded) { drc_ppm = prev; } // threaded: telemetry-only for now —
 				// applying ppm chopped audio (ear-verified A/B 2026-07-08); the panel-beat
 				// question returns with an eyes-on session
 				if (drc_ppm != prev) {
@@ -6185,10 +7131,48 @@ finish:
 
 	tlm_quit(); // benchmark: flush + close the CSV (no-op unless enabled)
 
+#ifdef ZERO_FRONTEND_THREADING_V2
+	if (zero_ftv2_inited) {
+		// Exit ordering (Codex v1.4 final #1/#2). The run loop's LAST iteration can have
+		// granted one more epoch after quit was set — CORE may still be inside core.run().
+		// 1) PARK first: waits out any in-flight epoch + drains (the proven menu pattern),
+		//    leaving CORE quiescent while audio and game memory are still alive.
+		// 2) Terminal SRAM/RTC flush: the v2 vtable unload deliberately does NOT flush
+		//    (serial Core_quit does) — without this, Save&Quit loses battery-backed saves.
+		//    Safe here: core parked, pointers valid, audio untouched.
+		// 3) fc_teardown: unload_game + deinit on the CORE thread, then JOIN — before
+		//    Game_close/Core_unload(SND_quit) can free anything CORE might still touch.
+		if (zero_ftv2_running) {
+			fc_park(&zero_ftv2, zero_ftv2_drain, NULL, 0);
+			Core_flushMemory();
+		}
+		fc_teardown(&zero_ftv2);
+		Game_close();
+		Core_unload();
+	}
+	else {
+		// engine never came up (depth<2, or pre-init exit): stock serial ordering, untouched
+		Game_close();
+		Core_unload();
+		Core_quit();
+	}
+#else
 	Game_close();
 	Core_unload();
-	
 	Core_quit();
+#endif
+#ifdef ZERO_FRONTEND_THREADING_V2
+	// Reaching gameplay and then exiting through the normal loop is known-good. A successful
+	// depth-2 session also resets its consecutive-failure count. A clean serial fallback only
+	// clears the marker so depth-2 gets its one retry; a permanent build-scoped disable remains.
+		if (game_running && !atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire)
+		    && zero_ftv2_canary_armed && zero_ftv2_canary_clearable) {
+			if (!zero_ftv2_canary_remove(zero_ftv2_canary)) zero_ftv2_canary_armed = 0;
+		}
+		if (game_running && zero_ftv2_depth2
+		 && !atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire))
+			zero_ftv2_failures_clear();
+	#endif
 	Core_close();
 	
 	Config_quit();

@@ -42,6 +42,19 @@ BUILD_DATE!=date +%Y.%m.%d
 BUILD_HASH!=cat ../../hash.txt
 CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 
+# Threading v2 candidate — compiled into tg5040, but initialized only when a pak requests depth 2
+# through ZERO_FTV2_DEPTH (PS.pak is the sole requester). Every other system takes the existing
+# plain serial path without creating the engine. Host harnesses and guard-on/off cross-builds are
+# release gates; the composed Brick + Smart Pro device gauntlet remains mandatory per D62.
+# Build the pure-serial binary with: make ... ZERO_FRONTEND_THREADING_V2=0
+ifeq ($(PLATFORM),tg5040)
+ZERO_FRONTEND_THREADING_V2 ?= 1
+endif
+ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
+SOURCE += ../common/framering.c ../common/frontend_core.c
+CFLAGS += -DZERO_FRONTEND_THREADING_V2
+endif
+
 # CFLAGS += -DBUILD_DATE=\"20230326\" -DBUILD_HASH=\"d34db33f\"
 
 PRODUCT= build/$(PLATFORM)/$(TARGET).elf
