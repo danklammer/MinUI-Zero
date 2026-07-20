@@ -293,7 +293,7 @@ static int gov_mem_read(void) {
 	return exists(path) ? getInt(path) : 0;
 }
 static void gov_mem_save(void) {
-	int best = govmem_best(&gov_mem, 60); // <~30s of qualified votes: not representative
+	int best = govmem_best(&gov_mem, 60); // 60 qualified ~1Hz votes = ~60-90s of clean play (votes are per rate publication, not per tick)
 	if (best <= 0) return;
 	if (best == gov_mem_read()) return;   // unchanged: spare the card write
 	char path[MAX_PATH];
