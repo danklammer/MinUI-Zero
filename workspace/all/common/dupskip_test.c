@@ -147,6 +147,25 @@ int main(void) {
 		dupskip_reset(&s); free(a);
 	}
 
+	// 9. Malformed geometry fails OPEN (never a false dup) — Codex F3.
+	{
+		DupSkip s; memset(&s, 0, sizeof(s));
+		unsigned char* a = mkframe(W, H, PACK, 0x88, 0x00);
+		CHECK(dupskip_detect(&s, a, W, H, PACK, 0)  == 0, "bpp 0 presents");
+		CHECK(dupskip_detect(&s, a, W, H, PACK, -2) == 0, "negative bpp presents");
+		CHECK(dupskip_detect(&s, a, 0, H, PACK, BPP) == 0, "zero width presents");
+		CHECK(dupskip_detect(&s, a, W, 0, PACK, BPP) == 0, "zero height presents");
+		// visible row (W*2=320) exceeds a too-small pitch -> present, do NOT compare a truncated row
+		CHECK(dupskip_detect(&s, a, W, H, 200, BPP) == 0, "undersized pitch presents (no truncated compare)");
+		CHECK(dupskip_detect(&s, a, W, H, 200, BPP) == 0, "undersized pitch stays present (no false dup)");
+		// width*bpp overflow (SIZE_MAX-ish) -> present
+		CHECK(dupskip_detect(&s, a, 0xFFFFFFFFu, H, PACK, 4) == 0, "width*bpp overflow presents");
+		// a valid frame after the malformed calls still works (state not corrupted)
+		CHECK(dupskip_detect(&s, a, W, H, PACK, BPP) == 0, "valid frame after malformed presents");
+		CHECK(dupskip_detect(&s, a, W, H, PACK, BPP) == 1, "then dedups normally");
+		dupskip_reset(&s); free(a);
+	}
+
 	if (fails) { printf("== dupskip: %d FAILURE(S) ==\n", fails); return 1; }
 	printf("== dupskip: ALL PASS ==\n");
 	return 0;

@@ -3368,7 +3368,8 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 ///////////////////////////////
 
 static int cpu_ticks = 0;
-static int fps_ticks = 0;
+static int gen_ticks = 0;   // GENERATED frames = completed serial core.run() epochs (Codex F1);
+static int fps_ticks = 0;   // PRESENTED frames = actual on-screen presents (distinct from gen_ticks)
 static int use_ticks = 0;
 static int last_use_ticks = 0;
 static double fps_double = 0;
@@ -3386,6 +3387,7 @@ static void RunLoop_resetWindow(void) {
 	sec_start = SDL_GetTicks();
 	cpu_ticks = 0;
 	fps_ticks = 0;
+	gen_ticks = 0;
 	fps_double = 0;
 	cpu_double = 0;
 	use_double = 0;
@@ -3708,14 +3710,6 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 	
 	if (!data) return;
 
-	// Count generated frames here — a real core-produced frame has arrived. Must precede the
-	// present-skip return below: a dup-skipped frame was still GENERATED, and fps_double is
-	// documented/consumed as the core generation rate (HUD, MEASURE, and the >55fps decision
-	// gates at the pl_win/mb_dup logic). Counting it after the skip made a static screen read
-	// as the forced-present rate while the core kept generating at 60 (Codex P2). Depth-2
-	// already sources fps_double from generated ticks; this makes the serial path match.
-	fps_ticks += 1;
-
 	// Duplicate detection + present-skip. Policy is the pure, tested dupskip.{h,c} unit
 	// (Codex P1#2); this site owns only the env gate and the 1Hz stats log (SDL/SND/LOG).
 	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let the
@@ -3764,6 +3758,8 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 			dup_force_present = 0;
 		}
 	}
+
+	fps_ticks += 1; // PRESENTED frame (we did not skip) — distinct from gen_ticks (generation)
 
 	if (downsample) pitch /= 2; // everything expects 16 but we're downsampling from 32
 	
@@ -5930,6 +5926,7 @@ static void Menu_loop(void) {
 			sec_start = SDL_GetTicks();
 			cpu_ticks = 0;
 			fps_ticks = 0;
+			gen_ticks = 0;
 			cpu_double = 0;
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
@@ -5975,7 +5972,10 @@ static void trackFPS(void) {
 	uint32_t now = SDL_GetTicks();
 	if (now - sec_start>=1000) {
 		double last_time = (double)(now - sec_start) / 1000;
-		fps_double = fps_ticks / last_time;
+		// GENERATION rate = core.run epochs, counted at the run-loop boundary — includes frames
+		// the core produced with a NULL/duplicate video callback (Codex F1: fps_ticks-in-present
+		// missed those). Presented rate (fps_ticks) is kept distinct for pacing diagnostics.
+		fps_double = gen_ticks / last_time;
 #ifdef ZERO_FRONTEND_THREADING_V2
 		if (zero_ftv2_depth2) {
 			// Codex #5: depth-2 generation = epochs completed, counted on MAIN in the drain
@@ -6029,6 +6029,7 @@ static void trackFPS(void) {
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
+		gen_ticks = 0;
 
 		// LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
 	}
@@ -6616,6 +6617,8 @@ int main(int argc , char* argv[]) {
 			} else {
 				core.run();  // depth<2 (and every guard-off build): plain serial, video_refresh
 				             // presents inline on MAIN — zero engine overhead (F23-consistent).
+				gen_ticks++; // GENERATED epoch, counted at the run-loop on MAIN — includes frames
+				             // the core emits with a NULL/duplicate video callback (Codex F1).
 			}
 				if (!use_ftv2) limitFF();
 			trackFPS();
