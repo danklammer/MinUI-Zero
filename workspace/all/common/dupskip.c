@@ -2,6 +2,7 @@
 #include "dupskip.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 static void* ds_alloc(DupSkip* s, size_t n) { return s->mem_alloc ? s->mem_alloc(n) : malloc(n); }
 static void  ds_free (DupSkip* s, void* p)  { if (s->mem_free) s->mem_free(p); else free(p); }
@@ -18,9 +19,14 @@ void dupskip_reset(DupSkip* s) {
 int dupskip_detect(DupSkip* s, const void* data, unsigned width, unsigned height,
                    size_t pitch, int bpp) {
 	if (!data) return 0;                       // NULL dup frame: never poison the snapshot
+	// Fail OPEN (present, never false-dup) on any malformed geometry (Codex F3): a valid
+	// in-tree core never hits these, so this is hardening against a future/broken core.
+	if (bpp <= 0 || width == 0 || height == 0) return 0;
 	size_t row_bytes = (size_t)width * (size_t)bpp;
-	if (row_bytes > pitch) row_bytes = pitch;  // never read past a smaller supplied pitch
-	size_t sz = height * row_bytes;
+	if (row_bytes / (size_t)bpp != (size_t)width) return 0;   // width*bpp overflow
+	if (row_bytes > pitch) return 0;                          // visible row exceeds supplied pitch
+	if (row_bytes > SIZE_MAX / height) return 0;              // height*row_bytes overflow
+	size_t sz = (size_t)height * row_bytes;
 	if (sz == 0) return 0;
 
 	if (sz != s->prev_sz) {                     // geometry/size change: realloc + invalidate
