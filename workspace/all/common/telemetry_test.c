@@ -71,11 +71,47 @@ static void test_lifecycle(void) {
 	}
 }
 
+// Codex: feed tlm_dup() known values and assert the exact dup_dups/dup_seen CSV output, so a
+// future telemetry change cannot silently break the present-skip qualification protocol.
+static void test_dup_columns(void) {
+	printf("[dup columns] tlm_dup() -> exact dup_dups/dup_seen in the CSV row\n");
+	const char* out = "/tmp/bench-dup-unit.csv";
+	setenv("BENCH", "1", 1);
+	setenv("BENCH_OUT", out, 1);
+	tlm_init("dupunit", 16667);
+	// known pattern in one window: 3 duplicates out of 5 frames seen
+	tlm_dup(1); tlm_dup(0); tlm_dup(1); tlm_dup(0); tlm_dup(1);
+	for (int i = 0; i < TLM_SAMPLE_FRAMES; i++) tlm_frame(8000); // exactly one window -> one flush
+	tlm_quit();
+
+	FILE* f = fopen(out, "r");
+	CHECK(f != NULL, "dup csv created");
+	if (!f) return;
+	char header[256] = "", row[256] = "";
+	CHECK(fgets(header, sizeof(header), f) != NULL, "csv header present");
+	CHECK(fgets(row, sizeof(row), f) != NULL, "csv data row present");
+	fclose(f);
+	// dup_dups, dup_seen are the last two appended columns; split the row preserving empties.
+	char* fields[32]; int nf = 0; char* start = row;
+	for (char* p = row; nf < 32; p++) {
+		if (*p == ',' || *p == '\n' || *p == '\0') {
+			char c = *p; *p = '\0'; fields[nf++] = start; start = p + 1;
+			if (c == '\n' || c == '\0') break;
+		}
+	}
+	CHECK(nf >= 2, "row has >=2 fields, got %d", nf);
+	if (nf >= 2) {
+		CHECK(atol(fields[nf - 2]) == 3, "dup_dups=3, got %s", fields[nf - 2]);
+		CHECK(atol(fields[nf - 1]) == 5, "dup_seen=5, got %s", fields[nf - 1]);
+	}
+}
+
 int main(void) {
 	printf("== telemetry unit tests ==\n");
 	test_percentiles();
 	test_energy();
 	test_lifecycle();
+	test_dup_columns();
 	printf("== %s ==\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
 	return g_fail ? 1 : 0;
 }
