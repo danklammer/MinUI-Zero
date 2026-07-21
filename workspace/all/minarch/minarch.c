@@ -23,6 +23,7 @@
 #include "scaler.h"
 #include "governor.h"
 #include "gov_memory.h"
+#include "dupskip.h"
 #include "telemetry.h"
 #include "ff_visual_cadence.h"
 
@@ -3707,46 +3708,34 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 	
 	if (!data) return;
 
-	// Duplicate detection + present-skip (ZERO_PRESENT_STATS measures; ZERO_DUP_SKIP acts).
-	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let
-	// the CPU idle sooner. Pacing is owned by the audio block, so skipping is only legal
-	// while audio is alive (silent-fallback sessions keep vsync pacing — review finding 2).
-	// The snapshot updates only on frames that reach the present path below (finding 1),
-	// systems with presentation-drop (PS) are excluded outright (finding 1), and skipping
-	// requires clean geometry AND an unchanged frontend-settings generation so aspect/
-	// effect/HUD changes land immediately (finding 3). Work telemetry is finalized on
-	// skipped frames so governor batches never consume stale samples (finding 2).
-	int dup_frame = 0;
+	// Count generated frames here — a real core-produced frame has arrived. Must precede the
+	// present-skip return below: a dup-skipped frame was still GENERATED, and fps_double is
+	// documented/consumed as the core generation rate (HUD, MEASURE, and the >55fps decision
+	// gates at the pl_win/mb_dup logic). Counting it after the skip made a static screen read
+	// as the forced-present rate while the core kept generating at 60 (Codex P2). Depth-2
+	// already sources fps_double from generated ticks; this makes the serial path match.
+	fps_ticks += 1;
+
+	// Duplicate detection + present-skip. Policy is the pure, tested dupskip.{h,c} unit
+	// (Codex P1#2); this site owns only the env gate and the 1Hz stats log (SDL/SND/LOG).
+	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let the
+	// CPU idle sooner. Pacing is owned by the audio ring, so skipping is legal only while
+	// audio is actually pacing (SND_isActive now proves that, not just init — Codex P1#1);
+	// presentation-drop cores (PS) are excluded; geometry/settings-generation must be clean;
+	// and a forced present lands at least every 31 frames. Work telemetry is finalized on a
+	// skipped frame so governor batches never consume a stale sample.
 	{
-		static int dup_on = -1;
-		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
+		static DupSkip g_dup = {0};
+		static int dup_on = -1, skip_on = -1;
+		if (dup_on == -1) {
+			dup_on   = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
+			skip_on  = (getenv("ZERO_DUP_SKIP") != NULL);
+		}
 		if (dup_on) {
-			static void* prev = NULL; static size_t prev_sz = 0; static int prev_valid = 0;
+			int dup_frame = dupskip_detect(&g_dup, data, width, height, pitch, downsample ? 4 : 2);
+			// 1Hz dup-stats (diagnostic; env ZERO_PRESENT_STATS/ZERO_DUP_SKIP)
 			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
-			// compare VISIBLE pixels only, never padded pitch bytes (gambatte pads 160
-			// rows to a 256 pitch = 37.5% wasted comparison; Codex GB findings). The
-			// packed prev buffer keeps the fast single-memcmp path when pitch is tight.
-			size_t row_bytes = (size_t)width * (downsample ? 4 : 2); // this runs PRE-downsample: 32bpp cores carry width*4 visible bytes
-			if (row_bytes > pitch) row_bytes = pitch; // never read past a smaller pitch
-			size_t sz = (size_t)height * row_bytes;
-			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; prev_valid = 0; }
-			if (prev && prev_sz == sz) {
-				df_n++;
-				int same = prev_valid;
-				if (same) {
-					if (row_bytes == pitch) same = (memcmp(prev, data, sz) == 0);
-					else for (unsigned y = 0; y < height; y++) {
-						if (memcmp((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes) != 0) { same = 0; break; }
-					}
-				}
-				if (same) { df_dup++; dup_frame = 1; }
-				else {
-					if (row_bytes == pitch) memcpy(prev, data, sz);
-					else for (unsigned y = 0; y < height; y++)
-						memcpy((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes);
-					prev_valid = 1;
-				}
-			}
+			df_n++; if (dup_frame) df_dup++;
 			uint32_t df_now = SDL_GetTicks();
 			if (!df_at) df_at = df_now;
 			else if (df_now - df_at >= 1000) {
@@ -3757,32 +3746,25 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 				df_ur0 = dfs.underruns;
 				df_n = df_dup = 0; df_at = df_now;
 			}
+			DupSkipCtx dc = {
+				.enabled           = skip_on,
+				.dup_frame         = dup_frame,
+				.geometry_dirty    = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h),
+				.present_dirty_gen = present_dirty_gen,
+				.fast_forward      = fast_forward,
+				.presentation_drop = presentation_drop_supported,
+				.audio_active      = SND_isActive(),
+				.force_present     = dup_force_present,
+				.max_streak        = 30,
+			};
+			if (dupskip_should_skip(&g_dup, &dc)) {
+				GFX_finishFrameWork(); // close this frame's work sample for the governor batch
+				return;
+			}
+			dup_force_present = 0;
 		}
-	}
-	{
-		static int skip_on = -1;
-		if (skip_on == -1) skip_on = (getenv("ZERO_DUP_SKIP") != NULL);
-		static int dup_streak = 0;
-		static unsigned clean_gen = 0;
-		int geometry_dirty = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h);
-		// NOTE: show_debug deliberately NOT consulted — the HUD is an observer and must
-		// not change the policy it displays (Codex device-gate finding: the old rail
-		// invalidated every skip measurement taken with the HUD on). The ~31-frame
-		// forced present keeps the 1Hz HUD text adequately live during skip runs.
-		if (skip_on && dup_frame && !geometry_dirty && clean_gen == present_dirty_gen
-			&& !fast_forward && !presentation_drop_supported
-			&& SND_isActive() && !dup_force_present && dup_streak < 30) {
-			dup_streak++;
-			GFX_finishFrameWork(); // close this frame's work sample for the governor batch
-			return;
-		}
-		dup_streak = 0;
-		dup_force_present = 0;
-		clean_gen = present_dirty_gen;
 	}
 
-	fps_ticks += 1;
-	
 	if (downsample) pitch /= 2; // everything expects 16 but we're downsampling from 32
 	
 	// if source has changed size (or forced by dst_p==0)
