@@ -38,7 +38,7 @@ Tests were performed on real TrimUI hardware, against stock MinUI on the same de
 | Gameplay vs MinUI's 2.0GHz Performance mode | **4-5°C (7-9°F) cooler** |
 | Game Boy battery life on TrimUI Brick | **~7.5 hours**, up from ~6 hours before tuning |
 | PlayStation battery life | **~6.5-7 hours** |
-| Bloody Roar II — other firmwares need the 2.0GHz overclock | **Full speed at stock clocks** |
+| Bloody Roar II fights — held ~51fps on the serial path | **Locked 60fps at stock clocks** (v1.5 pipelined PS1 frontend; other firmwares reach 60 via the 2.0GHz overclock) |
 | Tony Hawk's Pro Skater 2, in-level | **60fps at 1008 MHz** — half the stock clock |
 | Menu idle on TrimUI Brick | **~26°C (79°F)** with the GPU powered down |
 
@@ -53,18 +53,19 @@ philosophy. Zero's measured performance numbers are in the table above.
 | | **MinUI Zero** | **NextUI** |
 |---|---|---|
 | Philosophy | Lowest power that holds full speed | Full-featured |
-| Firmware source code | ~18,600 lines | ~47,200 lines |
-| Base install download | 7 MB | 85 MB |
+| Firmware source code | ~21,500 lines | ~51,200 lines |
+| Base install download | 7 MB | 82 MB |
 | Rendering | Lean pipeline — GPU only displays the finished frame in-game, and powers down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
-| CPU | Frame-aware closed loop; stock clocks only, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
+| CPU | Frame-aware closed loop, plus a pipelined PS1 frontend — holds full speed at stock clocks, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
+| Undervolting | Self-calibrating per-chip tool — finds each chip's lowest safe voltage (opt-in) | None |
 | Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor — plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes | Yes |
 | Devices | Brick, Smart Pro | Brick, Smart Pro, Smart Pro S |
 
-Measured at MinUI Zero v1.4 and NextUI v6.13.2. Source lines count each firmware's own
-`.c`/`.h` (launcher, frontend, platform) and exclude the third-party emulator cores both ship;
-download sizes are each project's latest base release zip. The NextUI feature list is from its
+Measured at MinUI Zero v1.5 and NextUI v6.14.0. Source lines count each firmware's own
+`.c`/`.h` (launcher, frontend, platform) and exclude the third-party emulator cores both ship,
+vendored libraries, and test harnesses; download sizes are each project's latest base release zip. The NextUI feature list is from its
 README, its background services and the 2.0 GHz figure from its boot and launch scripts
 (both firmwares also run the vendor's stock input daemon). Some code flows both ways between these
 projects — deep sleep shares a lineage, and NextUI is credited in this codebase.
