@@ -1483,7 +1483,13 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 }
 
 int SND_isActive(void) {
-	return snd.initialized;
+	// "Actively pacing", not merely "init attempted": present-skip relies on the audio ring
+	// to backpressure emulation in place of the vsync waits it drops. A failed ring alloc
+	// leaves initialized=1 with an unusable buffer (SND_batchSamples returns immediately, no
+	// backpressure) — skipping then would let the core run free of any pacing (Codex P1).
+	// Mirrors the SND_batchSamples liveness guard exactly: true iff a batch would actually pace.
+	return snd.initialized && !atomic_load(&snd.paused) && snd.buffer
+		&& snd.frame_count>0 && snd.resample;
 }
 void SND_getStats(SND_Stats* out) {
 	if (!out) return;
