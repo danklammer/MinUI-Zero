@@ -8,9 +8,11 @@
 
 #include <stddef.h>
 
+// has_resampler = (snd.resample != NULL). Passed as int, not a function pointer, since ISO C
+// does not define function-pointer-to-object-pointer conversion (Codex F2 P2, -Wpedantic).
 static inline int snd_pacing_ok(int initialized, int paused,
-                                const void* buffer, size_t frame_count, const void* resample) {
-	return initialized && !paused && buffer && frame_count != 0 && resample;
+                                const void* buffer, size_t frame_count, int has_resampler) {
+	return initialized && !paused && buffer && frame_count != 0 && has_resampler;
 }
 
 #endif

@@ -53,6 +53,8 @@ static long g_over_total = 0; // total over-budget frames
 static int g_aud_q = 0;            // latest audio ring fill (frames)
 static long g_aud_under = 0, g_aud_over = 0;             // latest cumulative audio counters
 static long g_aud_under_base = 0, g_aud_over_base = 0;   // counters at last window flush
+static long g_dup_seen = 0, g_dup_dups = 0;             // present-skip: frames seen / duplicates
+static long g_dup_seen_base = 0, g_dup_dups_base = 0;   // dup counters at last window flush
 
 static int read_int(const char* path) {
 	FILE* f = fopen(path, "r");
@@ -89,7 +91,10 @@ static void flush_window(void) {
 	if (power_mw >= 0) fprintf(g_csv, "%.1f,", power_mw);    else fprintf(g_csv, ",");
 	long ud = g_aud_under - g_aud_under_base, od = g_aud_over - g_aud_over_base;
 	g_aud_under_base = g_aud_under; g_aud_over_base = g_aud_over;
-	fprintf(g_csv, "%d,%ld,%ld\n", g_aud_q, ud < 0 ? 0 : ud, od < 0 ? 0 : od);
+	long dseen = g_dup_seen - g_dup_seen_base, ddup = g_dup_dups - g_dup_dups_base;
+	g_dup_seen_base = g_dup_seen; g_dup_dups_base = g_dup_dups;
+	fprintf(g_csv, "%d,%ld,%ld,%ld,%ld\n", g_aud_q, ud < 0 ? 0 : ud, od < 0 ? 0 : od,
+	        ddup < 0 ? 0 : ddup, dseen < 0 ? 0 : dseen);
 	fflush(g_csv);
 
 	g_over_total += over;
@@ -108,9 +113,10 @@ void tlm_init(const char* tag, int budget_us) {
 	else snprintf(path, sizeof(path), "/tmp/bench-%s.csv", tag && tag[0] ? tag : "run");
 	g_csv = fopen(path, "w");
 	if (!g_csv) { g_enabled = 0; return; }
-	fprintf(g_csv, "frame,n,p50_us,p95_us,p99_us,max_us,over,temp_c,cur_khz,volt_uv,curr_ua,power_mw,aud_q,aud_under,aud_over\n");
+	fprintf(g_csv, "frame,n,p50_us,p95_us,p99_us,max_us,over,temp_c,cur_khz,volt_uv,curr_ua,power_mw,aud_q,aud_under,aud_over,dup_dups,dup_seen\n");
 	g_win_n = 0; g_frame = 0; g_over_total = 0;
 	g_aud_q = 0; g_aud_under = g_aud_over = g_aud_under_base = g_aud_over_base = 0;
+	g_dup_seen = g_dup_dups = g_dup_seen_base = g_dup_dups_base = 0;
 }
 
 int tlm_enabled(void) { return g_enabled; }
@@ -127,6 +133,12 @@ void tlm_audio(int queue_frames, long underruns_total, long overruns_total) {
 	g_aud_q = queue_frames;
 	g_aud_under = underruns_total;
 	g_aud_over = overruns_total;
+}
+
+void tlm_dup(int is_dup) {
+	if (!g_enabled) return;
+	g_dup_seen++;
+	if (is_dup) g_dup_dups++;
 }
 
 void tlm_quit(void) {

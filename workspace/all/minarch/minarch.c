@@ -3720,25 +3720,30 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 	// skipped frame so governor batches never consume a stale sample.
 	{
 		static DupSkip g_dup = {0};
-		static int dup_on = -1, skip_on = -1;
+		static int dup_on = -1, skip_on = -1, stats_on = -1;
 		if (dup_on == -1) {
-			dup_on   = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
+			stats_on = (getenv("ZERO_PRESENT_STATS") != NULL);
 			skip_on  = (getenv("ZERO_DUP_SKIP") != NULL);
+			dup_on   = stats_on || skip_on;     // detection needed for either
 		}
 		if (dup_on) {
 			int dup_frame = dupskip_detect(&g_dup, data, width, height, pitch, downsample ? 4 : 2);
-			// 1Hz dup-stats (diagnostic; env ZERO_PRESENT_STATS/ZERO_DUP_SKIP)
-			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
-			df_n++; if (dup_frame) df_dup++;
-			uint32_t df_now = SDL_GetTicks();
-			if (!df_at) df_at = df_now;
-			else if (df_now - df_at >= 1000) {
-				static long df_ur0 = 0;
-				SND_Stats dfs; SND_getStats(&dfs);
-				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
-					df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
-				df_ur0 = dfs.underruns;
-				df_n = df_dup = 0; df_at = df_now;
+			tlm_dup(dup_frame); // dup rate -> opt-in BENCH CSV (no-op unless BENCH; the reliable path)
+			// 1Hz text dup-stats: ONLY under ZERO_PRESENT_STATS — never coupled to ZERO_DUP_SKIP,
+			// which would add a per-second synchronous SD flush to the default-on feature (Codex P1).
+			if (stats_on) {
+				static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
+				df_n++; if (dup_frame) df_dup++;
+				uint32_t df_now = SDL_GetTicks();
+				if (!df_at) df_at = df_now;
+				else if (df_now - df_at >= 1000) {
+					static long df_ur0 = 0;
+					SND_Stats dfs; SND_getStats(&dfs);
+					LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
+						df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
+					df_ur0 = dfs.underruns;
+					df_n = df_dup = 0; df_at = df_now;
+				}
 			}
 			DupSkipCtx dc = {
 				.enabled           = skip_on,

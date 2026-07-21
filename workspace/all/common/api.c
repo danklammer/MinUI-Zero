@@ -1403,7 +1403,7 @@ static void SND_measureFastForward(size_t frames) {
 // usable ring and resampler). SND_batchSamples and SND_isActive share this so they can never
 // drift (Codex F2); the field logic lives in snd_pacing.h so it is unit-testable without SND.
 static int snd_can_pace(void) {
-	return snd_pacing_ok(snd.initialized, atomic_load(&snd.paused), snd.buffer, snd.frame_count, snd.resample);
+	return snd_pacing_ok(snd.initialized, atomic_load(&snd.paused), snd.buffer, snd.frame_count, snd.resample != NULL);
 }
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio

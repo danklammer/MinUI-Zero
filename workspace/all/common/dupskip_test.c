@@ -158,8 +158,11 @@ int main(void) {
 		// visible row (W*2=320) exceeds a too-small pitch -> present, do NOT compare a truncated row
 		CHECK(dupskip_detect(&s, a, W, H, 200, BPP) == 0, "undersized pitch presents (no truncated compare)");
 		CHECK(dupskip_detect(&s, a, W, H, 200, BPP) == 0, "undersized pitch stays present (no false dup)");
-		// width*bpp overflow (SIZE_MAX-ish) -> present
+		// width*bpp overflow -> present (32-bit host: this path; 64-bit: caught by row>pitch)
 		CHECK(dupskip_detect(&s, a, 0xFFFFFFFFu, H, PACK, 4) == 0, "width*bpp overflow presents");
+		// height*row_bytes overflow: max dims (row=0x1FFFFFFFE fits pitch=SIZE_MAX), height*row > SIZE_MAX
+		CHECK(dupskip_detect(&s, a, 0xFFFFFFFFu, 0xFFFFFFFFu, (size_t)-1, BPP) == 0,
+		      "height*row_bytes overflow presents");
 		// a valid frame after the malformed calls still works (state not corrupted)
 		CHECK(dupskip_detect(&s, a, W, H, PACK, BPP) == 0, "valid frame after malformed presents");
 		CHECK(dupskip_detect(&s, a, W, H, PACK, BPP) == 1, "then dedups normally");
