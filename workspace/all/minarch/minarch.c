@@ -23,6 +23,7 @@
 #include "scaler.h"
 #include "governor.h"
 #include "gov_memory.h"
+#include "dupskip.h"
 #include "telemetry.h"
 #include "ff_visual_cadence.h"
 
@@ -3367,7 +3368,8 @@ static void blitBitmapText(char* text, int ox, int oy, uint16_t* data, int strid
 ///////////////////////////////
 
 static int cpu_ticks = 0;
-static int fps_ticks = 0;
+static int gen_ticks = 0;   // GENERATED frames = completed serial core.run() epochs (Codex F1);
+static int fps_ticks = 0;   // PRESENTED frames = actual on-screen presents (distinct from gen_ticks)
 static int use_ticks = 0;
 static int last_use_ticks = 0;
 static double fps_double = 0;
@@ -3385,6 +3387,7 @@ static void RunLoop_resetWindow(void) {
 	sec_start = SDL_GetTicks();
 	cpu_ticks = 0;
 	fps_ticks = 0;
+	gen_ticks = 0;
 	fps_double = 0;
 	cpu_double = 0;
 	use_double = 0;
@@ -3707,82 +3710,62 @@ static void present_frame(const void *data, unsigned width, unsigned height, siz
 	
 	if (!data) return;
 
-	// Duplicate detection + present-skip (ZERO_PRESENT_STATS measures; ZERO_DUP_SKIP acts).
-	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let
-	// the CPU idle sooner. Pacing is owned by the audio block, so skipping is only legal
-	// while audio is alive (silent-fallback sessions keep vsync pacing — review finding 2).
-	// The snapshot updates only on frames that reach the present path below (finding 1),
-	// systems with presentation-drop (PS) are excluded outright (finding 1), and skipping
-	// requires clean geometry AND an unchanged frontend-settings generation so aspect/
-	// effect/HUD changes land immediately (finding 3). Work telemetry is finalized on
-	// skipped frames so governor batches never consume stale samples (finding 2).
-	int dup_frame = 0;
+	// Duplicate detection + present-skip. Policy is the pure, tested dupskip.{h,c} unit
+	// (Codex P1#2); this site owns only the env gate and the 1Hz stats log (SDL/SND/LOG).
+	// A byte-identical frame changes nothing on screen — skip upload/submit/swap and let the
+	// CPU idle sooner. Pacing is owned by the audio ring, so skipping is legal only while
+	// audio is actually pacing (SND_isActive now proves that, not just init — Codex P1#1);
+	// presentation-drop cores (PS) are excluded; geometry/settings-generation must be clean;
+	// and a forced present lands at least every 31 frames. Work telemetry is finalized on a
+	// skipped frame so governor batches never consume a stale sample.
 	{
-		static int dup_on = -1;
-		if (dup_on == -1) dup_on = (getenv("ZERO_PRESENT_STATS") != NULL) || (getenv("ZERO_DUP_SKIP") != NULL);
+		static DupSkip g_dup = {0};
+		static int dup_on = -1, skip_on = -1, stats_on = -1;
+		if (dup_on == -1) {
+			stats_on = (getenv("ZERO_PRESENT_STATS") != NULL);
+			skip_on  = (getenv("ZERO_DUP_SKIP") != NULL);
+			dup_on   = stats_on || skip_on;     // detection needed for either
+		}
 		if (dup_on) {
-			static void* prev = NULL; static size_t prev_sz = 0; static int prev_valid = 0;
-			static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
-			// compare VISIBLE pixels only, never padded pitch bytes (gambatte pads 160
-			// rows to a 256 pitch = 37.5% wasted comparison; Codex GB findings). The
-			// packed prev buffer keeps the fast single-memcmp path when pitch is tight.
-			size_t row_bytes = (size_t)width * (downsample ? 4 : 2); // this runs PRE-downsample: 32bpp cores carry width*4 visible bytes
-			if (row_bytes > pitch) row_bytes = pitch; // never read past a smaller pitch
-			size_t sz = (size_t)height * row_bytes;
-			if (sz != prev_sz) { free(prev); prev = malloc(sz); prev_sz = prev ? sz : 0; prev_valid = 0; }
-			if (prev && prev_sz == sz) {
-				df_n++;
-				int same = prev_valid;
-				if (same) {
-					if (row_bytes == pitch) same = (memcmp(prev, data, sz) == 0);
-					else for (unsigned y = 0; y < height; y++) {
-						if (memcmp((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes) != 0) { same = 0; break; }
-					}
-				}
-				if (same) { df_dup++; dup_frame = 1; }
-				else {
-					if (row_bytes == pitch) memcpy(prev, data, sz);
-					else for (unsigned y = 0; y < height; y++)
-						memcpy((uint8_t*)prev + y * row_bytes, (const uint8_t*)data + y * pitch, row_bytes);
-					prev_valid = 1;
+			int dup_frame = dupskip_detect(&g_dup, data, width, height, pitch, downsample ? 4 : 2);
+			tlm_dup(dup_frame); // dup rate -> opt-in BENCH CSV (no-op unless BENCH; the reliable path)
+			// 1Hz text dup-stats: ONLY under ZERO_PRESENT_STATS — never coupled to ZERO_DUP_SKIP,
+			// which would add a per-second synchronous SD flush to the default-on feature (Codex P1).
+			if (stats_on) {
+				static int df_n = 0, df_dup = 0; static uint32_t df_at = 0;
+				df_n++; if (dup_frame) df_dup++;
+				uint32_t df_now = SDL_GetTicks();
+				if (!df_at) df_at = df_now;
+				else if (df_now - df_at >= 1000) {
+					static long df_ur0 = 0;
+					SND_Stats dfs; SND_getStats(&dfs);
+					LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
+						df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
+					df_ur0 = dfs.underruns;
+					df_n = df_dup = 0; df_at = df_now;
 				}
 			}
-			uint32_t df_now = SDL_GetTicks();
-			if (!df_at) df_at = df_now;
-			else if (df_now - df_at >= 1000) {
-				static long df_ur0 = 0;
-				SND_Stats dfs; SND_getStats(&dfs);
-				LOG_info("dup-stats: frames=%d dups=%d (%.0f%%) underruns=%ld\n",
-					df_n, df_dup, df_n ? 100.0*df_dup/df_n : 0, dfs.underruns - df_ur0);
-				df_ur0 = dfs.underruns;
-				df_n = df_dup = 0; df_at = df_now;
+			DupSkipCtx dc = {
+				.enabled           = skip_on,
+				.dup_frame         = dup_frame,
+				.geometry_dirty    = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h),
+				.present_dirty_gen = present_dirty_gen,
+				.fast_forward      = fast_forward,
+				.presentation_drop = presentation_drop_supported,
+				.audio_active      = SND_isActive(),
+				.force_present     = dup_force_present,
+				.max_streak        = 30,
+			};
+			if (dupskip_should_skip(&g_dup, &dc)) {
+				GFX_finishFrameWork(); // close this frame's work sample for the governor batch
+				return;
 			}
+			dup_force_present = 0;
 		}
-	}
-	{
-		static int skip_on = -1;
-		if (skip_on == -1) skip_on = (getenv("ZERO_DUP_SKIP") != NULL);
-		static int dup_streak = 0;
-		static unsigned clean_gen = 0;
-		int geometry_dirty = (renderer.dst_p==0 || width!=renderer.true_w || height!=renderer.true_h);
-		// NOTE: show_debug deliberately NOT consulted — the HUD is an observer and must
-		// not change the policy it displays (Codex device-gate finding: the old rail
-		// invalidated every skip measurement taken with the HUD on). The ~31-frame
-		// forced present keeps the 1Hz HUD text adequately live during skip runs.
-		if (skip_on && dup_frame && !geometry_dirty && clean_gen == present_dirty_gen
-			&& !fast_forward && !presentation_drop_supported
-			&& SND_isActive() && !dup_force_present && dup_streak < 30) {
-			dup_streak++;
-			GFX_finishFrameWork(); // close this frame's work sample for the governor batch
-			return;
-		}
-		dup_streak = 0;
-		dup_force_present = 0;
-		clean_gen = present_dirty_gen;
 	}
 
-	fps_ticks += 1;
-	
+	fps_ticks += 1; // PRESENTED frame (we did not skip) — distinct from gen_ticks (generation)
+
 	if (downsample) pitch /= 2; // everything expects 16 but we're downsampling from 32
 	
 	// if source has changed size (or forced by dst_p==0)
@@ -5948,6 +5931,7 @@ static void Menu_loop(void) {
 			sec_start = SDL_GetTicks();
 			cpu_ticks = 0;
 			fps_ticks = 0;
+			gen_ticks = 0;
 			cpu_double = 0;
 			pthread_mutex_lock(&core_mx);
 			should_run_core = 1;
@@ -5993,7 +5977,10 @@ static void trackFPS(void) {
 	uint32_t now = SDL_GetTicks();
 	if (now - sec_start>=1000) {
 		double last_time = (double)(now - sec_start) / 1000;
-		fps_double = fps_ticks / last_time;
+		// GENERATION rate = core.run epochs, counted at the run-loop boundary — includes frames
+		// the core produced with a NULL/duplicate video callback (Codex F1: fps_ticks-in-present
+		// missed those). Presented rate (fps_ticks) is kept distinct for pacing diagnostics.
+		fps_double = gen_ticks / last_time;
 #ifdef ZERO_FRONTEND_THREADING_V2
 		if (zero_ftv2_depth2) {
 			// Codex #5: depth-2 generation = epochs completed, counted on MAIN in the drain
@@ -6047,6 +6034,7 @@ static void trackFPS(void) {
 		sec_start = now;
 		cpu_ticks = 0;
 		fps_ticks = 0;
+		gen_ticks = 0;
 
 		// LOG_info("fps: %f cpu: %f\n", fps_double, cpu_double);
 	}
@@ -6634,6 +6622,8 @@ int main(int argc , char* argv[]) {
 			} else {
 				core.run();  // depth<2 (and every guard-off build): plain serial, video_refresh
 				             // presents inline on MAIN — zero engine overhead (F23-consistent).
+				gen_ticks++; // GENERATED epoch, counted at the run-loop on MAIN — includes frames
+				             // the core emits with a NULL/duplicate video callback (Codex F1).
 			}
 				if (!use_ftv2) limitFF();
 			trackFPS();

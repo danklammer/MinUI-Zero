@@ -19,6 +19,7 @@
 #include "defines.h"
 #include "api.h"
 #include "ff_audio_rate.h"
+#include "snd_pacing.h"
 #include "utils.h"
 
 ///////////////////////////////
@@ -1398,10 +1399,16 @@ static void SND_measureFastForward(size_t frames) {
 			(double)snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16);
 	}
 }
+// True iff a SND_batchSamples call would actually accept + pace audio (live, unpaused, with a
+// usable ring and resampler). SND_batchSamples and SND_isActive share this so they can never
+// drift (Codex F2); the field logic lives in snd_pacing.h so it is unit-testable without SND.
+static int snd_can_pace(void) {
+	return snd_pacing_ok(snd.initialized, atomic_load(&snd.paused), snd.buffer, snd.frame_count, snd.resample != NULL);
+}
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_sound_write / plat_sound_write_resample
 	// Libretro expects the number accepted. With no live device/consumer, discard audio
 	// rather than filling a preserved ring and blocking the emulation thread forever.
-	if (!snd.initialized || atomic_load(&snd.paused) || !snd.buffer || snd.frame_count==0 || !snd.resample) return frame_count;
+	if (!snd_can_pace()) return frame_count;
 	// (paused: device closed for sleep — no consumer exists; writing would only queue
 	// stale audio for resume and leave a future concurrent producer waiting on timeouts)
 	// return frame_count; // TODO: tmp, silent
@@ -1483,7 +1490,12 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 }
 
 int SND_isActive(void) {
-	return snd.initialized;
+	// "Actively pacing", not merely "init attempted": present-skip relies on the audio ring to
+	// backpressure emulation in place of the vsync waits it drops. A failed ring alloc leaves
+	// initialized=1 with an unusable buffer (SND_batchSamples returns immediately, no
+	// backpressure) — skipping then would let the core run free of any pacing (Codex P1).
+	// Exactly the SND_batchSamples pacing predicate (Codex F2: one source, no drift).
+	return snd_can_pace();
 }
 void SND_getStats(SND_Stats* out) {
 	if (!out) return;

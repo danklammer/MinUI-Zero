@@ -167,3 +167,10 @@ after 2 min idle — have Dan power-tap; after `killall keymon.elf` RESTART it m
 - **Borrow freely.** This is a community fork scene — adapt code from the reference forks as
   needed; keep attribution as a courtesy. Don't spend effort on license analysis or clean-room
   reimplementation.
+- **Log + keep working documents in `.notes/`** (gitignored, at the repo root). As you work,
+  write plans, triage notes, decisions and their rationale, Codex review prompts/responses,
+  benchmark and measurement data, build logs, and design docs there — anything that isn't
+  shipping code. Do it as you go, not just at the end; give each a clear or dated name and tell
+  Dan the path. Never keep working state only in chat, or on a feature branch/worktree where a
+  cleanup could lose it — `.notes/` persists across branch and worktree churn, so it's the
+  durable home for it. Keep it tidy enough to find things later.

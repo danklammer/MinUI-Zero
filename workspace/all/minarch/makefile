@@ -24,7 +24,7 @@ LIBRETRO_COMMON_HASH = a59514233de7ea31c6b78d7c8dbc438aee81c8e8
 LIBRETRO_COMMON_PIN = libretro-common/.minui-zero-$(LIBRETRO_COMMON_HASH)
 .PHONY: $(LIBRETRO_COMMON_PIN)
 INCDIR = -I. -I./libretro-common/include/ -I../common/ -I../../$(PLATFORM)/platform/
-SOURCE = $(TARGET).c ../common/scaler.c ../common/utils.c ../common/save_io.c ../common/api.c ../common/governor.c ../common/gov_memory.c ../common/telemetry.c ../../$(PLATFORM)/platform/platform.c
+SOURCE = $(TARGET).c ../common/scaler.c ../common/utils.c ../common/save_io.c ../common/api.c ../common/governor.c ../common/gov_memory.c ../common/dupskip.c ../common/telemetry.c ../../$(PLATFORM)/platform/platform.c
 
 CC = $(CROSS_COMPILE)gcc
 CFLAGS   = $(ARCH) -fomit-frame-pointer -DZERO_UV_ENGINE

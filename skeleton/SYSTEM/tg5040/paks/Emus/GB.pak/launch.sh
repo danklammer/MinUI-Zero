@@ -16,4 +16,8 @@ export MINARCH_FMAX=1008000
 # NOTE: MINARCH_SND_RING_MS=100 was measured a NET LOSS here (Bionic 4-cell, both
 # devices: skip-on underruns 0-1 at the default ring vs 75-87 at 100ms) — the
 # override mechanism remains for future per-system receipts; the default stays.
-minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
+# Present-skip default-on: byte-identical frames skip GLES upload/submit/swap so the CPU
+# idles sooner. Paused/static scenes -20..-46% CPU (100% skip when fully static), 0% dup =
+# break-even; qualified both devices/both cores, 0 underrun regression. Gate is presence-only
+# (getenv!=NULL) — remove this prefix to disable; =0 would NOT disable.
+ZERO_DUP_SKIP=1 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
