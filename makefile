@@ -27,7 +27,7 @@ RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
 # can re-issue an existing name and zip -r would append into the shipped artifact)
 RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | sed -E 's/.*-([0-9]+)-base\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
-LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba
+LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba fake-08
 
 ###########################################################
 
@@ -137,6 +137,7 @@ cores: # TODO: can't assume every platform will have the same stock cores (platf
 	cp ./workspace/$(PLATFORM)/cores/output/picodrive_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/GG.pak
 	cp ./workspace/$(PLATFORM)/cores/output/picodrive_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/SMS.pak
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/VB.pak
+	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak
 
 common: build system cores
 	

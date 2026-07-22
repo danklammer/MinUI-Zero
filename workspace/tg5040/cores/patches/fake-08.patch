@@ -1,17 +1,5 @@
-diff --git forkSrcPrefix/platform/libretro/libretro.cpp forkDstPrefix/platform/libretro/libretro.cpp
-index d95ccb6cab52abfe7620ff84dd5cbb450bafe750..24687335ad410096aa48f29e13dcb479171a06fc 100644
---- forkSrcPrefix/platform/libretro/libretro.cpp
-+++ forkDstPrefix/platform/libretro/libretro.cpp
-@@ -636,6 +636,7 @@ EXPORT bool retro_load_game(struct retro_game_info const *info)
-     else {
-         _vm->QueueCartChange(info->path);
-     }
-+	_vm->UpdateAndDraw();
- 
-     return true;
- }
 diff --git forkSrcPrefix/platform/libretro/Makefile forkDstPrefix/platform/libretro/Makefile
-index be0f1b46bb3ab10be4a9f896f5e8841dd630b35b..f6b4d892627ec2a81b01ddb4da7f0c7a8022221f 100644
+index 1033395..fb87173 100644
 --- forkSrcPrefix/platform/libretro/Makefile
 +++ forkDstPrefix/platform/libretro/Makefile
 @@ -123,7 +123,16 @@ else ifeq ($(platform), miyoomini)
@@ -32,3 +20,29 @@ index be0f1b46bb3ab10be4a9f896f5e8841dd630b35b..f6b4d892627ec2a81b01ddb4da7f0c7a
  else ifeq ($(platform), gcw0)
     TARGET := $(TARGET_NAME)_libretro_gcw0.so
     CC = /opt/gcw0-toolchain/usr/bin/mipsel-linux-gcc
+@@ -162,6 +171,13 @@ else
+    CXXFLAGS += -O2
+ endif
+ 
++# MinUI Zero: tg5040 gets -O3 (overriding the default -O2 above, which is appended after the
++# platform block) to match the fork's -O3 core standard; +fomit-frame-pointer for the Lua VM.
++ifeq ($(platform), tg5040)
++   CFLAGS += -O3 -fomit-frame-pointer
++   CXXFLAGS += -O3 -fomit-frame-pointer
++endif
++
+ include Makefile.common
+ 
+ CC = $(CXX)
+diff --git forkSrcPrefix/platform/libretro/libretro.cpp forkDstPrefix/platform/libretro/libretro.cpp
+index 589d4f2..792fd89 100644
+--- forkSrcPrefix/platform/libretro/libretro.cpp
++++ forkDstPrefix/platform/libretro/libretro.cpp
+@@ -765,6 +765,7 @@ EXPORT bool retro_load_game(struct retro_game_info const *info)
+     else {
+         _vm->QueueCartChange(info->path);
+     }
++	_vm->Step();
+ 
+     return true;
+ }

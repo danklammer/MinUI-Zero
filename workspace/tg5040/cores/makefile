@@ -1,5 +1,5 @@
 CORES = fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus
-CORES+= mednafen_pce_fast mednafen_vb mednafen_supafaust mgba # skipped (upstream drift): fake-08, pokemini, race
+CORES+= mednafen_pce_fast mednafen_vb mednafen_supafaust mgba fake-08 # still skipped (upstream drift): pokemini, race
 
 ###############################
 
@@ -29,6 +29,9 @@ mgba_HASH               = 6dce57eef127dc4cc292644f38196e0e7c58590c
 mednafen_pce_fast_REPO = https://github.com/libretro/beetle-pce-fast-libretro
 mednafen_vb_REPO = https://github.com/libretro/beetle-vb-libretro
 
+# PICO-8 via Fake-08. Pinned to MyMinUI's tested commit (Turro75/MyMinUI) to dodge the upstream
+# drift that made this fork skip it earlier; borrow-freely per the community fork scene.
+fake-08_HASH = 814991a2571ad3970e386cef48f3b148aa1c27b9
 fake-08_REPO = https://github.com/jtothebell/fake-08
 fake-08_CORE = fake08_libretro.so
 fake-08_BUILD_PATH = fake-08/platform/libretro
