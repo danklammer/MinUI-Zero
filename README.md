@@ -128,7 +128,7 @@ screen, then sleeps — cooler charging, honest percentages.
 **Ready to play:** Game Boy Color · Game Boy Advance · NES · SNES · Sega Genesis · PlayStation
 
 **Also aboard, dormant:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System,
-TurboGrafx-16, Virtual Boy — create the matching Roms folder (eg. "Virtual Boy (VB)")
+TurboGrafx-16, Virtual Boy, PICO-8 — create the matching Roms folder (eg. "Virtual Boy (VB)")
 and the system appears, tuned core already installed.
 
 ## What's left out
