@@ -117,6 +117,8 @@ static int is_host = 0;
 static int shm_size = sizeof(Settings);
 static int is_plus = 0;
 
+static void setMute(int flag); // defined below; used by InitSettings to avoid the power-on pop
+
 void InitSettings(void) {
 	is_plus = access("/customer/app/axp_test", F_OK)==0;
 	
@@ -152,9 +154,16 @@ void InitSettings(void) {
 	}
 	printf("brightness: %i\nspeaker: %i\nheadphones: %i\njack: %i\n", settings->brightness, settings->speaker, settings->headphones, settings->jack);
 
+	// Audio pop on power-on/resume: the DAC channel used to be enabled BEFORE the volume was
+	// applied, so the output snapped from off to its default level and that step hit the speaker
+	// as a pop. Mute first, bring the channel up, set the real level while still muted, let the
+	// rail settle, then unmute. Same mute ioctl the volume path already uses (MI_AO_SETMUTE).
+	setMute(1);
 	MI_AO_Enable(0);
 	MI_AO_EnableChn(0,0);
 	SetVolume(GetVolume());
+	usleep(40000); // ~40ms for the DAC/amp to settle before we let it through
+	setMute(0);
 	SetBrightness(GetBrightness());
 }
 void QuitSettings(void) {
