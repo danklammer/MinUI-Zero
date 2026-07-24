@@ -574,3 +574,18 @@ char* PLAT_getModel(void) {
 int PLAT_isOnline(void) {
 	return online;
 }
+
+///////////////////////////////
+// Debug-HUD hooks. Zero's frontend calls these unconditionally; the HUD itself is not
+// implemented on this platform yet, so these are honest no-ops (not a silent partial HUD).
+// PLAT_getGameRect must still report a sane rect — callers divide by w/h.
+
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
+	// no HUD compositing on miyoomini yet
+}
+
+void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
+	*x = 0; *y = 0;
+	*w = vid.video ? vid.video->w : FIXED_WIDTH;
+	*h = vid.video ? vid.video->h : FIXED_HEIGHT;
+}
