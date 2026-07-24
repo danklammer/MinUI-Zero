@@ -22,10 +22,17 @@ BUILD_HASH:=$(shell git rev-parse --short HEAD)
 ZERO_VERSION=v1.5.3
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
-RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
+# Device family for the release name: tg5040 -> trimui, miyoomini -> miyoo. Per-family zips keep
+# the mature trimui build from being re-cut every time the new miyoo port churns.
+FAMILY_tg5040=trimui
+FAMILY_miyoomini=miyoo
+FAMILY=$(if $(FAMILY_$(firstword $(PLATFORMS))),$(FAMILY_$(firstword $(PLATFORMS))),$(firstword $(PLATFORMS)))
+# miyoo is experimental: mark its artifacts so nobody mistakes it for the shipped platform
+RELEASE_BETA_miyoo=-alpha
+RELEASE_BASE=MinUI-Zero-$(FAMILY)-$(RELEASE_TIME)$(RELEASE_BETA)$(RELEASE_BETA_$(FAMILY))
 # highest existing suffix + 1 — counting files breaks after any deletion (a stale count
 # can re-issue an existing name and zip -r would append into the shipped artifact)
-RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | sed -E 's/.*-([0-9]+)-base\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
+RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+\.zip" | sed -E 's/.*-([0-9]+)\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
 LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba fake-08
 
@@ -167,11 +174,23 @@ setup: name
 done:
 	say "done" 2>/dev/null || true
 
+# card-root bootstrap folder per family (trimui/ for TrimUI, miyoo/ for Miyoo)
+BOOT_DIR_trimui=trimui
+BOOT_DIR_miyoo=miyoo
+BOOT_DIR=$(BOOT_DIR_$(FAMILY))
+
 special:
+ifeq (trimui,$(FAMILY))
 	# tg5040 (TrimUI Brick / Smart Pro): set up the trimui .tmp_update bootstrap only
 	mv ./build/BOOT/common ./build/BOOT/.tmp_update
 	mv ./build/BOOT/trimui ./build/BASE/
 	cp -R ./build/BOOT/.tmp_update ./build/BASE/trimui/app/
+else
+	# miyoo (Miyoo Mini Plus): the stock loader runs miyoo/app/<platform>.sh from the card root
+	mv ./build/BOOT/common ./build/BOOT/.tmp_update 2>/dev/null || true
+	mv ./build/BOOT/miyoo ./build/BASE/
+	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/ 2>/dev/null || true
+endif
 
 tidy:
 	# ----------------------------------------------------
@@ -219,11 +238,14 @@ package: tidy
 			done; \
 		done; \
 	done; true
-	mkdir -p ./build/BASE/LICENSES/unzip60
-	cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/
+	@if [ -f ./workspace/tg5040/other/unzip60/LICENSE ]; then \
+		mkdir -p ./build/BASE/LICENSES/unzip60 && \
+		cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/; \
+	fi
 	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
-	@if [ -e ./releases/$(RELEASE_NAME)-base.zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME)-base.zip already exists — refusing to overwrite a release"; exit 1; fi
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
+	@if [ -e ./releases/$(RELEASE_NAME).zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME).zip already exists — refusing to overwrite a release"; exit 1; fi
+	# BOOT_DIR is the per-family bootstrap folder that must sit at the card root
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools LICENSES $(BOOT_DIR) MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################
