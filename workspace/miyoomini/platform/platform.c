@@ -258,6 +258,9 @@ static void fb_bindPage(int page) {
 }
 static void fb_pan(int page) {
 	vid.vinfo.yoffset = vid.vinfo.yres * page;
+	// activate is REQUIRED: without it some fbdev drivers accept the ioctl but never latch the
+	// new yoffset, so the panel keeps scanning the old page while memory updates invisibly.
+	vid.vinfo.activate = FB_ACTIVATE_VBL;
 	ioctl(vid.fdfb, FBIOPAN_DISPLAY, &vid.vinfo);
 }
 
@@ -289,7 +292,9 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.vinfo.yres_virtual = FIXED_HEIGHT * 2;
 	vid.vinfo.bits_per_pixel = 32;
 	vid.vinfo.yoffset = 0;
+	vid.vinfo.activate = FB_ACTIVATE_NOW;
 	ioctl(vid.fdfb, FBIOPUT_VSCREENINFO, &vid.vinfo);
+	ioctl(vid.fdfb, FBIOBLANK, FB_BLANK_UNBLANK); // previous owner may have blanked the panel
 	ioctl(vid.fdfb, FBIOGET_FSCREENINFO, &vid.finfo);
 	ioctl(vid.fdfb, FBIOGET_VSCREENINFO, &vid.vinfo);
 
