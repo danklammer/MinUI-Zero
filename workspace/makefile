@@ -27,10 +27,13 @@ all:
 	cd ./all/confirm/ && make
 	# Tune Voltage harness binaries (undervolt calibration) — build inside the mount;
 	# the top makefile copies them into the pak host-side (build/ is outside the container).
+	# tg5040-only: the TCS4838 PMIC engine and its aarch64 compiler path don't exist elsewhere.
+ifeq (tg5040,$(PLATFORM))
 	mkdir -p ./tg5040/undervolt/build
 	/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -o ./tg5040/undervolt/build/uvtool ./tg5040/undervolt/uvtool.c
 	/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -o ./tg5040/undervolt/build/stress ./tg5040/undervolt/stress.c -lpthread
 	/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -o ./tg5040/undervolt/build/deadman ./tg5040/undervolt/deadman.c
+endif
 	# A release must not reuse an output .so built from an older checkout, patch, or flags.
 	# Pin/patch verification runs inside the core makefile before this clean rebuild.
 	cd ./$(PLATFORM)/cores && make verify && make clean && make
