@@ -277,7 +277,7 @@ SDL_Surface* PLAT_initVideo(void) {
 	// SDL2: timers only. We do NOT init SDL video — this SoC's only SDL2 video driver (mmiyoo)
 	// fails with "No available video device" when anything else owns the panel, and we present
 	// through fbdev anyway. Audio is initialized separately by SND_init (driver: MMIYOO).
-	SDL_Init(SDL_INIT_TIMER);
+	SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS); // EVENTS: api.c PAD_poll uses SDL_PollEvent
 
 	// --- fbdev: 32bpp, double-buffered (yres_virtual = 2 * yres) ---
 	vid.fdfb = open("/dev/fb0", O_RDWR);
@@ -329,7 +329,13 @@ SDL_Surface* PLAT_initVideo(void) {
 	// memset(vid.buffer.vadd, 0, MMA_PAGE);
 	
 	vid.page = 1;
-	vid.direct = 1;
+	// The frontend renders RGB565 (FIXED_DEPTH) everywhere. Upstream could return vid.video
+	// because SDL 1.2's SDL_SetVideoMode produced a 16bpp surface and the custom SDL converted
+	// on flip. Our vid.video now wraps the RAW 32bpp framebuffer, so returning it is a depth
+	// mismatch (observed: 'Unknown pixel format' + 'SDL_UpperBlit: passed a NULL surface').
+	// Always render into the MMA-backed RGB565 screen and let MI_GFX convert 565->ARGB8888
+	// during the present blit; format conversion is free in the 2D engine.
+	vid.direct = 0;
 	vid.width = FIXED_WIDTH;
 	vid.height = FIXED_HEIGHT;
 	vid.pitch = FIXED_PITCH;
@@ -396,7 +402,7 @@ void PLAT_setVsync(int vsync) {
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
-	vid.direct = w==FIXED_WIDTH && h==FIXED_HEIGHT && pitch==FIXED_PITCH;
+	vid.direct = 0; // see PLAT_initVideo: the frontend always gets the RGB565 surface
 	vid.width = w;
 	vid.height = h;
 	vid.pitch = pitch;
