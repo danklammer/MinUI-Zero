@@ -30,8 +30,28 @@
 int is_560p = 0;
 int is_plus = 0;
 
-#define	pixelsPa	unused1
 #define ALIGN4K(val)	((val+4095)&(~4095))
+
+// NOTE: these 16bpp render targets use RGBA_MASK_565 — SDL2 requires real channel
+// masks; RGBA_MASK_AUTO (0,0,0,0) was an SDL 1.2 convenience and fails there.
+// SDL 1.2 let the upstream code stash the MMA physical address in SDL_Surface::unused1
+// (`#define pixelsPa unused1`). SDL2 removed that field, so keep a tiny side table instead —
+// only the render target and the framebuffer-page wrapper ever need a physical address.
+#define PA_SLOTS 4
+static struct { SDL_Surface* s; MI_PHY pa; } pa_tbl[PA_SLOTS];
+static void surf_setPa(SDL_Surface* s, MI_PHY pa) {
+	if (!s) return;
+	for (int i=0;i<PA_SLOTS;i++) if (pa_tbl[i].s==s) { pa_tbl[i].pa=pa; return; }
+	for (int i=0;i<PA_SLOTS;i++) if (!pa_tbl[i].s)   { pa_tbl[i].s=s; pa_tbl[i].pa=pa; return; }
+}
+static MI_PHY surf_getPa(SDL_Surface* s) {
+	if (!s) return 0;
+	for (int i=0;i<PA_SLOTS;i++) if (pa_tbl[i].s==s) return pa_tbl[i].pa;
+	return 0;
+}
+static void surf_clearPa(SDL_Surface* s) {
+	for (int i=0;i<PA_SLOTS;i++) if (pa_tbl[i].s==s) { pa_tbl[i].s=NULL; pa_tbl[i].pa=0; }
+}
 
 //
 //	Get GFX_ColorFmt from SDL_Surface
@@ -56,7 +76,14 @@ static inline MI_GFX_ColorFmt_e	GFX_ColorFmt(SDL_Surface *surface) {
 //	Flush write cache of needed segments
 //		x and w are not considered since 4K units
 //
+// Range of the fbdev mmap. MI_SYS_FlushInvCache is only valid for MMA-allocated memory, and the
+// framebuffer is not: flushing it takes down the process on the first present.
+static void*  g_fb_base = NULL;
+static size_t g_fb_len  = 0;
+
 static inline void FlushCacheNeeded(void* pixels, uint32_t pitch, uint32_t y, uint32_t h) {
+	if (g_fb_base && (uintptr_t)pixels >= (uintptr_t)g_fb_base
+	              && (uintptr_t)pixels <  (uintptr_t)g_fb_base + g_fb_len) return; // fb: not MMA
 	uintptr_t pixptr = (uintptr_t)pixels;
 	uintptr_t startaddress = (pixptr + pitch*y)&(~4095);
 	uint32_t size = ALIGN4K(pixptr + pitch*(y+h)) - startaddress;
@@ -71,7 +98,8 @@ static inline void FlushCacheNeeded(void* pixels, uint32_t pitch, uint32_t y, ui
 //		nowait : 0 = wait until done / 1 = no wait
 //
 static inline void GFX_BlitSurfaceExec(SDL_Surface *src, SDL_Rect *srcrect, SDL_Surface *dst, SDL_Rect *dstrect, uint32_t rotate, uint32_t mirror, uint32_t nowait) {
-	if ((src)&&(dst)&&(src->pixelsPa)&&(dst->pixelsPa)) {
+	MI_PHY srcPa = surf_getPa(src), dstPa = surf_getPa(dst);
+	if ((src)&&(dst)&&(srcPa)&&(dstPa)) {
 		MI_GFX_Surface_t Src;
 		MI_GFX_Surface_t Dst;
 		MI_GFX_Rect_t SrcRect;
@@ -79,7 +107,7 @@ static inline void GFX_BlitSurfaceExec(SDL_Surface *src, SDL_Rect *srcrect, SDL_
 		MI_GFX_Opt_t Opt;
 		MI_U16 Fence;
 
-		Src.phyAddr = src->pixelsPa;
+		Src.phyAddr = srcPa;
 		Src.u32Width = src->w;
 		Src.u32Height = src->h;
 		Src.u32Stride = src->pitch;
@@ -97,7 +125,7 @@ static inline void GFX_BlitSurfaceExec(SDL_Surface *src, SDL_Rect *srcrect, SDL_
 		}
 		FlushCacheNeeded(src->pixels, src->pitch, SrcRect.s32Ypos, SrcRect.u32Height);
 
-		Dst.phyAddr = dst->pixelsPa;
+		Dst.phyAddr = dstPa;
 		Dst.u32Width = dst->w;
 		Dst.u32Height = dst->h;
 		Dst.u32Stride = dst->pitch;
@@ -122,20 +150,29 @@ static inline void GFX_BlitSurfaceExec(SDL_Surface *src, SDL_Rect *srcrect, SDL_
 		else FlushCacheNeeded(dst->pixels, dst->pitch, DstRect.s32Ypos, DstRect.u32Height);
 
 		memset(&Opt, 0, sizeof(Opt));
-		if (src->flags & SDL_SRCALPHA) {
+		// SDL2: blend/colorkey state moved off SDL_Surface::flags and format->{alpha,colorkey}
+		// onto accessors. The present path is an opaque blit, so both are usually inactive.
+		SDL_BlendMode bmode = SDL_BLENDMODE_NONE;
+		SDL_GetSurfaceBlendMode(src, &bmode);
+		if (bmode != SDL_BLENDMODE_NONE) {
+			Uint8 amod = SDL_ALPHA_OPAQUE;
+			SDL_GetSurfaceAlphaMod(src, &amod);
 			Opt.eDstDfbBldOp = E_MI_GFX_DFB_BLD_INVSRCALPHA;
-			if (src->format->alpha != SDL_ALPHA_OPAQUE) {
-				Opt.u32GlobalSrcConstColor = (src->format->alpha << (src->format->Ashift - src->format->Aloss)) & src->format->Amask;
+			if (amod != SDL_ALPHA_OPAQUE && src->format->Amask) {
+				Opt.u32GlobalSrcConstColor = (amod << (src->format->Ashift - src->format->Aloss)) & src->format->Amask;
 				Opt.eDFBBlendFlag = (MI_Gfx_DfbBlendFlags_e)
 						   (E_MI_GFX_DFB_BLEND_SRC_PREMULTIPLY | E_MI_GFX_DFB_BLEND_COLORALPHA | E_MI_GFX_DFB_BLEND_ALPHACHANNEL);
 			} else	Opt.eDFBBlendFlag = E_MI_GFX_DFB_BLEND_SRC_PREMULTIPLY;
 		}
-		if (src->flags & SDL_SRCCOLORKEY) {
-			Opt.stSrcColorKeyInfo.bEnColorKey = TRUE;
-			Opt.stSrcColorKeyInfo.eCKeyFmt = Src.eColorFmt;
-			Opt.stSrcColorKeyInfo.eCKeyOp = E_MI_GFX_RGB_OP_EQUAL;
-			Opt.stSrcColorKeyInfo.stCKeyVal.u32ColorStart =
-			Opt.stSrcColorKeyInfo.stCKeyVal.u32ColorEnd = src->format->colorkey;
+		{
+			Uint32 ckey;
+			if (SDL_HasColorKey(src) && SDL_GetColorKey(src, &ckey) == 0) {
+				Opt.stSrcColorKeyInfo.bEnColorKey = TRUE;
+				Opt.stSrcColorKeyInfo.eCKeyFmt = Src.eColorFmt;
+				Opt.stSrcColorKeyInfo.eCKeyOp = E_MI_GFX_RGB_OP_EQUAL;
+				Opt.stSrcColorKeyInfo.stCKeyVal.u32ColorStart =
+				Opt.stSrcColorKeyInfo.stCKeyVal.u32ColorEnd = ckey;
+			}
 		}
 		Opt.eSrcDfbBldOp = E_MI_GFX_DFB_BLD_ONE;
 		Opt.eRotate = (MI_GFX_Rotate_e)rotate;
@@ -177,24 +214,52 @@ void PLAT_quitInput(void) {
 
 ///////////////////////////////
 
+// MMA render-buffer page size. Upstream used api.h PAGE_SIZE, which is a PAGE_SCALE(=3)
+// SUPERSAMPLED buffer (10.5MB for 2 pages) sized for the old custom-SDL scaling path. In the
+// fbdev model MI_GFX scales at present time, so the render target never exceeds panel size.
+// MEASURED: the MMA heap (mma_heap_name0) is 21MB with only ~6MB free, so the 10.5MB request
+// failed outright -- MI_SYS_MMA_Alloc returned NULL and the first memset segfaulted.
+#define MMA_PAGE ALIGN4K(FIXED_PITCH * FIXED_HEIGHT)
+
 typedef struct HWBuffer {
 	MI_PHY padd;
 	void* vadd;
 } HWBuffer;
 
 static struct VID_Context {
-	SDL_Surface* video;
-	SDL_Surface* screen;
+	SDL_Surface* video;   // presentation target: a wrapper around the CURRENT fb page
+	SDL_Surface* screen;  // render target handed to the frontend (MMA-backed, MI_GFX-blittable)
 	HWBuffer buffer;
-	
+
 	int page;
 	int width;
 	int height;
 	int pitch;
-	
+
 	int direct;
 	int cleared;
+
+	// fbdev presentation (SDL2 has no SDL_SetVideoMode/SDL_Flip, and this SoC's SDL2 video
+	// driver refuses to init while another process owns the panel — MEASURED: "No available
+	// video device". MyMinUI uses raw fbdev here too, so this is the proven path.)
+	int fdfb;
+	struct fb_fix_screeninfo finfo;
+	struct fb_var_screeninfo vinfo;
+	void* fbmmap;
+	size_t fbsize;
+	int page_bytes;       // bytes per visible page (line_length * yres)
 } vid;
+
+// Point vid.video at framebuffer page `page`. pixelsPa carries the PHYSICAL address so
+// GFX_BlitSurfaceExec can hand it to MI_GFX and let the 2D engine scale straight into scanout.
+static void fb_bindPage(int page) {
+	vid.video->pixels   = (uint8_t*)vid.fbmmap + (size_t)page * vid.page_bytes;
+	surf_setPa(vid.video, vid.finfo.smem_start + (size_t)page * vid.page_bytes);
+}
+static void fb_pan(int page) {
+	vid.vinfo.yoffset = vid.vinfo.yres * page;
+	ioctl(vid.fdfb, FBIOPAN_DISPLAY, &vid.vinfo);
+}
 
 #define MODES_PATH "/sys/class/graphics/fb0/modes"
 static int hasMode(const char *path, const char *mode) {
@@ -209,16 +274,59 @@ SDL_Surface* PLAT_initVideo(void) {
 	is_560p = hasMode(MODES_PATH, "752x560p") && exists(USERDATA_PATH "/enable-560p");
 	LOG_info("is 560p: %i\n", is_560p);
 	
-	putenv("SDL_HIDE_BATTERY=1"); // using MiniUI's custom SDL
-	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
-	SDL_ShowCursor(0);
-	
-	vid.video = SDL_SetVideoMode(FIXED_WIDTH, FIXED_HEIGHT, FIXED_DEPTH, SDL_SWSURFACE);
-	
-	int buffer_size = ALIGN4K(PAGE_SIZE) * PAGE_COUNT;
-	MI_SYS_MMA_Alloc(NULL, ALIGN4K(buffer_size), &vid.buffer.padd);
+	// SDL2: timers only. We do NOT init SDL video — this SoC's only SDL2 video driver (mmiyoo)
+	// fails with "No available video device" when anything else owns the panel, and we present
+	// through fbdev anyway. Audio is initialized separately by SND_init (driver: MMIYOO).
+	SDL_Init(SDL_INIT_TIMER);
+
+	// --- fbdev: 32bpp, double-buffered (yres_virtual = 2 * yres) ---
+	vid.fdfb = open("/dev/fb0", O_RDWR);
+	ioctl(vid.fdfb, FBIOGET_FSCREENINFO, &vid.finfo);
+	ioctl(vid.fdfb, FBIOGET_VSCREENINFO, &vid.vinfo);
+	vid.vinfo.xres = FIXED_WIDTH;
+	vid.vinfo.yres = FIXED_HEIGHT;
+	vid.vinfo.xres_virtual = FIXED_WIDTH;
+	vid.vinfo.yres_virtual = FIXED_HEIGHT * 2;
+	vid.vinfo.bits_per_pixel = 32;
+	vid.vinfo.yoffset = 0;
+	ioctl(vid.fdfb, FBIOPUT_VSCREENINFO, &vid.vinfo);
+	ioctl(vid.fdfb, FBIOGET_FSCREENINFO, &vid.finfo);
+	ioctl(vid.fdfb, FBIOGET_VSCREENINFO, &vid.vinfo);
+
+	vid.page_bytes = vid.finfo.line_length * vid.vinfo.yres;
+	vid.fbsize     = (size_t)vid.page_bytes * 2;
+	vid.fbmmap     = mmap(NULL, vid.fbsize, PROT_READ|PROT_WRITE, MAP_SHARED, vid.fdfb, 0);
+	g_fb_base = vid.fbmmap; g_fb_len = vid.fbsize;
+	memset(vid.fbmmap, 0, vid.fbsize);
+	LOG_info("fb: %dx%d %dbpp line=%d phys=%p\n", vid.vinfo.xres, vid.vinfo.yres,
+		vid.vinfo.bits_per_pixel, vid.finfo.line_length, (void*)vid.finfo.smem_start);
+
+	// Wrapper surface over a page; pixels + physical address are re-pointed per flip by
+	// fb_bindPage(). NOTE: must be created with a REAL pointer — SDL2's CreateRGBSurfaceFrom
+	// dereferences it (SDL 1.2 tolerated NULL, which is what upstream passed).
+	vid.video = SDL_CreateRGBSurfaceFrom(vid.fbmmap, FIXED_WIDTH, FIXED_HEIGHT, 32,
+		vid.finfo.line_length, 0x00FF0000,0x0000FF00,0x000000FF,0xFF000000); // ARGB (fbset: r@16 g@8 b@0 a@24)
+	if (!vid.video) LOG_info("fb: SDL_CreateRGBSurfaceFrom failed: %s\n", SDL_GetError());
+	fb_bindPage(0);
+
+	// The MI (SigmaStar) layer used to be initialized for us by the custom SDL 1.2 inside
+	// SDL_Init(SDL_INIT_VIDEO). We no longer init SDL video, so bring MI_SYS/MI_GFX up here.
+	// Without this MI_SYS_MMA_Alloc silently returns NULL (MEASURED: vadd=(nil) padd=0) and
+	// the first memset on the render buffer segfaults.
+	if (MI_SYS_Init() != MI_SUCCESS) LOG_info("mi_sys: MI_SYS_Init FAILED\n");
+	if (MI_GFX_Open() != MI_SUCCESS) LOG_info("mi_gfx: MI_GFX_Open FAILED\n");
+
+	int buffer_size = ALIGN4K(MMA_PAGE) * PAGE_COUNT;
+	// Name the heap explicitly. Passing NULL relied on the custom SDL having already selected a
+	// default heap; on its own it returns NULL here. The device exposes exactly one:
+	// /proc/mi_modules/mi_sys_mma/mma_heap_name0 (21MB total, ~6MB free at the menu).
+	MI_S32 mma_rc = MI_SYS_MMA_Alloc((MI_U8*)"mma_heap_name0", ALIGN4K(buffer_size), &vid.buffer.padd);
+	if (mma_rc != MI_SUCCESS) {
+		LOG_info("mi_sys: MMA_Alloc(mma_heap_name0, %d) failed rc=%d, retrying default heap\n", ALIGN4K(buffer_size), mma_rc);
+		mma_rc = MI_SYS_MMA_Alloc(NULL, ALIGN4K(buffer_size), &vid.buffer.padd);
+	}
 	MI_SYS_Mmap(vid.buffer.padd, ALIGN4K(buffer_size), &vid.buffer.vadd, true);
-	// memset(vid.buffer.vadd, 0, PAGE_SIZE);
+	// memset(vid.buffer.vadd, 0, MMA_PAGE);
 	
 	vid.page = 1;
 	vid.direct = 1;
@@ -227,8 +335,9 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.pitch = FIXED_PITCH;
 	vid.cleared = 0;
 	
-	vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*PAGE_SIZE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_AUTO);
-	vid.screen->pixelsPa = vid.buffer.padd + ALIGN4K(vid.page*PAGE_SIZE);
+	LOG_info("mi_sys: MMA vadd=%p padd=%llx\n", vid.buffer.vadd, (unsigned long long)vid.buffer.padd);
+	vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
+	surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 	memset(vid.screen->pixels, 0, vid.pitch * vid.height);
 	
 	return vid.direct ? vid.video : vid.screen;
@@ -236,23 +345,32 @@ SDL_Surface* PLAT_initVideo(void) {
 
 void PLAT_quitVideo(void) {
 	SDL_FreeSurface(vid.screen);
-	
-	MI_SYS_Munmap(vid.buffer.vadd, ALIGN4K(PAGE_SIZE));
+
+	if (vid.video) { vid.video->pixels = NULL; SDL_FreeSurface(vid.video); vid.video = NULL; }
+	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) {
+		memset(vid.fbmmap, 0, vid.fbsize);   // leave a black panel, not the last frame
+		munmap(vid.fbmmap, vid.fbsize);
+		vid.fbmmap = NULL;
+	}
+	if (vid.fdfb > 0) { close(vid.fdfb); vid.fdfb = 0; }
+
+	MI_SYS_Munmap(vid.buffer.vadd, ALIGN4K(MMA_PAGE));
 	MI_SYS_MMA_Free(vid.buffer.padd);
-	
+	MI_GFX_Close();
+
 	SDL_Quit();
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
-	MI_SYS_FlushInvCache(vid.buffer.vadd + ALIGN4K(vid.page*PAGE_SIZE), ALIGN4K(PAGE_SIZE));
-	MI_SYS_MemsetPa(vid.buffer.padd + ALIGN4K(vid.page*PAGE_SIZE), 0, PAGE_SIZE);
+	MI_SYS_FlushInvCache(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE), ALIGN4K(MMA_PAGE));
+	MI_SYS_MemsetPa(vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE), 0, MMA_PAGE);
 	SDL_FillRect(screen, NULL, 0);
-	// memset(screen->pixels, 0, PAGE_SIZE); // this causes crashing
+	// memset(screen->pixels, 0, MMA_PAGE); // this causes crashing
 }
 void PLAT_clearAll(void) {
 	// buh
-	// MI_SYS_FlushInvCache(vid.buffer.vadd, ALIGN4K(PAGE_SIZE));
-	// MI_SYS_MemsetPa(vid.buffer.padd, 0, PAGE_SIZE);
+	// MI_SYS_FlushInvCache(vid.buffer.vadd, ALIGN4K(MMA_PAGE));
+	// MI_SYS_MemsetPa(vid.buffer.padd, 0, MMA_PAGE);
 	
 	PLAT_clearVideo(vid.screen); // clear backbuffer
 	vid.cleared = 1; // defer clearing frontbuffer until offscreen
@@ -273,7 +391,8 @@ void PLAT_setVsync(int vsync) {
 		putenv("GFX_FLIPWAIT=1");
 		putenv("GFX_BLOCKING=1");
 	}
-	SDL_GetVideoInfo();
+	// (SDL_GetVideoInfo was SDL 1.2 only, and only re-read those env vars for the custom SDL;
+	// we present via fbdev now, so there is nothing to poke.)
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
@@ -285,11 +404,11 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 	if (vid.direct) memset(vid.video->pixels, 0, vid.pitch * vid.height);
 	else {
 		vid.screen->pixels = NULL;
-		vid.screen->pixelsPa = NULL; // otherwise custom SDL will try to free it?
+		surf_clearPa(vid.screen);
 		SDL_FreeSurface(vid.screen);
 		
-		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*PAGE_SIZE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_AUTO);
-		vid.screen->pixelsPa = vid.buffer.padd + ALIGN4K(vid.page*PAGE_SIZE);
+		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
+		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 		memset(vid.screen->pixels, 0, vid.pitch * vid.height);
 	}
 	
@@ -356,16 +475,22 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 
 
 void PLAT_flip(SDL_Surface* IGNORED, int sync) {
-	if (!vid.direct) GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 0,0,1); // TODO: handle aspect clipping
-	SDL_Flip(vid.video);
-	
-	// swap backbuffer
+	// Present: MI_GFX blits (and scales, when the render target is core-sized) from the MMA
+	// buffer straight into the framebuffer page's PHYSICAL address, then we page-flip. The
+	// 2D engine does the scale, so no CPU scaling happens here — that is the whole point of
+	// using this SoC's hardware blitter instead of a software present.
+	int back = vid.page ^ 1;
+	fb_bindPage(back);
+	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 0,0,0); // nowait=0: wait for the blit
+	fb_pan(back);
+	vid.page = back;
+
+	// swap the render-side backbuffer
 	if (!vid.direct) {
-		vid.page ^= 1;
-		vid.screen->pixels = vid.buffer.vadd + ALIGN4K(vid.page*PAGE_SIZE);
-		vid.screen->pixelsPa = vid.buffer.padd + ALIGN4K(vid.page*PAGE_SIZE);
+		vid.screen->pixels = vid.buffer.vadd + ALIGN4K((vid.page&1)*MMA_PAGE);
+		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K((vid.page&1)*MMA_PAGE));
 	}
-	
+
 	if (vid.cleared) {
 		PLAT_clearVideo(vid.screen);
 		vid.cleared = 0;

@@ -16,7 +16,9 @@
 #   sh tools/provision-miyoomini-sdl2.sh [path-to-libSDL2-2.0.so.0]
 set -e
 
-SDL2_TAG=release-2.26.5           # header pin; ABI-compatible with the device's libSDL2-2.0.so.0
+SDL2_TAG=release-2.26.5
+IMG_TAG=release-2.6.3             # SDL2_image headers
+TTF_TAG=release-2.20.2            # SDL2_ttf headers           # header pin; ABI-compatible with the device's libSDL2-2.0.so.0
 BASE_IMAGE=miyoomini-toolchain
 OUT_IMAGE=miyoomini-toolchain-sdl2
 LIB="${1:-.notes/mmp-build/libSDL2-2.0.so.0}"
@@ -24,10 +26,12 @@ LIB="${1:-.notes/mmp-build/libSDL2-2.0.so.0}"
 [ -f "$LIB" ] || { echo "ERROR: device libSDL2 not found at $LIB"; echo "See header comment for how to fetch it."; exit 1; }
 docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || { echo "ERROR: build $BASE_IMAGE first (make shell PLATFORM=miyoomini)"; exit 1; }
 
-WORK=$(mktemp -d)
-cp "$LIB" "$WORK/libSDL2-2.0.so.0"
+# mount the lib's own directory (macOS: mktemp dirs are not Docker-mountable by default)
+LIBDIR=$(cd "$(dirname "$LIB")" && pwd)
+LIBNAME=$(basename "$LIB")
+CNAME=mmp-sdl2-provision-$$
 
-CID=$(docker create --platform linux/amd64 "$BASE_IMAGE" /bin/bash -lc "
+docker run --name "$CNAME" --platform linux/amd64 -v "$LIBDIR:/tmp/in:ro" -e LIBNAME="$LIBNAME" "$BASE_IMAGE" /bin/bash -lc "
   set -e
   SR=/opt/miyoomini-toolchain/usr/arm-linux-gnueabihf/sysroot/usr
   cd /tmp
@@ -35,18 +39,22 @@ CID=$(docker create --platform linux/amd64 "$BASE_IMAGE" /bin/bash -lc "
   tar xzf sdl2.tgz
   mkdir -p \$SR/include/SDL2
   cp SDL-${SDL2_TAG}/include/*.h \$SR/include/SDL2/
-  cp /tmp/in/libSDL2-2.0.so.0 \$SR/lib/
+  wget -q https://github.com/libsdl-org/SDL_image/archive/refs/tags/${IMG_TAG}.tar.gz -O img.tgz
+  tar xzf img.tgz && find SDL_image-${IMG_TAG} -maxdepth 2 -name SDL_image.h -exec cp {} \$SR/include/SDL2/ \;
+  wget -q https://github.com/libsdl-org/SDL_ttf/archive/refs/tags/${TTF_TAG}.tar.gz -O ttf.tgz
+  tar xzf ttf.tgz && find SDL_ttf-${TTF_TAG} -maxdepth 2 -name SDL_ttf.h -exec cp {} \$SR/include/SDL2/ \;
+  cp /tmp/in/\$LIBNAME \$SR/lib/libSDL2-2.0.so.0
+  cp /tmp/in/libSDL2_image-2.0.so.0 \$SR/lib/ || true
+  cp /tmp/in/libSDL2_ttf-2.0.so.0 \$SR/lib/ || true
   ln -sf libSDL2-2.0.so.0 \$SR/lib/libSDL2.so
-  echo provisioned: \$(ls \$SR/include/SDL2 | wc -l) headers
-")
-docker cp "$WORK/libSDL2-2.0.so.0" "$CID:/tmp/in/libSDL2-2.0.so.0" 2>/dev/null || {
-  docker start -a "$CID" >/dev/null 2>&1 || true
-  docker exec "$CID" mkdir -p /tmp/in 2>/dev/null || true
-}
-docker start -a "$CID"
-docker commit "$CID" "$OUT_IMAGE" >/dev/null
-docker rm "$CID" >/dev/null
-rm -rf "$WORK"
+  ln -sf libSDL2_image-2.0.so.0 \$SR/lib/libSDL2_image.so
+  ln -sf libSDL2_ttf-2.0.so.0 \$SR/lib/libSDL2_ttf.so
+  rm -rf /tmp/SDL-${SDL2_TAG} /tmp/sdl2.tgz
+  echo \"provisioned: \$(ls \$SR/include/SDL2 | wc -l) headers\"
+"
+docker commit "$CNAME" "$OUT_IMAGE" >/dev/null
+docker rm "$CNAME" >/dev/null
+
 
 echo "tagged $OUT_IMAGE"
 echo "NOTE: link with -Wl,--allow-shlib-undefined -Wl,--unresolved-symbols=ignore-in-shared-libs"
