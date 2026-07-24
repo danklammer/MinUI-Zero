@@ -1,0 +1,146 @@
+#!/bin/sh
+# MiniUI.pak
+
+if [ -z "$LCD_INIT" ]; then
+	# an update may have already initilized the LCD
+	/mnt/SDCARD/.system/miyoomini/bin/blank.elf
+
+	# init backlight
+	echo 0 > /sys/class/pwm/pwmchip0/export
+	echo 800 > /sys/class/pwm/pwmchip0/pwm0/period
+	echo 6 > /sys/class/pwm/pwmchip0/pwm0/duty_cycle
+	echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable
+
+	# init lcd
+	cat /proc/ls
+	sleep 0.5
+fi
+
+# init charger detection
+if [ ! -f /sys/devices/gpiochip0/gpio/gpio59/direction ]; then
+	echo 59 > /sys/class/gpio/export
+	echo in > /sys/devices/gpiochip0/gpio/gpio59/direction
+fi
+
+
+#######################################
+
+if [ -f /customer/app/axp_test ]; then
+	IS_PLUS=true
+else
+	IS_PLUS=false
+fi
+export IS_PLUS
+export PLATFORM="miyoomini"
+export SDCARD_PATH="/mnt/SDCARD"
+export BIOS_PATH="$SDCARD_PATH/Bios"
+export SAVES_PATH="$SDCARD_PATH/Saves"
+export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
+export CORES_PATH="$SYSTEM_PATH/cores"
+export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
+export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
+export LOGS_PATH="$USERDATA_PATH/logs"
+export DATETIME_PATH="$SHARED_USERDATA_PATH/datetime.txt" # used by bin/shutdown
+
+mkdir -p "$USERDATA_PATH"
+mkdir -p "$LOGS_PATH"
+mkdir -p "$SHARED_USERDATA_PATH/.minui"
+
+#######################################
+
+# The closed-loop governor owns the clock during gameplay (userspace + scaling_setspeed).
+# These stay for the menu//tmp/next path, but note 1296/1488 exceed the top STOCK OPP (1200) --
+# overclock.elf reaches them by poking the MPLL directly, which we do not do. Menu runs at a
+# real OPP instead.
+export CPU_SPEED_MENU=600000
+export CPU_SPEED_GAME=1200000
+export CPU_SPEED_PERF=1200000
+echo userspace > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+echo $CPU_SPEED_MENU > /sys/devices/system/cpu/cpufreq/policy0/scaling_setspeed 2>/dev/null
+
+export MY_MODEL=`strings -n 5 /customer/app/MainUI | grep MY` # 0.13s
+
+MIYOO_VERSION=`/etc/fw_printenv miyoo_version`
+export MIYOO_VERSION=${MIYOO_VERSION#miyoo_version=}
+
+#######################################
+
+# killall tee # NOTE: killing tee is somehow responsible for audioserver crashes
+rm -f "$SDCARD_PATH/update.log"
+
+#######################################
+
+export LD_LIBRARY_PATH=$SYSTEM_PATH/lib:$LD_LIBRARY_PATH
+export PATH=$SYSTEM_PATH/bin:$PATH
+
+#######################################
+
+# MinUI Zero is an SDL2 build: its MMIYOO audio driver opens MI_AO directly, so we neither
+# start audioserver (which would OWN MI_AO and lock us out) nor preload libpadsp.
+# libpadsp is the SDL 1.2 /dev/dsp shim and it SEGFAULTS binaries from this toolchain
+# (verified with a minimal open("/dev/dsp") test), so exporting it would break every app here.
+unset LD_PRELOAD
+
+#######################################
+
+lumon.elf & # adjust lcd luma and saturation
+
+if $IS_PLUS; then
+	CHARGING=`/customer/app/axp_test | awk -F'[,: {}]+' '{print $7}'`
+	if [ "$CHARGING" == "3" ]; then
+		batmon.elf # &> /mnt/SDCARD/batmon.txt
+	fi
+else
+	CHARGING=`cat /sys/devices/gpiochip0/gpio/gpio59/value`
+	if [ "$CHARGING" == "1" ]; then
+		batmon.elf # &> /mnt/SDCARD/batmon.txt
+	fi
+fi
+
+keymon.elf & # &> /mnt/SDCARD/keymon.txt &
+
+#######################################
+
+# init datetime
+if [ -f "$DATETIME_PATH" ] && [ ! -f "$USERDATA_PATH/enable-rtc" ]; then
+	DATETIME=`cat "$DATETIME_PATH"`
+	date +'%F %T' -s "$DATETIME"
+	DATETIME=`date +'%s'`
+	date -u -s "@$DATETIME"
+fi
+
+#######################################
+
+AUTO_PATH=$USERDATA_PATH/auto.sh
+if [ -f "$AUTO_PATH" ]; then
+	"$AUTO_PATH"
+fi
+
+cd $(dirname "$0")
+
+#######################################
+
+EXEC_PATH=/tmp/minui_exec
+NEXT_PATH="/tmp/next"
+touch "$EXEC_PATH"  && sync
+while [ -f "$EXEC_PATH" ]; do
+	minui.elf &> $LOGS_PATH/minui.txt
+	
+	echo `date +'%F %T'` > "$DATETIME_PATH"
+	sync
+	
+	if [ -f $NEXT_PATH ]; then
+		CMD=`cat $NEXT_PATH`
+		eval $CMD
+		rm -f $NEXT_PATH
+		if [ -f "/tmp/using-swap" ]; then
+			swapoff $USERDATA_PATH/swapfile
+			rm -f "/tmp/using-swap"
+		fi
+		
+		echo `date +'%F %T'` > "$DATETIME_PATH"
+		sync
+	fi
+done
+
+shutdown # just in case
