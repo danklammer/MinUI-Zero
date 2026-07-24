@@ -19,7 +19,11 @@
 #define GOV_TICK_FRAMES 30
 
 // One real OPP step in kHz (MEASURED gaps 192-216MHz; shared with per-game governor memory)
+// tg5040 OPP spacing. Overridable per platform (-DGOV_STEP_KHZ=...): miyoomini/SSD202D steps
+// 400/600/800/1000 in 200 MHz, so a 216 MHz stride would skip real OPPs on the way down.
+#ifndef GOV_STEP_KHZ
 #define GOV_STEP_KHZ 216000
+#endif
 
 // Ticks of slack before sinking (sink slow = no hunting; the gov-memory accelerated
 // ladder waives exactly this dwell, never the other gates)

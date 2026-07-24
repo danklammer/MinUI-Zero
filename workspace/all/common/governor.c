@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "governor.h"
 
 // Platform primitive: set the cpufreq ceiling (scaling_max_freq); the kernel schedutil
@@ -26,31 +27,63 @@ void PLAT_setCPUVoltForCeil(int khz);
                                // the loop limit-cycles at a boundary (600 slip -> 816 clean -> sink
                                // -> 600 slip -> ... = periodic slowdown bursts; Contra 2026-07-01)
 
-// CONFIRMED device 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
+// CONFIRMED tg5040 2026-06-30: thermal_zone0 = cpu_thermal_zone (milli-C).
 #define GOV_T_SENSOR   "/sys/class/thermal/thermal_zone0/temp"
 #define GOV_CUR_FREQ   "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+// CONFIRMED miyoomini/SSD202D 2026-07-24: NO thermal_zone at all; the CPU temp lives in the
+// cpufreq node in the form "Temp=44". Frequency also sits under policy0 on that BSP. These are
+// fallbacks, not overrides — tg5040 still hits its own paths first, so one binary logic path
+// serves both devices and the host unit tests are unaffected.
+#define GOV_T_SENSOR_ALT "/sys/devices/system/cpu/cpufreq/temp_out"
+#define GOV_CUR_FREQ_ALT "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq"
 
 // MEASURED OPP table (device 2026-06-30): 408 600 816 1008 1200 1416 1608 1800 2000 MHz.
 // 2000000 is exposed but is the OC we avoid (never require overclocking); cap at 1800.
 #define GOV_STOCK_MAX_KHZ 1800000
 
 // ---- Per-system ceiling brackets (f_min/f_max are real OPPs; f_max <= stock cap, no OC) ----
+#if defined(GOV_PLATFORM_MIYOOMINI)
+// miyoomini / SigmaStar SSD202D. MEASURED on-device 2026-07-24:
+//   OPP table       = 400 600 800 1000 1100 1200 MHz (1200 = top stock step; no OC)
+//   GBC (gambatte)  = 88% at 400 MHz, never saturated -> the light-system floor really is 400
+//   SNES (supafaust)= 94% at 1200 MHz, saturated at every step -> heavy content needs the top
+// Unlike tg5040 there is no schedutil: the commanded ceiling IS the clock (userspace +
+// scaling_setspeed), so f_min is a real floor the CPU will sit at, not just a ceiling.
+const GovProfile GOV_P_8BIT    = {  400000, 1200000 }; // GB/GBC/NES/SMS/GG/PCE — big headroom here
+const GovProfile GOV_P_16BIT   = {  600000, 1200000 }; // SNES/Genesis/GBA/VB
+const GovProfile GOV_P_PS1     = { 1000000, 1200000 }; // PS1 is clock-bound on a dual-A7
+const GovProfile GOV_P_DEFAULT = {  600000, 1200000 };
+#else
 const GovProfile GOV_P_8BIT   = { 1008000, 1008000 }; // schedutil still idles below this; the ceiling preserves short GLES bursts
 const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
 const GovProfile GOV_P_PS1    = { 1008000, 1800000 };
 const GovProfile GOV_P_DEFAULT = { 600000, 1800000 };
+#endif
 
 int gov_read_temp_c(void) {
 	FILE* f = fopen(GOV_T_SENSOR, "r");
+	if (f) {
+		int mc = -1;
+		if (fscanf(f, "%d", &mc) != 1) mc = -1;
+		fclose(f);
+		return mc < 0 ? -1 : mc / 1000; // milli-C -> C
+	}
+	// fallback: "Temp=44" (already whole degrees C), miyoomini/SSD202D
+	f = fopen(GOV_T_SENSOR_ALT, "r");
 	if (!f) return -1;
-	int mc = -1;
-	if (fscanf(f, "%d", &mc) != 1) mc = -1;
+	char buf[32] = {0};
+	int c = -1;
+	if (fgets(buf, sizeof(buf), f)) {
+		const char* eq = strchr(buf, '=');
+		c = eq ? atoi(eq + 1) : atoi(buf);
+	}
 	fclose(f);
-	return mc < 0 ? -1 : mc / 1000; // milli-C -> C
+	return c > 0 ? c : -1;
 }
 
 int gov_read_cur_khz(void) {
 	FILE* f = fopen(GOV_CUR_FREQ, "r");
+	if (!f) f = fopen(GOV_CUR_FREQ_ALT, "r");
 	if (!f) return -1;
 	int khz = -1;
 	if (fscanf(f, "%d", &khz) != 1) khz = -1;
