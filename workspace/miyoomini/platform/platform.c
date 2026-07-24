@@ -576,6 +576,57 @@ int PLAT_isOnline(void) {
 }
 
 ///////////////////////////////
+// Closed-loop governor actuation (MinUI Zero).
+//
+// This SoC has NO schedutil — `scaling_available_governors` is exactly
+// "userspace powersave ondemand performance" (MEASURED on-device 2026-07-24). So the tg5040
+// model (write a scaling_max_freq ceiling and let schedutil pick beneath it) does not apply.
+// Here the commanded ceiling IS the clock: userspace governor + scaling_setspeed, which is
+// also MinUI's own historical model on this platform.
+//
+// NOTE: MinUI/MyMinUI otherwise drive the clock with overclock.elf, which pokes the SigmaStar
+// MPLL registers directly and bypasses cpufreq entirely. Whoever writes last wins, so the
+// governor owns the clock for the duration of a game; do not mix the two.
+//
+// MEASURED OPP table (scaling_available_frequencies, 2026-07-24):
+//   400000 600000 800000 1000000 1100000 1200000 kHz.
+// Requests are snapped DOWN to a real OPP (never up — never silently overclock) and clamped
+// to the table. 1200000 is the top *stock* step; overclock.elf can exceed it, we do not.
+#define MMP_CPUF_DIR "/sys/devices/system/cpu/cpufreq/policy0"
+static const int mmp_opp_khz[] = { 400000, 600000, 800000, 1000000, 1100000, 1200000 };
+#define MMP_OPP_COUNT ((int)(sizeof(mmp_opp_khz)/sizeof(mmp_opp_khz[0])))
+
+static void mmp_writeStr(const char* path, const char* val) {
+	int fd = open(path, O_WRONLY);
+	if (fd < 0) return;
+	write(fd, val, strlen(val));
+	close(fd);
+}
+
+void PLAT_setCPUMaxFreq(int khz) {
+	static int last_khz = -1;
+	static int gov_set = 0;
+
+	// snap DOWN to a real OPP, clamp into the table
+	int target = mmp_opp_khz[0];
+	for (int i = 0; i < MMP_OPP_COUNT; i++) {
+		if (mmp_opp_khz[i] <= khz) target = mmp_opp_khz[i];
+	}
+	if (khz >= mmp_opp_khz[MMP_OPP_COUNT-1]) target = mmp_opp_khz[MMP_OPP_COUNT-1];
+
+	if (!gov_set) { // take ownership of the clock once per session
+		mmp_writeStr(MMP_CPUF_DIR "/scaling_governor", "userspace");
+		gov_set = 1;
+	}
+	if (target == last_khz) return; // avoid pointless sysfs writes every tick
+	last_khz = target;
+
+	char buf[16];
+	snprintf(buf, sizeof(buf), "%d", target);
+	mmp_writeStr(MMP_CPUF_DIR "/scaling_setspeed", buf);
+}
+
+///////////////////////////////
 // Debug-HUD hooks. Zero's frontend calls these unconditionally; the HUD itself is not
 // implemented on this platform yet, so these are honest no-ops (not a silent partial HUD).
 // PLAT_getGameRect must still report a sane rect — callers divide by w/h.
