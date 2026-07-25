@@ -115,6 +115,7 @@ extern int is_560p;
 
 #define MAIN_ROW_COUNT (is_560p?8:6)
 #define PADDING (is_560p?5:10)
+// NOTE: no longer drives buffer sizing — MMA_PAGE in platform.c does. Kept for api.h.
 #define PAGE_SCALE (is_560p?2:3) // need to reduce memory usage for larger screen
 
 ///////////////////////////////
