@@ -440,11 +440,20 @@ void PLAT_quitVideo(void) {
 	}
 	if (vid.fdfb > 0) { close(vid.fdfb); vid.fdfb = 0; }
 
-	MI_SYS_Munmap(vid.buffer.vadd, ALIGN4K(MMA_PAGE));
+	// Unmap what we actually mapped: initVideo maps ALIGN4K(MMA_PAGE) * PAGE_COUNT, not one page.
+	MI_SYS_Munmap(vid.buffer.vadd, ALIGN4K(ALIGN4K(MMA_PAGE) * PAGE_COUNT));
 	MI_SYS_MMA_Free(vid.buffer.padd);
 	MI_GFX_Close();
 
-	SDL_Quit();
+	// SDL_Quit() tears down EVERY initialized subsystem — including audio, which SDL_OpenAudio
+	// brought up implicitly. SDL_AudioQuit closes the device, and the MMIYOO driver's CloseDevice
+	// fires MI_AO_Disable/MI_AO_DisableChn: exactly the codec power-down that PLAT_keepAudioOpen()
+	// exists to prevent. So SND_quit's careful "don't close the audio device" was undone two calls
+	// later, and the exit pop survived. Quit only the subsystems we actually initialized and leave
+	// the codec enabled; the kernel reclaims our fds at process exit without a disable ioctl, and
+	// keymon.elf keeps /dev/mi_ao open regardless.
+	if (PLAT_keepAudioOpen()) SDL_QuitSubSystem(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_VIDEO);
+	else SDL_Quit();
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
