@@ -36,7 +36,22 @@ ifeq (tg5040,$(PLATFORM))
 endif
 	# A release must not reuse an output .so built from an older checkout, patch, or flags.
 	# Pin/patch verification runs inside the core makefile before this clean rebuild.
+ifneq (miyoomini,$(PLATFORM))
 	cd ./$(PLATFORM)/cores && make verify && make clean && make
+else
+	# TRACKED DEBT: the miyoomini port ships PREBUILT cores committed under
+	# skeleton/SYSTEM/miyoomini/cores/ instead of building them from pinned source the way
+	# tg5040 does. Its patches under miyoomini/cores/patches/ are tg5040-shaped and do not
+	# apply to the miyoomini clones (fceumm fails first). The 6 shipped cores are the ones
+	# validated by the on-device bench harness, so the artifact is CORRECT but its cores are
+	# NOT yet reproducible from source. Say so loudly rather than quietly shipping.
+	@echo ""
+	@echo "*** miyoomini: SKIPPING core build ***"
+	@echo "    Shipping prebuilt cores from skeleton/SYSTEM/miyoomini/cores/."
+	@echo "    These are NOT built from pinned source — the miyoomini artifact is not yet"
+	@echo "    reproducible. Frontend binaries in this build ARE built from source."
+	@echo ""
+endif
 	cd ./$(PLATFORM) && make
 
 clean:

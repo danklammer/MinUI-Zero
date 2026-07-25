@@ -20,10 +20,27 @@ endif
 PIN_IF_NECESSARY=$(GIT_IF_NECESSARY)/.minui-zero-$(TOOLCHAIN_HASH)
 INIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain/.build
 
+# Image the compiler actually runs in. Defaults to the upstream union toolchain, but the
+# miyoomini port is an SDL2 build and union-miyoomini-toolchain ships SDL 1.2 ONLY, so it builds
+# in the image provisioned by tools/provision-miyoomini-sdl2.sh. Without this the build dies with
+# a bare "SDL2/SDL.h: No such file or directory", which reads like a source bug rather than a
+# missing image.
+IMAGE_miyoomini=miyoomini-toolchain-sdl2
+IMAGE=$(if $(IMAGE_$(PLATFORM)),$(IMAGE_$(PLATFORM)),$(PLATFORM)-toolchain)
+
+define REQUIRE_IMAGE
+@docker image inspect $(IMAGE) >/dev/null 2>&1 || { \
+	echo "ERROR: docker image '$(IMAGE)' not found."; \
+	echo "       Build it with: sh tools/provision-miyoomini-sdl2.sh <path-to-device-libSDL2-2.0.so.0>"; \
+	echo "       (see the script header for how to fetch that lib off a device)"; \
+	exit 1; }
+endef
+
 .PHONY: $(PIN_IF_NECESSARY)
 
 all: $(INIT_IF_NECESSARY)
-	docker run -it --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(PLATFORM)-toolchain /bin/bash
+	$(REQUIRE_IMAGE)
+	docker run -it --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE) /bin/bash
 
 $(INIT_IF_NECESSARY): $(PIN_IF_NECESSARY)
 	cd toolchains/$(PLATFORM)-toolchain && DOCKER_DEFAULT_PLATFORM=linux/amd64 make .build
@@ -42,4 +59,5 @@ clean:
 	cd toolchains/$(PLATFORM)-toolchain && make clean
 
 build: $(INIT_IF_NECESSARY)
-	docker run --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(PLATFORM)-toolchain /bin/bash -c '. ~/.bashrc && cd /root/workspace && make'
+	$(REQUIRE_IMAGE)
+	docker run --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make'
