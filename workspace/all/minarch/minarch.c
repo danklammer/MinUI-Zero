@@ -804,9 +804,24 @@ static int Crash_writeAll(int fd, const void* data, size_t size) {
 	return 0;
 }
 
+// Async-signal-safe teardown for an orderly kill: release the audio device, restore the clock,
+// then die with the default disposition so the exit status still reads as signalled.
+static void Term_handler(int sig) {
+	signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); // no recursion
+	PLAT_resetAudio();
+	PLAT_emergencyRestoreCPUVolt();
+	raise(sig);
+}
+
 static void Crash_handler(int sig) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
 	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
+	// Release the audio device FIRST. On SigmaStar, MI_AO_SetPubAttr cannot reconfigure a codec
+	// that is still enabled, and libmi_ao tracks enablement PER PROCESS — so a process that dies
+	// without disabling leaves the device wedged with NO userspace way back. Every game launched
+	// afterwards is silent until reboot (MEASURED across a reboot, 5 systems). Dying is the one
+	// moment we must not skip this.
+	PLAT_resetAudio();
 #ifdef ZERO_FRONTEND_THREADING_V2
 	// Codex #4: only the thread that OWNS core execution may emergency-save. At depth-2 a
 	// MAIN-side fault (present path) can fire while CORE is mid-mutation of emulated memory —
@@ -866,6 +881,11 @@ static void Crash_install(void) { // call after core.load_game + SRAM_read (poin
 	signal(SIGILL,  Crash_handler);
 	signal(SIGFPE,  Crash_handler);
 	signal(SIGABRT, Crash_handler);
+	// SIGTERM/SIGINT previously had NO handler: a force-quit killed us outright, SND_quit never
+	// ran, and the audio device stayed enabled — poisoning audio for every later game until
+	// reboot. Same reasoning as the crash path above.
+	signal(SIGTERM, Term_handler);
+	signal(SIGINT,  Term_handler);
 }
 static void Crash_uninstall(void) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);

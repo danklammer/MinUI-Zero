@@ -28,6 +28,7 @@
 
 #include <mi_sys.h>
 #include <mi_gfx.h>
+#include <mi_ao.h>   // MI_AO_Disable/DisableChn for PLAT_resetAudio
 
 int is_560p = 0;
 int is_plus = 0;
@@ -256,6 +257,23 @@ static void* input_thread(void* arg) {
 // does it. Do not simply flip this back to 1 without handling SetPubAttr.
 int PLAT_keepAudioOpen(void) { return 0; }
 
+// Force the AO device back to a closed state so a fresh SDL_OpenAudio can succeed.
+//
+// MEASURED (automated bench, 5 systems back to back): the FIRST game gets audio, every one after
+// it fails with
+//     MI_AO_SetPubAttr[3364]: Dev0 failed to set pub attr!!! error number:0xa0052009
+//     MI_AO_DisableChn[3667]: Dev0 has not been enabled.
+//     SDL_OpenAudio error: — audio disabled
+// MI_AO_SetPubAttr cannot reconfigure a device that is still ENABLED. Any abnormal exit — a crash,
+// a SIGKILL, a force-quit — skips SND_quit, so the codec stays enabled and EVERY later game is
+// silent until reboot. Nothing in the normal path repairs it.
+// Disabling is safe when the device is already disabled (the driver just logs "has not been
+// enabled" and returns), so this is idempotent and cheap to call on the failure path.
+void PLAT_resetAudio(void) {
+	MI_AO_DisableChn(0, 0);
+	MI_AO_Disable(0);
+}
+
 #define MI_AO_SETMUTE_IOCTL 0x4008690d
 void PLAT_muteAudio(int mute) {
 	int fd = open("/dev/mi_ao", O_RDWR);
@@ -350,6 +368,47 @@ static int hasMode(const char *path, const char *mode) {
     fclose(f); return 0;
 }
 
+// Reclaim MMA chunks orphaned by a process that died without freeing them.
+//
+// The SigmaStar MMA heap does no owner tracking across process death: if minarch is SIGKILLed or
+// crashes, its render buffer stays allocated until reboot. Two or three of those exhaust the heap
+// and then EVERY game fails to start with "MMA_Alloc failed" — the classic "black screen until I
+// reboot" report. Parsing /proc and freeing by physical address is how eggs' freemma() solves it
+// (OnionOS src/clock/gfx.c); the exclusion list below is copied from there and is load-bearing:
+//   fb_device    — the framebuffer itself; freeing it kills the display
+//   ao-Dev0-tmp  — the audio buffer
+//   daemon*      — anything a long-lived helper declared as persistent
+// The proc table gives heap-relative offsets, so the physical base is recovered from the known
+// physical address of the fb_device chunk.
+// Returns the number of chunks freed.
+static int mmp_reclaimMMA(void) {
+	FILE* fp = fopen("/proc/mi_modules/mi_sys_mma/mma_heap_name0", "r");
+	if (!fp) return 0;
+	char str[256];
+	// skip the header; the chunk table starts after the "sys-logConfig" row
+	do { if (fscanf(fp, "%255s", str) == EOF) { fclose(fp); return 0; } }
+	while (strcmp(str, "sys-logConfig"));
+
+	uint32_t offset, length, used;
+	MI_PHY base = 0;
+	int freed = 0;
+	// first pass would be ideal, but the fb row appears before the app rows in practice and we
+	// need its base before freeing anything, so bail out of freeing until we have it.
+	while (fscanf(fp, "%x %x %x %255s", &offset, &length, &used, str) != EOF) {
+		if (!used) continue;
+		if (!strcmp(str, "fb_device")) { base = vid.finfo.smem_start - offset; continue; }
+		if (!strcmp(str, "ao-Dev0-tmp")) continue;   // audio
+		if (!strncmp(str, "daemon", 6)) continue;    // declared persistent
+		if (!base) continue;                          // no physical base yet — cannot free safely
+		if (MI_SYS_MMA_Free(base + offset) == MI_SUCCESS) {
+			LOG_info("mi_sys: reclaimed stale chunk %s (%u bytes)\n", str, length);
+			freed++;
+		}
+	}
+	fclose(fp);
+	return freed;
+}
+
 SDL_Surface* PLAT_initVideo(void) {
 	is_plus = exists("/customer/app/axp_test");
 	is_560p = hasMode(MODES_PATH, "752x560p") && exists(USERDATA_PATH "/enable-560p");
@@ -417,10 +476,31 @@ SDL_Surface* PLAT_initVideo(void) {
 		mma_rc = MI_SYS_MMA_Alloc(NULL, ALIGN4K(buffer_size), &vid.buffer.padd);
 	}
 	if (mma_rc != MI_SUCCESS) {
-		// Both heaps refused. Everything downstream assumes vadd is valid — the memset below
+		// Heap exhausted — almost always because a PREVIOUS minarch was killed or crashed. The
+		// SigmaStar MMA heap has no owner tracking across process death: a SIGKILL leaks the whole
+		// render buffer (4.9MB here) permanently, and after two or three of those NOTHING can
+		// allocate and every game fails to start until reboot.
+		// MEASURED: the automated bench force-killed each core and the heap went 1 -> 2 -> 3 stale
+		// "app-mmaAlloc" chunks, after which MMA_Alloc returned failure for everyone.
+		//
+		// Reclaim stale chunks and retry once. Unlike Onion's freemma (which sweeps
+		// unconditionally at every init) this only runs when we are ALREADY stuck, so a chunk
+		// belonging to a live process is never freed out from under it.
+		// Exclusions are load-bearing and come from eggs' original: never free the framebuffer,
+		// the audio buffer, or anything a daemon declared.
+		LOG_info("mi_sys: MMA_Alloc failed (rc=%d) — reclaiming stale chunks\n", mma_rc);
+		int reclaimed = mmp_reclaimMMA();
+		LOG_info("mi_sys: reclaimed %d stale chunk(s)\n", reclaimed);
+		if (reclaimed > 0) {
+			mma_rc = MI_SYS_MMA_Alloc((MI_U8*)"mma_heap_name0", ALIGN4K(buffer_size), &vid.buffer.padd);
+			if (mma_rc != MI_SUCCESS)
+				mma_rc = MI_SYS_MMA_Alloc(NULL, ALIGN4K(buffer_size), &vid.buffer.padd);
+		}
+	}
+	if (mma_rc != MI_SUCCESS) {
+		// Still nothing. Everything downstream assumes vadd is valid — the memset below
 		// dereferences it directly — so bail loudly instead of segfaulting at startup with no
-		// explanation. (We have already seen vadd=(nil) once on this device; the guard was
-		// never added.)
+		// explanation.
 		LOG_error("mi_sys: MMA_Alloc failed on every heap (rc=%d) — cannot bring up video\n", mma_rc);
 		vid.buffer.vadd = NULL;
 		return NULL;
