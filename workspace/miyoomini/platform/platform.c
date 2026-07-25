@@ -1035,10 +1035,15 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 //    readback and its stated root cause was wrong.
 //  * Driving the pad low is in any case REDUNDANT with setting duty to 0 — it is the same pin.
 //
-// So we do what Allium and spruceOS do on this device: hide the display layer via the framebuffer's
-// own control node and zero the backlight duty. No padmux games, nothing to leak.
-// VERIFIED present on this firmware: /proc/mi_modules/fb/mi_fb0 reports layer state
-// (`Visible State=1`, ARGB8888, 640x480, virtual 640x960).
+// So we blank the way Allium and spruceOS do: ask the framebuffer to hide its layer and zero the
+// backlight duty. No padmux games, nothing to leak.
+//
+// HONEST CAVEAT, measured: the `GUI_SHOW 0 off` write SUCCEEDS (rc=0) but does NOT change the
+// layer state on this firmware — /proc/mi_modules/fb/mi_fb0 still reports `Visible State=1`
+// afterwards. So the blanking that actually happens here is duty=0, and the GUI_SHOW call is
+// currently decorative. It is kept because it is a single harmless write, it is the documented
+// SigmaStar interface, and it does work on the firmware revisions Allium/spruce target — but do
+// NOT rely on it hiding anything on this device.
 // Ordering follows Allium: dim BEFORE hiding, show BEFORE brightening, so no frame is ever
 // displayed at the wrong level.
 void PLAT_enableBacklight(int enable) {
