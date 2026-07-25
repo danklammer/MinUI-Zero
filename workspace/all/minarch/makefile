@@ -28,7 +28,11 @@ SOURCE = $(TARGET).c ../common/scaler.c ../common/utils.c ../common/save_io.c ..
 
 CC = $(CROSS_COMPILE)gcc
 CFLAGS   = $(ARCH) -fomit-frame-pointer -DZERO_UV_ENGINE
-ifeq ($(PLATFORM),tg5040)
+# Frontend threading is OFF on both shipping platforms.
+# miyoomini: dual-core Cortex-A7 where minarch + core + the SDL audio thread already contend for
+# two cores, and PLAT_flip blocks ~16.76ms in FBIOPAN_DISPLAY plus MI_GFX fence waits. The auto-
+# threading trial was running there unvalidated.
+ifneq (,$(filter $(PLATFORM),tg5040 miyoomini))
 CFLAGS  += -DZERO_DISABLE_FRONTEND_THREADING
 endif
 CFLAGS  += $(INCDIR) -DPLATFORM=\"$(PLATFORM)\" -DUSE_$(SDL) -O3 -std=gnu99

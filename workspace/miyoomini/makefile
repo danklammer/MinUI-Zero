@@ -18,7 +18,11 @@ all: readmes
 	cd batmon && make
 	cd lumon && make
 	cd show && make
-	cd overclock && make
+	# overclock.elf deliberately NOT built: it pokes the SigmaStar MPLL via /dev/mem,
+	# bypassing cpufreq entirely. Nothing we ship calls it, and a leftover third-party
+	# pak invoking it silently fought the closed-loop governor. Never-overclock is a
+	# project non-negotiable, so the binary does not ship.
+	# cd overclock && make
 
 early: $(REQUIRES_SDL) $(REQUIRES_COMMANDER)
 	cd other/sdl && ./make.sh

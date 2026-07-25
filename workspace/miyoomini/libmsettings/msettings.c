@@ -174,8 +174,13 @@ static inline void SaveSettings(void) {
 	int fd = open(SettingsPath, O_CREAT|O_WRONLY, 0644);
 	if (fd>=0) {
 		write(fd, settings, shm_size);
+		// Targeted fsync, NOT a global sync(). This runs on EVERY brightness and volume step, on
+		// every wake (PWR_exitSleep -> SetVolume), and twice per process launch from InitSettings.
+		// sync() flushes the entire filesystem — on a slow FAT32 SD that is a multi-hundred-ms
+		// stall triggered by a keypress, and it is exactly the global-sync antipattern this fork
+		// already removed on tg5040. fsync() commits this file and nothing else.
+		fsync(fd);
 		close(fd);
-		sync();
 	}
 }
 
