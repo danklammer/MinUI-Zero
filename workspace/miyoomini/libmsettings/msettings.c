@@ -182,20 +182,16 @@ static inline void SaveSettings(void) {
 int GetBrightness(void) { // 0-10
 	return settings->brightness;
 }
-// Perceptual (geometric) backlight ramp, adopted from OnionOS. Panel brightness vs PWM duty is
-// strongly non-linear at the bottom of the range on this panel: a linear 0-100 ramp (what we had:
-// value*10) wastes most of the scale, leaving only ~4 usefully distinct steps. Onion shipped the
-// linear version first, measured it as bad, and replaced it with
-//     duty = round(3.0 * exp(0.350656 * value))
-// where 0.350656 == ln(100/3)/10 — i.e. a pure geometric ramp from duty 3 to duty 100 in 10 steps
-// (ratio ~1.42/step). Precomputed as a LUT so we don't pull in libm for eleven constants.
-// Level 0 is dim, NOT off; hard-off is SetRawBrightness(0) on the backlight-disable path.
-static const int mmp_brightness_duty[11] = { 3, 4, 6, 9, 12, 17, 25, 35, 50, 70, 100 };
-
+// REVERTED to the linear mapping. I had swapped this for OnionOS's geometric ramp
+// (duty = round(3*exp(0.350656*value)), i.e. {3,4,6,9,12,17,25,35,50,70,100}) on the theory that
+// it is perceptually more even. That was an unprompted change to working behaviour and it was a
+// regression: it silently redefined what every EXISTING brightness setting means, making levels
+// 0-7 roughly 3x dimmer (level 5 went 50 -> 17, level 3 went 30 -> 9) without the user touching
+// anything. A device already set near the bottom of the range read as "the screen is broken".
+// If a perceptual curve is ever wanted, it needs to migrate the stored setting at the same time,
+// and it should be an explicit decision — not a silent remap.
 void SetBrightness(int value) {
-	if (value < 0) value = 0;
-	if (value > 10) value = 10;
-	SetRawBrightness(mmp_brightness_duty[value]);
+	SetRawBrightness(value==0?6:value*10);
 	settings->brightness = value;
 	SaveSettings();
 }
