@@ -1533,7 +1533,17 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.channels = 2;
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
-	
+
+	// Mute BEFORE the open as well. Opening reconfigures the DAC (the SigmaStar SDL driver sets
+	// the public attrs / sample rate and calls MI_AO_Enable), and reconfiguring a LIVE codec is
+	// itself an audible transient — that is the remaining "pop when a game starts".
+	// This used to be impossible: MI_AO rejects SetMute on a disabled device, so a pre-open mute
+	// was a silent no-op. Now that the codec is left enabled between processes (PLAT_keepAudioOpen
+	// + the SDL_Quit fix), the device IS already enabled at game launch and this mute takes effect.
+	// On a cold boot the device really is disabled, the ioctl no-ops as before, and the post-open
+	// mute below still covers us.
+	PLAT_muteAudio(1);
+
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
