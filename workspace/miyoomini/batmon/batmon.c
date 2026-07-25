@@ -170,8 +170,14 @@ int main(void) {
 	
 	pthread_create(&charging_pt, NULL, &chargingThread, NULL);
 	
+	// This loop had NO sleep: it spun a Cortex-A7 core at 100% for the entire charging session,
+	// with the panel already blanked. On a fork whose whole thesis is "lowest clock that holds
+	// frame rate", burning a core to wait for a keypress is the worst case there is — it makes
+	// charging slower AND hotter. Input and charge state both arrive on their own threads, so
+	// this loop only needs to poll the screen-off deadline.
 	while (!launch && is_charging) {
 		if (screen_on && SDL_GetTicks()-screen_start>=3000) screenOff();
+		SDL_Delay(100); // 10Hz is plenty for a 3s deadline; costs nothing
 	}
 	
 	close(input_fd);
