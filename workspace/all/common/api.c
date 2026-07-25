@@ -1533,16 +1533,19 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 	
-	PLAT_muteAudio(1); // hold the DAC muted across the open so enabling it does not pop
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
-		PLAT_muteAudio(0);
 		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
 		return;
 	}
 	
+	// Mute AFTER the open: MI_AO rejects SetMute/SetVolume before the device is enabled
+	// (MEASURED in dmesg: "MI_AO_IMPL_SetMute: Dev0 has not been enabled"), so muting earlier was
+	// a silent no-op. Held muted until the ring has prefilled, then released in one step.
+	PLAT_muteAudio(1);
+
 	snd.buffer_seconds = 12; // ring CAPACITY (~200ms), not latency — latency is occupancy,
 	                         // set by the production/consumption balance. 5 frames (83ms)
 	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
@@ -1603,12 +1606,15 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 }
 // Weak default: platforms without a hardware mute simply do nothing.
 __attribute__((weak)) void PLAT_muteAudio(int mute) { (void)mute; }
+__attribute__((weak)) int PLAT_keepAudioOpen(void) { return 0; }
 
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
 		PLAT_muteAudio(1); // silence the DAC BEFORE it is torn down, else the shutdown pops
 		SDL_PauseAudio(1);
-		SDL_CloseAudio();
+		// Closing calls MI_AO_Disable/DisableChn on SigmaStar, and that power-down IS the pop.
+		// Leave the codec enabled and let the next process reuse it.
+		if (!PLAT_keepAudioOpen()) SDL_CloseAudio();
 	}
 
 	if (snd.buffer) {
