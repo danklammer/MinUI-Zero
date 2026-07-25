@@ -573,11 +573,17 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 }
 
 
+static void drawDebugOverlay(void); // defined with the rest of the HUD code below
+
 void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	// Present: MI_GFX blits (and scales, when the render target is core-sized) from the MMA
 	// buffer straight into the framebuffer page's PHYSICAL address, then we page-flip. The
 	// 2D engine does the scale, so no CPU scaling happens here — that is the whole point of
 	// using this SoC's hardware blitter instead of a software present.
+	// Composite the debug HUD into the render surface BEFORE the present blit, so it goes through
+	// the same rotate=2 as the game frame. No-op when the HUD is off.
+	drawDebugOverlay();
+
 	int back = vid.page ^ 1;
 	fb_bindPage(back);
 	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 2,0,0); // rotate=2 (180, panel is mounted inverted), nowait=0
@@ -897,8 +903,59 @@ void PLAT_setCPUMaxFreq(int khz) {
 // implemented on this platform yet, so these are honest no-ops (not a silent partial HUD).
 // PLAT_getGameRect must still report a sane rect — callers divide by w/h.
 
+// Debug HUD. minarch hands us two RGB565 strips (top/bottom) generated at screen->w /
+// DBG_OVERLAY_SCALE and expects them presented SCALED so they span the panel — see minarch.c:3809
+// ("presented scaled -> strips span the panel"). 0xF81F (magenta) is the transparency key.
+//
+// tg5040 uploads these as ARGB textures and lets SDL's renderer scale them. We have no renderer,
+// and MI_GFX exposes no filter or convenient sub-rect compositing (its Opt struct has no filter
+// field at all — verified against three SigmaStar SDK drops). But our render surface is ALREADY
+// RGB565, so we can skip the Brick's ARGB conversion entirely and composite straight into
+// vid.screen with an integer nearest upscale, BEFORE the present blit. The HUD then rides the
+// same MI_GFX rotate+scale as the game, which is what keeps it right-side up on this inverted
+// panel — anything drawn directly into the framebuffer instead would come out upside-down.
+#define DBG_KEY 0xF81F
+static struct { uint16_t *top, *bottom; int w, h, stride; } dbg = {0};
+
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
-	// no HUD compositing on miyoomini yet
+	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
+}
+
+static void dbgBlitStrip(uint16_t* strip, int dst_y) {
+	const int S = DBG_OVERLAY_SCALE;
+	uint16_t* base = (uint16_t*)vid.screen->pixels;
+	int dpitch = vid.pitch / 2; // vid.pitch is bytes; RGB565 => 2 bytes/px
+	for (int sy = 0; sy < dbg.h; sy++) {
+		uint16_t* srow = strip + sy * dbg.stride;
+		for (int ry = 0; ry < S; ry++) {
+			int y = dst_y + sy * S + ry;
+			if (y < 0 || y >= vid.height) continue;
+			uint16_t* drow = base + (size_t)y * dpitch;
+			for (int sx = 0; sx < dbg.w; sx++) {
+				uint16_t p = srow[sx];
+				if (p == DBG_KEY) continue; // transparent
+				int x0 = sx * S;
+				for (int rx = 0; rx < S; rx++) {
+					int x = x0 + rx;
+					if (x >= vid.width) break;
+					drow[x] = p;
+				}
+			}
+		}
+	}
+}
+
+static void drawDebugOverlay(void) {
+	// minarch calls PLAT_setDebugOverlay(NULL,...) when the HUD is off, so this is a null check
+	// on the hot path and nothing more.
+	if (!dbg.top || !dbg.bottom || dbg.w <= 0 || dbg.h <= 0) return;
+	if (dbg.stride < dbg.w) return;                       // malformed: refuse rather than read OOB
+	if (!vid.screen || !vid.screen->pixels) return;
+	const int S = DBG_OVERLAY_SCALE;
+	int strip_h = dbg.h * S;
+	if (strip_h * 2 + S * 2 > vid.height) return;         // no room; skip rather than overlap
+	dbgBlitStrip(dbg.top, S);
+	dbgBlitStrip(dbg.bottom, vid.height - strip_h - S);
 }
 
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
