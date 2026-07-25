@@ -363,7 +363,11 @@ int PLAT_deepSleep(void); // write "mem" to /sys/power/state; returns 0 on a ful
 void PLAT_powerOff(void);
 	
 void PLAT_setCPUSpeed(int speed); // enum (now sets the scaling_max_freq cap under schedutil)
-void PLAT_setCPUMaxFreq(int khz); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
+void PLAT_setCPUMaxFreq(int khz);
+// Silence the DAC across audio open/close. Analog transients (the audible POP) happen when
+// the codec is enabled or torn down; platforms with a hardware mute implement this, all
+// others get the weak no-op in api.c.
+void PLAT_muteAudio(int mute); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
 int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mechanism exists (tg5040: 0 for now)
 void PLAT_setUndervolt(int millivolts); // legacy spike API, superseded by the table-driven authority below
 void PLAT_setCPUVoltForCeil(int khz);   // apply the calibrated voltage covering any OPP <= (rounded-up) ceiling

@@ -1533,9 +1533,11 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
 	
+	PLAT_muteAudio(1); // hold the DAC muted across the open so enabling it does not pop
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
+		PLAT_muteAudio(0);
 		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
 		return;
@@ -1567,6 +1569,8 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
 	SND_publishOccupancy();
+	// device is up and the ring is prefilling — safe to let signal through now (settles first)
+	PLAT_muteAudio(0);
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
@@ -1597,8 +1601,12 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	atomic_store(&snd.paused, 0); // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
 }
+// Weak default: platforms without a hardware mute simply do nothing.
+__attribute__((weak)) void PLAT_muteAudio(int mute) { (void)mute; }
+
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
+		PLAT_muteAudio(1); // silence the DAC BEFORE it is torn down, else the shutdown pops
 		SDL_PauseAudio(1);
 		SDL_CloseAudio();
 	}

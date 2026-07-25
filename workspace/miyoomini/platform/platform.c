@@ -235,6 +235,20 @@ static void* input_thread(void* arg) {
 	return NULL;
 }
 
+// MI_AO hardware mute. Same ioctl libmsettings uses for volume 0. Unmute is deferred slightly:
+// the DAC needs a moment after being enabled before it is safe to let signal through, otherwise
+// we just move the pop rather than remove it.
+#define MI_AO_SETMUTE_IOCTL 0x4008690d
+void PLAT_muteAudio(int mute) {
+	int fd = open("/dev/mi_ao", O_RDWR);
+	if (fd < 0) return;
+	if (!mute) usleep(60000); // let the rail settle before unmuting
+	int buf2[] = {0, mute ? 1 : 0};
+	uint64_t buf1[] = {sizeof(buf2), (uintptr_t)buf2};
+	ioctl(fd, MI_AO_SETMUTE_IOCTL, buf1);
+	close(fd);
+}
+
 void PLAT_initInput(void) {
 	// api.c PAD_poll also handles SDL_JOYBUTTON*; harmless when no joystick exists.
 	SDL_InitSubSystem(SDL_INIT_JOYSTICK);
@@ -252,12 +266,20 @@ void PLAT_quitInput(void) {
 
 ///////////////////////////////
 
-// MMA render-buffer page size. Upstream used api.h PAGE_SIZE, which is a PAGE_SCALE(=3)
-// SUPERSAMPLED buffer (10.5MB for 2 pages) sized for the old custom-SDL scaling path. In the
-// fbdev model MI_GFX scales at present time, so the render target never exceeds panel size.
-// MEASURED: the MMA heap (mma_heap_name0) is 21MB with only ~6MB free, so the 10.5MB request
-// failed outright -- MI_SYS_MMA_Alloc returned NULL and the first memset segfaulted.
-#define MMA_PAGE ALIGN4K(FIXED_PITCH * FIXED_HEIGHT)
+// MMA render-buffer page size.
+// The frontend calls GFX_resize(dst_w, dst_h, dst_p) with the SCALED GAME buffer size
+// (minarch.c: `screen = GFX_resize(dst_w,dst_h,dst_p)`, `dst_p = dst_w * FIXED_BPP`), and then
+// writes straight into screen->pixels. So this page must hold the LARGEST scaled buffer, not just
+// one panel. Upstream reserved PAGE_SCALE(=3) squared (5.5MB/page) for exactly that reason.
+//
+// I originally shrank this to one panel (614KB) because upstream's 10.5MB request failed against
+// the ~6MB free in mma_heap_name0 — and that was the bug behind the garbage band: NES at 3x is
+// 768x672 (~1MB), so the frontend wrote past the end of the page into the next one, and we
+// presented the overflow. GBC stayed under a panel's worth, which is why it looked clean.
+//
+// 4x panel area per page (2.4MB for both pages) covers every integer scale the frontend picks
+// here while still fitting the heap. resizeVideo hard-checks the request against it.
+#define MMA_PAGE ALIGN4K(FIXED_PITCH * FIXED_HEIGHT * 4)
 
 typedef struct HWBuffer {
 	MI_PHY padd;
@@ -471,6 +493,9 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 		surf_clearPa(vid.screen);
 		SDL_FreeSurface(vid.screen);
 		
+		if ((size_t)vid.pitch * vid.height > (size_t)MMA_PAGE)
+			LOG_info("resizeVideo: %dx%d p=%d needs %zu bytes > MMA_PAGE %d — WILL CORRUPT\n",
+				vid.width, vid.height, vid.pitch, (size_t)vid.pitch * vid.height, (int)MMA_PAGE);
 		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
 		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 		memset(vid.screen->pixels, 0, vid.pitch * vid.height);
