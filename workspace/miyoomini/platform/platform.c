@@ -720,18 +720,28 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	online = prefixMatch("up", status);
 }
 
+#define PWM_DUTY_PATH "/sys/class/pwm/pwmchip0/pwm0/duty_cycle"
 void PLAT_enableBacklight(int enable) {
-	// Drop brightness to 0 BEFORE disabling, so re-enabling cannot flash at the old duty
-	// cycle before brightness is restored (ported from MyMinUI).
-	if (!enable) SetRawBrightness(0);
+	// Zeroing duty before the panel rail drops avoids a bright flash on the way back up
+	// (MyMinUI/Onion both do this) — but it is ONLY safe if the enable path restores it. It did
+	// not, so waking from sleep drew the menu onto a backlight still at duty 0: the panel came up
+	// black and it read as "the menu flashes and goes away". Save the real duty on the way down
+	// and put it back after the PWM bounce.
+	static int saved_duty = -1;
 	if (enable) {
 		putInt("/sys/class/gpio/gpio4/value", 1);
 		putInt("/sys/class/gpio/unexport", 4);
 		putInt("/sys/class/pwm/pwmchip0/export", 0);
+		// The PWM must be disable/enable BOUNCED after the panel rail cycles — a plain enable=1
+		// leaves the output in an undefined state on this controller (verified in OnionOS).
 		putInt("/sys/class/pwm/pwmchip0/pwm0/enable",0);
 		putInt("/sys/class/pwm/pwmchip0/pwm0/enable",1);
+		if (saved_duty > 0) { SetRawBrightness(saved_duty); saved_duty = -1; }
 	}
 	else {
+		int d = getInt(PWM_DUTY_PATH);
+		if (d > 0) saved_duty = d; // remember the user's level; keep any earlier save otherwise
+		SetRawBrightness(0);
 		putInt("/sys/class/gpio/export", 4);
 		putFile("/sys/class/gpio/gpio4/direction", "out");
 		putInt("/sys/class/gpio/gpio4/value", 0);
