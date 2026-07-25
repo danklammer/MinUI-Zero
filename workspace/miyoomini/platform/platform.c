@@ -635,11 +635,24 @@ void PLAT_clearAll(void) {
 	vid.cleared = 1; // defer clearing frontbuffer until offscreen
 }
 
+// "Prevent Tearing" is REAL on this platform now. It used to be a no-op — the option existed in
+// the menu and did nothing, which is worse than not offering it.
+//
+// With the async flip thread the producer hands a page over and carries on. If it produces another
+// frame before the panner has scanned the previous one out, the pending page is replaced and the
+// older frame is never displayed (MEASURED: ~1.4% of frames). That is the right default — the
+// alternative is the render thread eating the full 16.76ms pan, which is what used to halve GBC to
+// 29.8fps. But it IS a dropped frame, so STRICT lets the user choose the other side of the trade:
+//   STRICT  -> producer waits for the pan to complete: nothing is ever dropped, at the cost of the
+//              stall (classic vsync).
+//   LENIENT -> coalesce; newest frame wins. Default.
+//   OFF     -> same as lenient here; there is no un-synced pan on this driver (FBIOPAN_DISPLAY
+//              blocks regardless of the activate flag — measured on both).
+static int flip_block = 0; // 1 = STRICT: never coalesce
 void PLAT_setVsync(int vsync) {
-	// No-op by design. The GFX_FLIPWAIT/GFX_BLOCKING env vars this used to set were read ONLY by
-	// the old custom SDL 1.2's internal flip; we now present ourselves (MI_GFX blit +
-	// FBIOPAN_DISPLAY with FB_ACTIVATE_VBL), so vsync behaviour lives in PLAT_flip, not here.
-	(void)vsync;
+	flip_block = (vsync == VSYNC_STRICT);
+	LOG_info("fb: vsync=%d (%s)\n", vsync, flip_block ? "strict: wait for pan, drop nothing"
+	                                                   : "lenient: coalesce, newest frame wins");
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
@@ -762,6 +775,11 @@ static pthread_mutex_t flip_mx  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  flip_req = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t  flip_ack = PTHREAD_COND_INITIALIZER;
 static int flip_pending = -1;  // page awaiting pan, -1 = none
+static unsigned flip_frames  = 0; // frames handed to the flip thread
+static unsigned flip_dropped = 0; // frames COALESCED AWAY: a newer frame replaced an unpanned
+                                  // one, so the older frame was never scanned out. This is the
+                                  // cost of not blocking the producer, and it must be measured,
+                                  // not assumed — dropped frames are invisible to an fps counter.
 static int flip_active  = -1;  // page currently being panned, -1 = none
 static int flip_run     = 0;
 
@@ -773,6 +791,7 @@ static void* flip_thread(void* arg) {
 		if (!flip_run) break;
 		flip_active  = flip_pending;
 		flip_pending = -1;
+		pthread_cond_broadcast(&flip_ack); // the pending slot is free now — release a STRICT producer
 		pthread_mutex_unlock(&flip_mx);
 
 		fb_pan(flip_active);            // the ~16.76ms block, off the render thread
@@ -797,6 +816,9 @@ static void mmpFlipStart(void) {
 
 static void mmpFlipStop(void) {
 	if (!flip_run) return;
+	LOG_info("fb: flip stats — %u handed to panner, %u coalesced away (%.1f%%)\n",
+		flip_frames, flip_dropped,
+		flip_frames ? (100.0 * flip_dropped / flip_frames) : 0.0);
 	pthread_mutex_lock(&flip_mx);
 	flip_run = 0;
 	pthread_cond_broadcast(&flip_req);
@@ -830,6 +852,18 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 
 	if (flip_run) {
 		pthread_mutex_lock(&flip_mx);
+		// STRICT: wait until the panner has taken the previous frame, so nothing is ever
+		// coalesced away. This reintroduces the vsync stall by design — that is what the user
+		// asked for by choosing it.
+		while (flip_block && flip_run && flip_pending >= 0)
+			pthread_cond_wait(&flip_ack, &flip_mx);
+		if (flip_pending >= 0) flip_dropped++; // overwriting an unpanned frame = that frame is lost
+		flip_frames++;
+		// Report periodically rather than at teardown: a SIGTERM/crash exit never reaches
+		// PLAT_quitVideo, which is exactly when we most want this number.
+		if ((flip_frames % 600) == 0)
+			LOG_info("fb: flip %u handed, %u coalesced away (%.1f%%)\n", flip_frames, flip_dropped,
+				100.0 * flip_dropped / flip_frames);
 		flip_pending = back;              // coalescing: a newer frame replaces an unpanned one
 		pthread_cond_signal(&flip_req);
 		pthread_mutex_unlock(&flip_mx);
