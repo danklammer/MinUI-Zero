@@ -96,6 +96,49 @@ static struct PWR_Context {
 
 static int _;
 
+// GFX_blitPill/GFX_blitRect draw one shape from two sources: rounded caps blitted out of the
+// asset sheet, and a flat SDL_FillRect for the straight middle. The fill colour came from the
+// hardcoded TRIAD_* constants, so a sheet whose grays don't match those constants renders a
+// visibly two-tone pill -- MEASURED on a card carrying a foreign sheet: caps 0x1C vs middle
+// 0x26, i.e. luma 26 against 35 on the RGB565 panel, with a hard seam where the cap meets the
+// fill. Sample the fill straight out of the sheet instead, so the two halves of a shape can
+// never disagree no matter which assets are installed. Falls back to the TRIAD_* value for any
+// sprite whose centre isn't opaque (and for a missing sheet), so behaviour is unchanged when
+// the sheet already matches.
+static uint32_t sampleAssetPixel(SDL_Surface* s, int x, int y, uint32_t fallback) {
+	if (!s || !s->pixels) return fallback;
+	if (x < 0 || y < 0 || x >= s->w || y >= s->h) return fallback;
+
+	uint8_t* p = (uint8_t*)s->pixels + y * s->pitch + x * s->format->BytesPerPixel;
+	uint32_t pixel;
+	switch (s->format->BytesPerPixel) {
+		case 1:  pixel = *p; break;
+		case 2:  pixel = *(uint16_t*)p; break;
+		case 4:  pixel = *(uint32_t*)p; break;
+		default: return fallback; // 24bpp: byte order varies, not worth the risk
+	}
+
+	uint8_t r,g,b,a;
+	SDL_GetRGBA(pixel, s->format, &r,&g,&b,&a);
+	if (a != 255) return fallback; // transparent centre: sprite isn't a solid fill
+	return SDL_MapRGB(gfx.screen->format, r,g,b);
+}
+static void GFX_sampleAssetRGBs(void) {
+	if (!gfx.assets) return;
+
+	int must_lock = SDL_MUSTLOCK(gfx.assets);
+	if (must_lock && SDL_LockSurface(gfx.assets) != 0) return;
+
+	// [0,ASSET_COLORS) is exactly the set of assets drawn by GFX_blitPill/GFX_blitRect
+	for (int asset=0; asset<ASSET_COLORS; asset++) {
+		SDL_Rect* r = &asset_rects[asset];
+		asset_rgbs[asset] = sampleAssetPixel(gfx.assets,
+			r->x + r->w/2, r->y + r->h/2, asset_rgbs[asset]);
+	}
+
+	if (must_lock) SDL_UnlockSurface(gfx.assets);
+}
+
 SDL_Surface* GFX_init(int mode) {
 	// TODO: this doesn't really belong here...
 	// tried adding to PWR_init() but that was no good (not sure why)
@@ -156,7 +199,8 @@ SDL_Surface* GFX_init(int mode) {
 	sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
 	if (!exists(asset_path)) LOG_info("missing assets, you're about to segfault dummy!\n");
 	gfx.assets = IMG_Load(asset_path);
-	
+	GFX_sampleAssetRGBs(); // fills must match the sheet they're capped with; see above
+
 	TTF_Init();
 	// Read the font ONCE and open all four sizes from that one in-memory copy.
 	// TTF_OpenFont(path,...) re-opens and re-reads the file every call, so four sizes meant four
