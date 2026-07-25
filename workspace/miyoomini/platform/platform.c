@@ -405,9 +405,24 @@ SDL_Surface* PLAT_initVideo(void) {
 		LOG_info("mi_sys: MMA_Alloc(mma_heap_name0, %d) failed rc=%d, retrying default heap\n", ALIGN4K(buffer_size), mma_rc);
 		mma_rc = MI_SYS_MMA_Alloc(NULL, ALIGN4K(buffer_size), &vid.buffer.padd);
 	}
-	MI_SYS_Mmap(vid.buffer.padd, ALIGN4K(buffer_size), &vid.buffer.vadd, true);
-	// memset(vid.buffer.vadd, 0, MMA_PAGE);
-	
+	if (mma_rc != MI_SUCCESS) {
+		// Both heaps refused. Everything downstream assumes vadd is valid — the memset below
+		// dereferences it directly — so bail loudly instead of segfaulting at startup with no
+		// explanation. (We have already seen vadd=(nil) once on this device; the guard was
+		// never added.)
+		LOG_error("mi_sys: MMA_Alloc failed on every heap (rc=%d) — cannot bring up video\n", mma_rc);
+		vid.buffer.vadd = NULL;
+		return NULL;
+	}
+	if (MI_SYS_Mmap(vid.buffer.padd, ALIGN4K(buffer_size), &vid.buffer.vadd, true) != MI_SUCCESS
+	    || !vid.buffer.vadd) {
+		LOG_error("mi_sys: MMA_Mmap failed for padd=%llx — cannot bring up video\n",
+			(unsigned long long)vid.buffer.padd);
+		MI_SYS_MMA_Free(vid.buffer.padd);
+		vid.buffer.vadd = NULL;
+		return NULL;
+	}
+
 	vid.page = 1;
 	// The frontend renders RGB565 (FIXED_DEPTH) everywhere. Upstream could return vid.video
 	// because SDL 1.2's SDL_SetVideoMode produced a 16bpp surface and the custom SDL converted
@@ -430,20 +445,45 @@ SDL_Surface* PLAT_initVideo(void) {
 }
 
 void PLAT_quitVideo(void) {
+	// Free the PA side-table slots too. It only has PA_SLOTS entries; leaking two per
+	// init->quit cycle eventually exhausts it, after which surf_setPa silently no-ops,
+	// surf_getPa returns 0, and GFX_BlitSurfaceExec falls back to SDL_BlitSurface — which does
+	// NO rotation. Symptom would be an upside-down screen with no diagnostic whatsoever.
+	surf_clearPa(vid.screen);
+	surf_clearPa(vid.video);
+
 	SDL_FreeSurface(vid.screen);
 
 	if (vid.video) { vid.video->pixels = NULL; SDL_FreeSurface(vid.video); vid.video = NULL; }
+
+	// Hand the panel back on PAGE 0 before we go. We page-flip, so we may well be scanning out
+	// page 1 at exit — while show.elf / batmon.elf / blank.elf all write page 0 and never touch
+	// yoffset. Exiting on page 1 makes their images invisible (the charging screen and the
+	// transition art simply never appear).
+	if (vid.fdfb > 0) {
+		vid.vinfo.yoffset = 0;
+		vid.vinfo.activate = FB_ACTIVATE_NOW;
+		ioctl(vid.fdfb, FBIOPAN_DISPLAY, &vid.vinfo);
+	}
+
 	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) {
 		memset(vid.fbmmap, 0, vid.fbsize);   // leave a black panel, not the last frame
 		munmap(vid.fbmmap, vid.fbsize);
 		vid.fbmmap = NULL;
 	}
+	// Deliberately `> 0`, not `>= 0`: vid is zero-initialised, so fdfb==0 means "never opened".
+	// Treating 0 as valid here would close STDIN on a teardown that ran without a successful init.
 	if (vid.fdfb > 0) { close(vid.fdfb); vid.fdfb = 0; }
 
 	// Unmap what we actually mapped: initVideo maps ALIGN4K(MMA_PAGE) * PAGE_COUNT, not one page.
 	MI_SYS_Munmap(vid.buffer.vadd, ALIGN4K(ALIGN4K(MMA_PAGE) * PAGE_COUNT));
 	MI_SYS_MMA_Free(vid.buffer.padd);
 	MI_GFX_Close();
+	// Pair MI_SYS_Init() from PLAT_initVideo. This used to be masked by accident: SDL2's
+	// MMIYOO_VideoQuit calls MI_SYS_Exit — but that backend never initializes here
+	// (SDL_VIDEODRIVER is unset, so MMIYOO_Available() returns 0 and video init fails by design),
+	// so nothing was ever unwinding MI_SYS.
+	MI_SYS_Exit();
 
 	// SDL_Quit() tears down EVERY initialized subsystem — including audio, which SDL_OpenAudio
 	// brought up implicitly. SDL_AudioQuit closes the device, and the MMIYOO driver's CloseDevice
@@ -728,7 +768,10 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	// *is_charging = 0;
 	// *charge = PWR_LOW_CHARGE;
 	
-	char status[16];
+	// getFile() leaves the buffer UNTOUCHED when the open fails, and the base Mini (and any Plus
+	// with the wifi module not inserted) has no wlan0 — so this was reading uninitialised stack
+	// and re-rolling `online` from garbage every poll. Initialise it.
+	char status[16] = {0};
 	getFile("/sys/class/net/wlan0/operstate", status,16);
 	online = prefixMatch("up", status);
 }
