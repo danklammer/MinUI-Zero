@@ -734,49 +734,49 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 }
 
 #define PWM_DUTY_PATH "/sys/class/pwm/pwmchip0/pwm0/duty_cycle"
-// GPIO4 is the LCD PANEL POWER rail, separate from the PWM backlight. Sequence below is Onion's
-// display_setScreen() verbatim (src/common/system/display.h:186-214), which is the known-good
-// reference for this exact SoC.
+#define FB_CTRL_PATH  "/proc/mi_modules/fb/mi_fb0"
+
+// Screen off/on. NO GPIO4 — deliberately.
 //
-// TWO BUGS THIS FIXES, both MEASURED on device:
-//  1. We wrote gpio4's value WITHOUT exporting it first on the enable path (only the disable path
-//     exported). Writing an unexported pin silently fails, so the panel rail never came back up
-//     after sleep. Verified: export -> direction -> write 1 reads back 1; without the export it
-//     stays 0. Onion exports, sets direction, writes, and unexports on EVERY call, BOTH directions.
-//  2. direction/value must be driven through the GPIOCHIP path. Onion uses
-//     /sys/devices/gpiochip0/gpio/gpio4/... for direction+value and only uses /sys/class/gpio for
-//     export/unexport.
+// GPIO4 is PAD_GPIO4, and on this board PAD_GPIO4 *is the PWM0 output pad* (the stock MY354 DTB's
+// pwm node carries `pad-ctrl = <0x4>`, and the vendor PWM driver maps pad id 4 to PWM0_MODE_3 in
+// CHIPTOP reg 0x07 bits[2:0]). It is NOT a separate panel-power rail, which is what upstream MinUI
+// and Onion's comments imply.
 //
-// Duty ordering also matters and is Onion's: zero the duty BEFORE dropping the rail (no flash on
-// the way down), and restore it only AFTER the rail is up and the PWM has been re-armed — so the
-// panel is never lit at the old level during the transition.
-#define GPIO_EXPORT   "/sys/class/gpio/export"
-#define GPIO_UNEXPORT "/sys/class/gpio/unexport"
-#define GPIO4_DIR     "/sys/devices/gpiochip0/gpio/gpio4/direction"
-#define GPIO4_VAL     "/sys/devices/gpiochip0/gpio/gpio4/value"
+// Consequences, MEASURED on this device:
+//  * Exporting gpio4 STEALS the pad from PWM0 via padmux, and `unexport` does NOT give it back —
+//    only a pwm `enable` 0->1 bounce re-muxes it. We found gpio4 left exported from an earlier
+//    sleep cycle, which had silently killed brightness control outright: duty writes went nowhere
+//    because the pad was GPIO-owned.
+//  * Reading /sys/class/gpio/gpio4/value returns the pad's INPUT receiver, not the output latch,
+//    so "write 1, read 0" is expected and proves nothing. An earlier fix here was built on that
+//    readback and its stated root cause was wrong.
+//  * Driving the pad low is in any case REDUNDANT with setting duty to 0 — it is the same pin.
+//
+// So we do what Allium and spruceOS do on this device: hide the display layer via the framebuffer's
+// own control node and zero the backlight duty. No padmux games, nothing to leak.
+// VERIFIED present on this firmware: /proc/mi_modules/fb/mi_fb0 reports layer state
+// (`Visible State=1`, ARGB8888, 640x480, virtual 640x960).
+// Ordering follows Allium: dim BEFORE hiding, show BEFORE brightening, so no frame is ever
+// displayed at the wrong level.
 void PLAT_enableBacklight(int enable) {
 	static int saved_duty = -1;
 
-	if (!enable) {
-		int d = getInt(PWM_DUTY_PATH);
-		if (d > 0) saved_duty = d; // remember the user's level; keep any earlier save otherwise
-		SetRawBrightness(0);
-	}
-
-	// panel rail — export/direction/value/unexport every time, both directions
-	putInt(GPIO_EXPORT, 4);
-	putFile(GPIO4_DIR, "out");
-	putInt(GPIO4_VAL, enable ? 1 : 0);
-	putInt(GPIO_UNEXPORT, 4);
-
 	if (enable) {
-		// The PWM must be disable/enable BOUNCED after the rail cycles — a plain enable=1 leaves
-		// the output in an undefined state on this controller (Onion does this; undocumented there,
-		// but it is in every wake path they ship).
-		putInt("/sys/class/pwm/pwmchip0/export", 0);
-		putInt("/sys/class/pwm/pwmchip0/pwm0/enable", 0);
-		putInt("/sys/class/pwm/pwmchip0/pwm0/enable", 1);
+		putFile(FB_CTRL_PATH, "GUI_SHOW 0 on");
 		if (saved_duty > 0) { SetRawBrightness(saved_duty); saved_duty = -1; }
+		else {
+			// Nothing saved (e.g. enable without a preceding disable): fall back to the user's
+			// stored level rather than leaving the panel dark.
+			int b = GetBrightness();
+			SetRawBrightness(b==0 ? 6 : b*10);
+		}
+	}
+	else {
+		int d = getInt(PWM_DUTY_PATH);
+		if (d > 0) saved_duty = d; // the user's live level; keep any earlier save otherwise
+		SetRawBrightness(0);
+		putFile(FB_CTRL_PATH, "GUI_SHOW 0 off");
 	}
 }
 void PLAT_powerOff(void) {
