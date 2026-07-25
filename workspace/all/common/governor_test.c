@@ -89,7 +89,7 @@ static void test_hot_ceiling(void) {
 	int prev = st.ceil_khz;
 	int reached_min = 0;
 	for (int i = 0; i < 200; i++) {
-		int khz = gov_step(&st, p, 80 /*>= 72C ceiling*/, 1 /*frames slipping*/);
+		int khz = gov_step(&st, p, GOV_T_CEIL_C + 8, 1 /*frames slipping*/);
 		CHECK(khz <= prev, "tick %d: clock rose to %d from %d while over the ceiling", i, khz, prev);
 		CHECK(khz >= p->f_min && khz <= p->f_max, "clock %d left bracket", khz);
 		prev = khz;
@@ -109,7 +109,7 @@ static void test_hot_caps_below_max(void) {
 	int peak = p->f_min;
 	for (int i = 0; i < 200; i++) {
 		int overrun = (st.ceil_khz < p->f_max); // wants to climb to the top
-		int khz = gov_step(&st, p, 75, overrun);
+		int khz = gov_step(&st, p, GOV_T_CEIL_C + 3, overrun);
 		if (khz > peak) peak = khz;
 	}
 	// After the first tick the ceiling dominates; the only clock at/above the start is the
