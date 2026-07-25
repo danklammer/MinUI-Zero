@@ -19,8 +19,8 @@ void PLAT_setCPUVoltForCeil(int khz);
 // ---- Tunables (ASSUMED — safe by construction; confirm on device, see design doc) ----
 // Why safe if wrong: (1) writes snap to the nearest valid OPP, (2) the loop self-corrects
 // bad brackets at runtime, (3) the conservative ceiling bounds the downside to "too cautious".
-#define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
-#define GOV_T_CEIL_C   72      // hard back-off above this — always wins
+// Thermal thresholds (GOV_T_TARGET_C / GOV_T_CEIL_C) live in governor.h so the unit tests
+// can assert against the real values instead of hardcoding one platform's numbers.
 // GOV_STEP_KHZ lives in governor.h (shared with minarch's per-game governor memory)
 // GOV_DN_DWELL lives in governor.h (shared with the gov-memory accelerated ladder)
 #define GOV_FAIL_HOLD  120     // ticks (~60s) before re-probing a ceiling that slipped. Without this
