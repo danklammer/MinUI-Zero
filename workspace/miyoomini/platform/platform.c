@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <linux/fb.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
@@ -205,11 +206,48 @@ int PLAT_lidChanged(int* state) {
 	return 0;
 }
 
+// Minimal evdev ABI. We deliberately do NOT include <linux/input.h>: it defines BTN_* macros that
+// collide with MinUI's own BTN_* button names in api.h.
+struct zero_input_event { struct timeval time; unsigned short type; unsigned short code; int value; };
+#define ZERO_EV_KEY 0x01
+
+static pthread_t input_pt;
+static int input_run = 0;
+static void* input_thread(void* arg) {
+	int fd = open("/dev/input/event0", O_RDONLY);
+	if (fd < 0) { LOG_info("input: cannot open /dev/input/event0\n"); return NULL; }
+	struct zero_input_event ev;
+	while (input_run) {
+		int r = read(fd, &ev, sizeof(ev));
+		if (r != sizeof(ev)) { if (r < 0 && errno == EINTR) continue; break; }
+		if (ev.type != ZERO_EV_KEY) continue;
+		if (ev.value != 0 && ev.value != 1) continue; // ignore key repeat (value 2)
+		SDL_Event e;
+		memset(&e, 0, sizeof(e));
+		e.type = ev.value ? SDL_KEYDOWN : SDL_KEYUP;
+		e.key.state = ev.value ? SDL_PRESSED : SDL_RELEASED;
+		// api.c compares keysym.sym against platform.h's CODE_* — which are EVDEV codes.
+		e.key.keysym.sym = (SDL_Keycode)ev.code;
+		e.key.keysym.scancode = (SDL_Scancode)ev.code;
+		SDL_PushEvent(&e);
+	}
+	close(fd);
+	return NULL;
+}
+
 void PLAT_initInput(void) {
-	// buh
+	// api.c PAD_poll also handles SDL_JOYBUTTON*; harmless when no joystick exists.
+	SDL_InitSubSystem(SDL_INIT_JOYSTICK);
+	if (SDL_NumJoysticks() > 0) SDL_JoystickOpen(0);
+	input_run = 1;
+	if (pthread_create(&input_pt, NULL, input_thread, NULL) != 0) {
+		input_run = 0;
+		LOG_info("input: pump thread failed to start\n");
+	}
 }
 void PLAT_quitInput(void) {
-	// buh
+	input_run = 0; // thread exits on its next read (or when the fd closes at process exit)
+	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
 }
 
 ///////////////////////////////
@@ -280,7 +318,15 @@ SDL_Surface* PLAT_initVideo(void) {
 	// SDL2: timers only. We do NOT init SDL video — this SoC's only SDL2 video driver (mmiyoo)
 	// fails with "No available video device" when anything else owns the panel, and we present
 	// through fbdev anyway. Audio is initialized separately by SND_init (driver: MMIYOO).
-	SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS); // EVENTS: api.c PAD_poll uses SDL_PollEvent
+	// SDL2 delivers keyboard events through the VIDEO subsystem's input backend, and this device's
+	// buttons are gpio_keys on the kbd handler. Without VIDEO, SDL_PollEvent never reports a button
+	// and the game is uncontrollable. We still present through fbdev ourselves; VIDEO is initialized
+	// for its input plumbing. If the mmiyoo video driver refuses (it does while another process owns
+	// the panel), fall back so we at least keep rendering.
+	if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_VIDEO) < 0) {
+		LOG_info("SDL: video init failed (%s) - input may not work; continuing\n", SDL_GetError());
+		SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS);
+	}
 
 	// --- fbdev: 32bpp, double-buffered (yres_virtual = 2 * yres) ---
 	vid.fdfb = open("/dev/fb0", O_RDWR);
@@ -379,10 +425,12 @@ void PLAT_clearVideo(SDL_Surface* screen) {
 	// memset(screen->pixels, 0, MMA_PAGE); // this causes crashing
 }
 void PLAT_clearAll(void) {
-	// buh
-	// MI_SYS_FlushInvCache(vid.buffer.vadd, ALIGN4K(MMA_PAGE));
-	// MI_SYS_MemsetPa(vid.buffer.padd, 0, MMA_PAGE);
-	
+	// Clear the FRAMEBUFFER too, not just the render buffer. The present blit only covers the
+	// game rect, so whatever sits in the letterbox/pillarbox region persists across a geometry
+	// change (previous system's frame, or anything else that wrote to fb0). initVideo zeroes the
+	// fb once at startup; this keeps it clean when the geometry changes mid-session.
+	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.fbsize);
+
 	PLAT_clearVideo(vid.screen); // clear backbuffer
 	vid.cleared = 1; // defer clearing frontbuffer until offscreen
 }
@@ -407,6 +455,11 @@ void PLAT_setVsync(int vsync) {
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
+	// Geometry change => the region the present blit covers changes too. Anything outside the new
+	// game rect (letterbox/pillarbox) would otherwise keep showing the PREVIOUS content, which is
+	// the glitchy band. Clear BOTH framebuffer pages here; per-frame clearing would be wasteful.
+	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.fbsize);
+
 	vid.direct = 0; // see PLAT_initVideo: the frontend always gets the RGB565 surface
 	vid.width = w;
 	vid.height = h;
@@ -492,7 +545,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	// using this SoC's hardware blitter instead of a software present.
 	int back = vid.page ^ 1;
 	fb_bindPage(back);
-	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 0,0,0); // nowait=0: wait for the blit
+	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 2,0,0); // rotate=2 (180, panel is mounted inverted), nowait=0
 	fb_pan(back);
 	vid.page = back;
 
