@@ -1573,6 +1573,15 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
+		// The device may still be enabled from a process that died without closing it, in which
+		// case MI_AO_SetPubAttr refuses and EVERY launch after the first is silent until reboot
+		// (MEASURED across 5 back-to-back systems). Reset it and try exactly once more.
+		LOG_info("SDL_OpenAudio failed (%s) — resetting the audio device and retrying\n", SDL_GetError());
+		PLAT_resetAudio();
+		if (SDL_OpenAudio(&spec_in, &spec_out) >= 0) {
+			LOG_info("audio recovered after reset\n");
+			goto audio_open_ok;
+		}
 		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
 		// MUST unmute before bailing. We muted just above, and on platforms that keep the codec
@@ -1582,6 +1591,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 		PLAT_muteAudio(0);
 		return;
 	}
+audio_open_ok:
 	
 	// Mute AFTER the open: MI_AO rejects SetMute/SetVolume before the device is enabled
 	// (MEASURED in dmesg: "MI_AO_IMPL_SetMute: Dev0 has not been enabled"), so muting earlier was
@@ -1660,6 +1670,7 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 // Weak default: platforms without a hardware mute simply do nothing.
 __attribute__((weak)) void PLAT_muteAudio(int mute) { (void)mute; }
 __attribute__((weak)) int PLAT_keepAudioOpen(void) { return 0; }
+__attribute__((weak)) void PLAT_resetAudio(void) { }
 
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
