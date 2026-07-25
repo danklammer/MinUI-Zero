@@ -721,30 +721,49 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 }
 
 #define PWM_DUTY_PATH "/sys/class/pwm/pwmchip0/pwm0/duty_cycle"
+// GPIO4 is the LCD PANEL POWER rail, separate from the PWM backlight. Sequence below is Onion's
+// display_setScreen() verbatim (src/common/system/display.h:186-214), which is the known-good
+// reference for this exact SoC.
+//
+// TWO BUGS THIS FIXES, both MEASURED on device:
+//  1. We wrote gpio4's value WITHOUT exporting it first on the enable path (only the disable path
+//     exported). Writing an unexported pin silently fails, so the panel rail never came back up
+//     after sleep. Verified: export -> direction -> write 1 reads back 1; without the export it
+//     stays 0. Onion exports, sets direction, writes, and unexports on EVERY call, BOTH directions.
+//  2. direction/value must be driven through the GPIOCHIP path. Onion uses
+//     /sys/devices/gpiochip0/gpio/gpio4/... for direction+value and only uses /sys/class/gpio for
+//     export/unexport.
+//
+// Duty ordering also matters and is Onion's: zero the duty BEFORE dropping the rail (no flash on
+// the way down), and restore it only AFTER the rail is up and the PWM has been re-armed — so the
+// panel is never lit at the old level during the transition.
+#define GPIO_EXPORT   "/sys/class/gpio/export"
+#define GPIO_UNEXPORT "/sys/class/gpio/unexport"
+#define GPIO4_DIR     "/sys/devices/gpiochip0/gpio/gpio4/direction"
+#define GPIO4_VAL     "/sys/devices/gpiochip0/gpio/gpio4/value"
 void PLAT_enableBacklight(int enable) {
-	// Zeroing duty before the panel rail drops avoids a bright flash on the way back up
-	// (MyMinUI/Onion both do this) — but it is ONLY safe if the enable path restores it. It did
-	// not, so waking from sleep drew the menu onto a backlight still at duty 0: the panel came up
-	// black and it read as "the menu flashes and goes away". Save the real duty on the way down
-	// and put it back after the PWM bounce.
 	static int saved_duty = -1;
-	if (enable) {
-		putInt("/sys/class/gpio/gpio4/value", 1);
-		putInt("/sys/class/gpio/unexport", 4);
-		putInt("/sys/class/pwm/pwmchip0/export", 0);
-		// The PWM must be disable/enable BOUNCED after the panel rail cycles — a plain enable=1
-		// leaves the output in an undefined state on this controller (verified in OnionOS).
-		putInt("/sys/class/pwm/pwmchip0/pwm0/enable",0);
-		putInt("/sys/class/pwm/pwmchip0/pwm0/enable",1);
-		if (saved_duty > 0) { SetRawBrightness(saved_duty); saved_duty = -1; }
-	}
-	else {
+
+	if (!enable) {
 		int d = getInt(PWM_DUTY_PATH);
 		if (d > 0) saved_duty = d; // remember the user's level; keep any earlier save otherwise
 		SetRawBrightness(0);
-		putInt("/sys/class/gpio/export", 4);
-		putFile("/sys/class/gpio/gpio4/direction", "out");
-		putInt("/sys/class/gpio/gpio4/value", 0);
+	}
+
+	// panel rail — export/direction/value/unexport every time, both directions
+	putInt(GPIO_EXPORT, 4);
+	putFile(GPIO4_DIR, "out");
+	putInt(GPIO4_VAL, enable ? 1 : 0);
+	putInt(GPIO_UNEXPORT, 4);
+
+	if (enable) {
+		// The PWM must be disable/enable BOUNCED after the rail cycles — a plain enable=1 leaves
+		// the output in an undefined state on this controller (Onion does this; undocumented there,
+		// but it is in every wake path they ship).
+		putInt("/sys/class/pwm/pwmchip0/export", 0);
+		putInt("/sys/class/pwm/pwmchip0/pwm0/enable", 0);
+		putInt("/sys/class/pwm/pwmchip0/pwm0/enable", 1);
+		if (saved_duty > 0) { SetRawBrightness(saved_duty); saved_duty = -1; }
 	}
 }
 void PLAT_powerOff(void) {
