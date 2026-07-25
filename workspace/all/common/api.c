@@ -1575,6 +1575,11 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
 		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
+		// MUST unmute before bailing. We muted just above, and on platforms that keep the codec
+		// enabled across processes (PLAT_keepAudioOpen) that mute is GLOBAL and PERSISTENT — a
+		// single failed open would otherwise leave the whole device silent, including the menu
+		// and every later game, with nothing to undo it.
+		PLAT_muteAudio(0);
 		return;
 	}
 	

@@ -232,14 +232,44 @@ static void setMute(int flag) {
 	}
 }
 
+// Raw ioctls, same shape as setMute above. MEASURED on device: the libmi_ao API calls fail with
+//   [MI ERR] MI_AO_SetVolume[4481]: Dev0 failed to set valume!!! error number:0xa0052017
+//   [MI ERR] MI_AO_GetVolume[4518]: Dev0 failed to get valume!!! error number:0xa0052017
+// whenever this process is not the one that brought the AO device up — which is most of the time
+// now that the codec is deliberately left enabled across process boundaries. When that happened on
+// the wake path (PWR_exitSleep -> SetVolume(GetVolume())) the volume was never restored from the
+// -60 mute floor, and the device came back SILENT.
+// The raw ioctl path works regardless of ownership (setMute already relies on it), so use it as a
+// fallback. Constants confirmed independently by OnionOS (volume.h), spruceOS (mm_set_volume.py)
+// and the SDL2 miyoo backend.
+#define MI_AO_SETVOLUME 0x4008690b
+#define MI_AO_GETVOLUME 0xc008690c
+static int aoVolIoctl(unsigned long req, int* val) {
+	int fd = open("/dev/mi_ao", O_RDWR);
+	if (fd < 0) return 0;
+	int buf2[] = {0, *val};
+	uint64_t buf1[] = {sizeof(buf2), (uintptr_t)buf2};
+	int r = ioctl(fd, req, buf1);
+	if (r >= 0) *val = buf2[1];
+	close(fd);
+	return r >= 0;
+}
+
 void SetRawVolume(int val) {
-	int old; MI_AO_GetVolume(0, &old);
-	// printf("SetRawVolume(%i) // %i\n", val,old); fflush(stdout);
+	int old = 0;
+	if (MI_AO_GetVolume(0, &old) != 0) {       // API path failed — try the ioctl
+		int v = 0;
+		if (aoVolIoctl(MI_AO_GETVOLUME, &v)) old = v;
+		else old = val;                        // unknown: skip the mute-boundary transition
+	}
 	if (old!=val) {
 			 if (val==-60) setMute(1);
 		else if (old==-60) setMute(0);
 	}
-	MI_AO_SetVolume(0,val);
+	if (MI_AO_SetVolume(0,val) != 0) {         // API path failed — the ioctl still works
+		int v = val;
+		aoVolIoctl(MI_AO_SETVOLUME, &v);
+	}
 }
 
 int GetJack(void) {
