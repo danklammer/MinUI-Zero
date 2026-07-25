@@ -464,22 +464,10 @@ void PLAT_clearAll(void) {
 }
 
 void PLAT_setVsync(int vsync) {
-	// TODO: Prevent Tearing/Vsync
-	// isn't a 1:1 mapping of what's happening here...
-	if (vsync==VSYNC_OFF) {
-		putenv("GFX_FLIPWAIT=0");
-		putenv("GFX_BLOCKING=0");
-	}
-	else if (vsync==VSYNC_LENIENT) { // this is tear free but results in flicker issues with settings overlay
-		putenv("GFX_FLIPWAIT=0");
-		putenv("GFX_BLOCKING=1");
-	}
-	else if (vsync==VSYNC_STRICT) { // this actually introduces tearing but reduces/eliminates judder and fixes flicker issues with settings overlay
-		putenv("GFX_FLIPWAIT=1");
-		putenv("GFX_BLOCKING=1");
-	}
-	// (SDL_GetVideoInfo was SDL 1.2 only, and only re-read those env vars for the custom SDL;
-	// we present via fbdev now, so there is nothing to poke.)
+	// No-op by design. The GFX_FLIPWAIT/GFX_BLOCKING env vars this used to set were read ONLY by
+	// the old custom SDL 1.2's internal flip; we now present ourselves (MI_GFX blit +
+	// FBIOPAN_DISPLAY with FB_ACTIVATE_VBL), so vsync behaviour lives in PLAT_flip, not here.
+	(void)vsync;
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
@@ -499,9 +487,15 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 		surf_clearPa(vid.screen);
 		SDL_FreeSurface(vid.screen);
 		
-		if ((size_t)vid.pitch * vid.height > (size_t)MMA_PAGE)
-			LOG_info("resizeVideo: %dx%d p=%d needs %zu bytes > MMA_PAGE %d — WILL CORRUPT\n",
-				vid.width, vid.height, vid.pitch, (size_t)vid.pitch * vid.height, (int)MMA_PAGE);
+		if ((size_t)vid.pitch * vid.height > (size_t)MMA_PAGE) {
+			// HARD clamp, not a warning. An oversized buffer is what produced the NES garbage band:
+			// the frontend wrote past the page into neighbouring MMA memory and we presented it.
+			// Losing rows is ugly but bounded; corrupting the next page is not.
+			int max_h = (int)((size_t)MMA_PAGE / (size_t)vid.pitch);
+			LOG_info("resizeVideo: %dx%d p=%d needs %zu > MMA_PAGE %d — clamping height to %d\n",
+				vid.width, vid.height, vid.pitch, (size_t)vid.pitch * vid.height, (int)MMA_PAGE, max_h);
+			vid.height = max_h > 0 ? max_h : 1;
+		}
 		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
 		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 		memset(vid.screen->pixels, 0, vid.pitch * vid.height);
@@ -717,6 +711,9 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 }
 
 void PLAT_enableBacklight(int enable) {
+	// Drop brightness to 0 BEFORE disabling, so re-enabling cannot flash at the old duty
+	// cycle before brightness is restored (ported from MyMinUI).
+	if (!enable) SetRawBrightness(0);
 	if (enable) {
 		putInt("/sys/class/gpio/gpio4/value", 1);
 		putInt("/sys/class/gpio/unexport", 4);
