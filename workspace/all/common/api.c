@@ -740,12 +740,27 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 	
 	if (pwr.is_charging) {
 		GFX_blitAsset(ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
+
+		// Show the level while charging too. Previously this branch drew only the outline and a
+		// bolt, so plugging in made the battery read EMPTY regardless of how full it actually was.
+		// Fill first, bolt on top, so the bolt still reads clearly against it.
+		rect = asset_rects[ASSET_BATTERY_FILL];
+		SDL_Rect clip = rect;
+		clip.w = rect.w * pwr.charge / 100;
+		if (clip.w > 0) {
+			clip.x = rect.w - clip.w;
+			clip.y = 0;
+			// Always the normal fill here — a low battery that is CHARGING is not a warning state.
+			GFX_blitAsset(ASSET_BATTERY_FILL, &clip, dst, &(SDL_Rect){x+SCALE1(3)+clip.x,y+SCALE1(2)});
+		}
+
 		GFX_blitAsset(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x+SCALE1(3),y+SCALE1(2)});
 	}
 	else {
+		// Discharging path deliberately UNCHANGED.
 		int percent = pwr.charge;
 		GFX_blitAsset(percent<=10?ASSET_BATTERY_LOW:ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
-		
+
 		rect = asset_rects[ASSET_BATTERY_FILL];
 		SDL_Rect clip = rect;
 		clip.w *= percent;
@@ -753,7 +768,7 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 		if (clip.w<=0) return;
 		clip.x = rect.w - clip.w;
 		clip.y = 0;
-		
+
 		GFX_blitAsset(percent<=20?ASSET_BATTERY_FILL_LOW:ASSET_BATTERY_FILL, &clip, dst, &(SDL_Rect){x+SCALE1(3)+clip.x,y+SCALE1(2)});
 	}
 }

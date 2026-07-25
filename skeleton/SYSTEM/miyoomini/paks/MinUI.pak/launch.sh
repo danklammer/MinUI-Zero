@@ -94,15 +94,23 @@ unset LD_PRELOAD
 
 lumon.elf & # adjust lcd luma and saturation
 
-# Charge screen DELIBERATELY NOT RUN. batmon.elf runs in the FOREGROUND and blocks the whole boot
-# until POWER is pressed, and it blanks the panel after 3 seconds — so booting on the charger gave
-# a black, unresponsive device that came back the instant you unplugged it. That is
-# indistinguishable from a hang, and it was reported as a crash twice.
-# Worse, unplugging while it is up makes its loop exit with launch==0, which runs `shutdown` — so
-# the charger being removed POWERED THE DEVICE OFF.
-# The device charges perfectly well sitting in the menu. spruceOS likewise has no charge screen on
-# this hardware. Battery state is still shown by the menu's own indicator.
-# (Kept for reference: `batmon.elf` remains in bin/ and can be run by hand.)
+# Charging screen. Runs in the foreground by design — it is what you see INSTEAD of booting when
+# the device is powered on plugged in — but it is now safe to do that:
+#   POWER          -> exits, boot continues
+#   charger pulled -> exits, boot continues  (the old one ran `shutdown` here, so unplugging
+#                     powered the device off)
+#   idle           -> dims only, stays responsive  (the old one blanked after 3s and blocked,
+#                     which was indistinguishable from a hang and got reported as a crash twice)
+# It draws a real fill level and percentage from AXP reg 0xB9, not a static png, and no longer
+# busy-spins a core for the whole charging session.
+if [ -f /customer/app/axp_test ]; then
+	# Plus: AXP reg 0x00 bit2 = battery current direction (1 = charging)
+	CHARGING=`/customer/app/axp_test | awk -F'[,: {}]+' '{print $7}'`
+	[ "$CHARGING" = "3" ] && batmon.elf
+else
+	CHARGING=`cat /sys/devices/gpiochip0/gpio/gpio59/value 2>/dev/null`
+	[ "$CHARGING" = "1" ] && batmon.elf
+fi
 
 keymon.elf & # &> /mnt/SDCARD/keymon.txt &
 
