@@ -497,10 +497,17 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 		surf_clearPa(vid.screen);
 		SDL_FreeSurface(vid.screen);
 		
+		if (vid.pitch <= 0) {
+			// Guard the division below: a pitch of 0 would SIGFPE rather than clamp.
+			LOG_info("resizeVideo: refusing pitch=%d (%dx%d)\n", vid.pitch, vid.width, vid.height);
+			vid.pitch = vid.width * FIXED_BPP;
+		}
 		if ((size_t)vid.pitch * vid.height > (size_t)MMA_PAGE) {
-			// HARD clamp, not a warning. An oversized buffer is what produced the NES garbage band:
-			// the frontend wrote past the page into neighbouring MMA memory and we presented it.
-			// Losing rows is ugly but bounded; corrupting the next page is not.
+			// Clamp the surface height so we never advertise more page than we own.
+			// NOTE: this is only ACTUALLY protective because minarch re-reads screen->h after
+			// GFX_resize and lowers renderer.dst_h to match. The scalers take dst_h as a
+			// parameter and never consult the surface, so clamping here alone would have hidden
+			// the garbage band while the overflow continued — which is what it did before.
 			int max_h = (int)((size_t)MMA_PAGE / (size_t)vid.pitch);
 			LOG_info("resizeVideo: %dx%d p=%d needs %zu > MMA_PAGE %d — clamping height to %d\n",
 				vid.width, vid.height, vid.pitch, (size_t)vid.pitch * vid.height, (int)MMA_PAGE, max_h);
