@@ -1,12 +1,18 @@
 #!/bin/sh
 
-# snes9x2005_plus, same as upstream miyoomini and our own tg5040. It is the LIGHTWEIGHT SNES core
-# and it is the right one for a dual-core A7 at 1200MHz.
-# Do NOT switch this to mednafen_supafaust: supafaust is an accuracy core, it saturates this SoC,
-# and SNES runs visibly slow on it (device-reported). It was briefly used here only because
-# snes9x2005_plus had not been staged into cores/ — the fix was to build the core, not to
-# substitute a heavier one.
-EMU_EXE=snes9x2005_plus
+# SNES core. BOTH are shipped in cores/, so this is a one-line switch:
+#   mednafen_supafaust  — accuracy-focused (Mednafen lineage). Better audio/timing fidelity.
+#   snes9x2005_plus     — lightweight, what upstream miyoomini and our tg5040 ship.
+#
+# Set to supafaust by preference. Whether this SoC (dual Cortex-A7 @1200MHz max) can actually hold
+# 60fps on it is MEASURED, not assumed — ZERO_MEASURE below logs fps/cpu/clock once a second so the
+# choice is evidence-based. An earlier claim here that supafaust "saturates this SoC" was an
+# inference from a slowdown report, made while several unrelated bugs were live. It was never
+# measured.
+#
+# NOTE: save states are CORE-SPECIFIC. Switching cores orphans existing SNES save states
+# (in-game saves / SRAM are fine).
+EMU_EXE=mednafen_supafaust
 
 ###############################
 
@@ -23,5 +29,10 @@ cd "$HOME"
 # settles well below 600.
 export MINARCH_FMIN=600000
 export MINARCH_FMAX=1200000
+
+# TEMPORARY (bench): logs "MEASURE ... fps=actual/target cpu=.. ceil=..MHz" once a second to
+# $LOGS_PATH/SFC.txt so we can judge supafaust vs snes9x2005_plus on real numbers instead of
+# feel. Costs one SD write per second — REMOVE once the core choice is settled.
+export ZERO_MEASURE=1
 
 nice -20 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
