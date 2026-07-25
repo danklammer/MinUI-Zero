@@ -1613,7 +1613,10 @@ int main (int argc, char *argv[]) {
 				tmp[0] = '\0';
 				
 				sprintf(res_path, "%s/.res/%s.png", res_root, res_name);
-				LOG_info("res_path: %s\n", res_path);
+				// NO logging here: this runs on every menu redraw (i.e. every button press), and
+				// stdout is redirected to a file ON THE SD CARD by MinUI.pak/launch.sh — so a
+				// debug line here is an SD write per keypress, for a path that usually does not
+				// even exist. Card wear and I/O for nothing.
 				if (exists(res_path)) {
 					// IMG_Load returns NULL on a corrupt/unsupported file, and the old code
 					// dereferenced it immediately (thumb->w) — a guaranteed crash on any bad PNG.
