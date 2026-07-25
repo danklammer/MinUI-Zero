@@ -6,8 +6,12 @@ SDCARD_PATH="/mnt/SDCARD"
 UPDATE_PATH="$SDCARD_PATH/MinUI.zip"
 SYSTEM_PATH="$SDCARD_PATH/.system"
 
+# Boot at a real, modest OPP rather than pinning `performance` (which parks at 1200MHz for the
+# whole boot + menu until the first PLAT_setCPUMaxFreq call). MinUI.pak/launch.sh sets the
+# userspace governor and the menu clock immediately after this.
 CPU_PATH=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-echo performance > "$CPU_PATH"
+echo userspace > "$CPU_PATH"
+echo 800000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_setspeed 2>/dev/null
 
 # install/update
 if [ -f "$UPDATE_PATH" ]; then 

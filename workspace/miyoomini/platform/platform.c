@@ -918,11 +918,12 @@ int PLAT_isOnline(void) {
 static const int mmp_opp_khz[] = { 400000, 600000, 800000, 1000000, 1100000, 1200000 };
 #define MMP_OPP_COUNT ((int)(sizeof(mmp_opp_khz)/sizeof(mmp_opp_khz[0])))
 
-static void mmp_writeStr(const char* path, const char* val) {
+static int mmp_writeStr(const char* path, const char* val) {
 	int fd = open(path, O_WRONLY);
-	if (fd < 0) return;
-	write(fd, val, strlen(val));
+	if (fd < 0) return 0;
+	ssize_t n = write(fd, val, strlen(val));
 	close(fd);
+	return n == (ssize_t)strlen(val);
 }
 
 void PLAT_setCPUMaxFreq(int khz) {
@@ -937,15 +938,20 @@ void PLAT_setCPUMaxFreq(int khz) {
 	if (khz >= mmp_opp_khz[MMP_OPP_COUNT-1]) target = mmp_opp_khz[MMP_OPP_COUNT-1];
 
 	if (!gov_set) { // take ownership of the clock once per session
-		mmp_writeStr(MMP_CPUF_DIR "/scaling_governor", "userspace");
-		gov_set = 1;
+		// Only latch this if it actually succeeded — otherwise we would stop trying to claim
+		// the governor after a single transient failure and every later setspeed write would be
+		// applied under whatever governor happens to be active.
+		gov_set = mmp_writeStr(MMP_CPUF_DIR "/scaling_governor", "userspace");
 	}
 	if (target == last_khz) return; // avoid pointless sysfs writes every tick
-	last_khz = target;
 
 	char buf[16];
 	snprintf(buf, sizeof(buf), "%d", target);
-	mmp_writeStr(MMP_CPUF_DIR "/scaling_setspeed", buf);
+	// Cache ONLY on success. This used to assign last_khz before the write, so one failed write
+	// convinced the governor it had already applied that clock and it never retried — the closed
+	// loop silently went open and the ceiling stuck wherever it was.
+	if (mmp_writeStr(MMP_CPUF_DIR "/scaling_setspeed", buf)) last_khz = target;
+	else LOG_info("gov: scaling_setspeed write FAILED for %d kHz (will retry)\n", target);
 }
 
 ///////////////////////////////

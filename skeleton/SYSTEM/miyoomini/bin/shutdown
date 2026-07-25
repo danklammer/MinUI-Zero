@@ -4,8 +4,19 @@ if [ -n "$DATETIME_PATH" ]; then
 	echo `date +'%F %T'` > "$DATETIME_PATH"
 fi
 
-if $IS_PLUS; then
-	sync && poweroff
+# NOTE: this used to be `if $IS_PLUS; then`. When IS_PLUS is unset — the case for ANY caller that
+# did not inherit MinUI.pak/launch.sh's environment, including PLAT_powerOff's system("shutdown")
+# from a pak that cleared it — that expands to `if ; then`, a shell SYNTAX ERROR. The script then
+# exits without powering off and PLAT_powerOff waits forever for a shutdown that never comes.
+# Quote the test, and detect the model directly as a fallback.
+if [ -z "$IS_PLUS" ]; then
+	if [ -f /customer/app/axp_test ]; then IS_PLUS=true; else IS_PLUS=false; fi
+fi
+
+sync
+if [ "$IS_PLUS" = "true" ]; then
+	poweroff
 else
-	sync && reboot && sleep 10
+	# The plain Mini has no working poweroff; reboot is how it actually powers down.
+	reboot && sleep 10
 fi
