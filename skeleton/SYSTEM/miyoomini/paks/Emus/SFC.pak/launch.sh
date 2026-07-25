@@ -1,6 +1,8 @@
 #!/bin/sh
 
-EMU_EXE=snes9x2005_plus
+# We ship mednafen_supafaust for SNES (the core the on-device measurements used).
+# snes9x2005_plus is NOT staged in cores/, so referencing it fails to load the core.
+EMU_EXE=mednafen_supafaust
 
 ###############################
 

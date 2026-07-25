@@ -367,7 +367,11 @@ void PLAT_setCPUMaxFreq(int khz);
 // Silence the DAC across audio open/close. Analog transients (the audible POP) happen when
 // the codec is enabled or torn down; platforms with a hardware mute implement this, all
 // others get the weak no-op in api.c.
-void PLAT_muteAudio(int mute); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
+void PLAT_muteAudio(int mute);
+// Return 1 if the audio device must NOT be closed on teardown. On SigmaStar the SDL2 MMIYOO driver
+// calls MI_AO_Disable/DisableChn on close, and that power-down is an audible POP; leaving the codec
+// enabled for the next process avoids the transient entirely.
+int PLAT_keepAudioOpen(void); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
 int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mechanism exists (tg5040: 0 for now)
 void PLAT_setUndervolt(int millivolts); // legacy spike API, superseded by the table-driven authority below
 void PLAT_setCPUVoltForCeil(int khz);   // apply the calibrated voltage covering any OPP <= (rounded-up) ceiling

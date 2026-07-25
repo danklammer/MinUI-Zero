@@ -238,6 +238,12 @@ static void* input_thread(void* arg) {
 // MI_AO hardware mute. Same ioctl libmsettings uses for volume 0. Unmute is deferred slightly:
 // the DAC needs a moment after being enabled before it is safe to let signal through, otherwise
 // we just move the pop rather than remove it.
+// SDL2's MMIYOO driver power-cycles the codec (MI_AO_Disable/DisableChn) on close, which pops.
+// keymon and minui hold /dev/mi_ao open anyway, so keeping it enabled costs nothing and removes
+// the transient on game exit (and the matching one on the next launch, since Enable then finds
+// the module already initialized).
+int PLAT_keepAudioOpen(void) { return 1; }
+
 #define MI_AO_SETMUTE_IOCTL 0x4008690d
 void PLAT_muteAudio(int mute) {
 	int fd = open("/dev/mi_ao", O_RDWR);
