@@ -1615,6 +1615,14 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
 	atomic_store(&snd.paused, 1); // no consumer exists now: producers drop instead of waiting (review 5/r3)
+	// Mute BEFORE the close, exactly as SND_quit does. On SigmaStar the close IS
+	// MI_AO_Disable/DisableChn, and that codec power-down is the audible pop — so without this,
+	// every sleep popped and every wake popped again on reopen. This was the same defect SND_quit
+	// was fixed for; this path was missed.
+	// NOTE: unlike SND_quit we still CLOSE here even when PLAT_keepAudioOpen() is set. Closing is
+	// what actually stops the SDL audio thread; leaving it open costs ~7% CPU for the whole
+	// faux-sleep, which on a sleep path is a worse trade than a muted transient.
+	PLAT_muteAudio(1);
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
 	SND_signalSpace(); // a blocked producer wakes and exits via the paused check
@@ -1640,6 +1648,9 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	}
 	atomic_store(&snd.paused, 0); // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
+	// Release the mute SND_pause took. The reopen above re-enabled/reconfigured the codec, which
+	// is the transient we were hiding; the ring is prefilling so nothing audible is lost.
+	PLAT_muteAudio(0);
 }
 // Weak default: platforms without a hardware mute simply do nothing.
 __attribute__((weak)) void PLAT_muteAudio(int mute) { (void)mute; }
@@ -2263,6 +2274,11 @@ void PWR_powerOff(void) {
 }
 
 static void PWR_enterSleep(void) {
+	// Stop the haptics before anything else. Sleeping mid-rumble left the motor running for the
+	// ENTIRE faux-sleep (up to the 2-minute escalation) — the vib thread has no timeout that stops
+	// an already-active rumble, and nothing else on this path clears it. Onion calls rumble(0) in
+	// its suspend sequence for the same reason.
+	VIB_setStrength(0);
 	SND_pause(); // fully closes the audio device (thread stops); no-op when sound isn't initialized (minui)
 	if (GetHDMI()) {
 		PLAT_clearVideo(gfx.screen);
