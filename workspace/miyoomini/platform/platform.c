@@ -344,6 +344,7 @@ static struct VID_Context {
 	void* fbmmap;
 	size_t fbsize;
 	int page_bytes;       // bytes per visible page (line_length * yres)
+	int pages;            // scanout pages the driver actually gave us (2 or 3)
 } vid;
 
 // Point vid.video at framebuffer page `page`. pixelsPa carries the PHYSICAL address so
@@ -409,6 +410,9 @@ static int mmp_reclaimMMA(void) {
 	return freed;
 }
 
+static void mmpFlipStart(void); // async flip thread; defined with the flip machinery below
+static void mmpFlipStop(void);
+
 SDL_Surface* PLAT_initVideo(void) {
 	is_plus = exists("/customer/app/axp_test");
 	is_560p = hasMode(MODES_PATH, "752x560p") && exists(USERDATA_PATH "/enable-560p");
@@ -427,24 +431,47 @@ SDL_Surface* PLAT_initVideo(void) {
 		SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS);
 	}
 
-	// --- fbdev: 32bpp, double-buffered (yres_virtual = 2 * yres) ---
+	// --- fbdev: 32bpp, TRIPLE-buffered where the reservation allows ---
+	// FBIOPAN_DISPLAY BLOCKS ~16.76ms on this driver (measured, both activate flags). With only
+	// two pages the render thread pays that stall every frame, so ONE late frame costs a whole
+	// extra frame and the rate halves. MEASURED on GBC — the lightest core we ship, ~8% load —
+	// dropping to exactly 29.8fps (59.7/2) with the audio ring backing up. A third page plus an
+	// async flip thread lets the producer hand the pan off and keep working.
+	// Room check: the fb reservation is 0x400000 (4MB); 3 x 640x480x4 = 3.69MB fits. We still
+	// verify what the driver actually accepted and fall back to 2 pages if it refused.
 	vid.fdfb = open("/dev/fb0", O_RDWR);
 	ioctl(vid.fdfb, FBIOGET_FSCREENINFO, &vid.finfo);
 	ioctl(vid.fdfb, FBIOGET_VSCREENINFO, &vid.vinfo);
 	vid.vinfo.xres = FIXED_WIDTH;
 	vid.vinfo.yres = FIXED_HEIGHT;
 	vid.vinfo.xres_virtual = FIXED_WIDTH;
-	vid.vinfo.yres_virtual = FIXED_HEIGHT * 2;
+	vid.vinfo.yres_virtual = FIXED_HEIGHT * 3;
 	vid.vinfo.bits_per_pixel = 32;
 	vid.vinfo.yoffset = 0;
 	vid.vinfo.activate = FB_ACTIVATE_NOW;
-	ioctl(vid.fdfb, FBIOPUT_VSCREENINFO, &vid.vinfo);
+	if (ioctl(vid.fdfb, FBIOPUT_VSCREENINFO, &vid.vinfo) < 0) {
+		// driver refused 3 pages — ask for the 2 we know work
+		vid.vinfo.yres_virtual = FIXED_HEIGHT * 2;
+		ioctl(vid.fdfb, FBIOPUT_VSCREENINFO, &vid.vinfo);
+	}
 	ioctl(vid.fdfb, FBIOBLANK, FB_BLANK_UNBLANK); // previous owner may have blanked the panel
 	ioctl(vid.fdfb, FBIOGET_FSCREENINFO, &vid.finfo);
 	ioctl(vid.fdfb, FBIOGET_VSCREENINFO, &vid.vinfo);
 
+	// Trust what the driver reports, never what we asked for.
+	vid.pages = vid.vinfo.yres ? (int)(vid.vinfo.yres_virtual / vid.vinfo.yres) : 1;
+	if (vid.pages < 1) vid.pages = 1;
+	if (vid.pages > 3) vid.pages = 3;
+
 	vid.page_bytes = vid.finfo.line_length * vid.vinfo.yres;
-	vid.fbsize     = (size_t)vid.page_bytes * 2;
+	vid.fbsize     = (size_t)vid.page_bytes * vid.pages;
+	if (vid.finfo.smem_len && vid.fbsize > vid.finfo.smem_len) {
+		// reservation smaller than the geometry implies — clamp rather than map past the end
+		vid.pages  = vid.finfo.smem_len / vid.page_bytes;
+		vid.fbsize = (size_t)vid.page_bytes * vid.pages;
+	}
+	LOG_info("fb: %d page(s), yres_virtual=%d smem_len=%u\n",
+		vid.pages, vid.vinfo.yres_virtual, (unsigned)vid.finfo.smem_len);
 	vid.fbmmap     = mmap(NULL, vid.fbsize, PROT_READ|PROT_WRITE, MAP_SHARED, vid.fdfb, 0);
 	g_fb_base = vid.fbmmap; g_fb_len = vid.fbsize;
 	memset(vid.fbmmap, 0, vid.fbsize);
@@ -531,11 +558,15 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
 	surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 	memset(vid.screen->pixels, 0, vid.pitch * vid.height);
-	
+
+	mmpFlipStart(); // async pan, if the driver gave us 3 pages
+
 	return vid.direct ? vid.video : vid.screen;
 }
 
 void PLAT_quitVideo(void) {
+	mmpFlipStop(); // must be first: the thread pans through vid.fdfb/vid.vinfo
+
 	// Free the PA side-table slots too. It only has PA_SLOTS entries; leaking two per
 	// init->quit cycle eventually exhausts it, after which surf_setPa silently no-ops,
 	// surf_getPa returns 0, and GFX_BlitSurfaceExec falls back to SDL_BlitSurface — which does
@@ -713,6 +744,67 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 
 static void drawDebugOverlay(void); // defined with the rest of the HUD code below
 
+///////////////////////////////
+// Async page flip.
+//
+// FBIOPAN_DISPLAY blocks ~16.76ms on this driver (MEASURED). Doing that on the render thread means
+// one late frame costs a whole extra frame and the rate halves — observed on GBC at exactly
+// 29.8fps (= 59.7/2) while the core itself used only ~8% CPU. Handing the pan to a thread lets the
+// producer start the next frame immediately.
+//
+// Only enabled with 3 scanout pages: with 2 the producer would have to blit into the page the
+// panner is still handing to scanout. With 3 there is always a free page (one on screen, one
+// pending, one being drawn).
+// The pending slot is 1-deep and COALESCING — a newer frame replaces an unpanned older one rather
+// than queueing, so we never build latency.
+static pthread_t       flip_pt;
+static pthread_mutex_t flip_mx  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  flip_req = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  flip_ack = PTHREAD_COND_INITIALIZER;
+static int flip_pending = -1;  // page awaiting pan, -1 = none
+static int flip_active  = -1;  // page currently being panned, -1 = none
+static int flip_run     = 0;
+
+static void* flip_thread(void* arg) {
+	(void)arg;
+	pthread_mutex_lock(&flip_mx);
+	while (flip_run) {
+		while (flip_run && flip_pending < 0) pthread_cond_wait(&flip_req, &flip_mx);
+		if (!flip_run) break;
+		flip_active  = flip_pending;
+		flip_pending = -1;
+		pthread_mutex_unlock(&flip_mx);
+
+		fb_pan(flip_active);            // the ~16.76ms block, off the render thread
+
+		pthread_mutex_lock(&flip_mx);
+		flip_active = -1;
+		pthread_cond_broadcast(&flip_ack); // a producer may be waiting for this page to free
+	}
+	pthread_mutex_unlock(&flip_mx);
+	return NULL;
+}
+
+static void mmpFlipStart(void) {
+	if (vid.pages < 3) return;          // stay synchronous on 2 pages
+	flip_run = 1;
+	if (pthread_create(&flip_pt, NULL, flip_thread, NULL) != 0) {
+		flip_run = 0;
+		LOG_info("fb: flip thread failed to start — falling back to synchronous pan\n");
+	}
+	else LOG_info("fb: async flip thread started (%d pages)\n", vid.pages);
+}
+
+static void mmpFlipStop(void) {
+	if (!flip_run) return;
+	pthread_mutex_lock(&flip_mx);
+	flip_run = 0;
+	pthread_cond_broadcast(&flip_req);
+	pthread_mutex_unlock(&flip_mx);
+	pthread_join(flip_pt, NULL);        // join, don't cancel: a cancelled thread can die holding
+	flip_pending = flip_active = -1;    // flip_mx and every later lock would deadlock
+}
+
 void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	// Present: MI_GFX blits (and scales, when the render target is core-sized) from the MMA
 	// buffer straight into the framebuffer page's PHYSICAL address, then we page-flip. The
@@ -722,16 +814,38 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	// the same rotate=2 as the game frame. No-op when the HUD is off.
 	drawDebugOverlay();
 
-	int back = vid.page ^ 1;
+	int back = (vid.pages > 1) ? (vid.page + 1) % vid.pages : 0;
+
+	if (flip_run) {
+		// Never draw into the page that is on screen or about to be. With 3 pages one is always
+		// free, so this normally does not wait at all.
+		pthread_mutex_lock(&flip_mx);
+		while (flip_run && (back == flip_active || back == flip_pending))
+			pthread_cond_wait(&flip_ack, &flip_mx);
+		pthread_mutex_unlock(&flip_mx);
+	}
+
 	fb_bindPage(back);
 	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 2,0,0); // rotate=2 (180, panel is mounted inverted), nowait=0
-	fb_pan(back);
+
+	if (flip_run) {
+		pthread_mutex_lock(&flip_mx);
+		flip_pending = back;              // coalescing: a newer frame replaces an unpanned one
+		pthread_cond_signal(&flip_req);
+		pthread_mutex_unlock(&flip_mx);
+	}
+	else fb_pan(back);                    // 2-page fallback: pan inline as before
+
 	vid.page = back;
 
-	// swap the render-side backbuffer
+	// Swap the render-side backbuffer. This is INDEPENDENT of the scanout page count: there are
+	// exactly PAGE_COUNT(2) MMA render buffers, so it needs its own toggle. Keying it off
+	// (vid.page&1) was correct for 2 scanout pages but yields 0,1,0,0,1,0 for 3.
 	if (!vid.direct) {
-		vid.screen->pixels = vid.buffer.vadd + ALIGN4K((vid.page&1)*MMA_PAGE);
-		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K((vid.page&1)*MMA_PAGE));
+		static int mma_page = 0;
+		mma_page ^= 1;
+		vid.screen->pixels = vid.buffer.vadd + ALIGN4K(mma_page*MMA_PAGE);
+		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(mma_page*MMA_PAGE));
 	}
 
 	if (vid.cleared) {
