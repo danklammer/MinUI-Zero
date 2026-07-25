@@ -1,6 +1,7 @@
 // miyoomini
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include <linux/fb.h>
 #include <pthread.h>
