@@ -58,7 +58,16 @@ export CPU_SPEED_PERF=1200000
 echo userspace > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
 echo $CPU_SPEED_MENU > /sys/devices/system/cpu/cpufreq/policy0/scaling_setspeed 2>/dev/null
 
-export MY_MODEL=`strings -n 5 /customer/app/MainUI | grep MY` # 0.13s
+# `strings` over the 1.4MB vendor MainUI binary costs a MEASURED 130ms on every single boot, and
+# the answer cannot change without a firmware reflash. Cache it. (Same fix as the tg5040
+# model-detect cache.) Delete $USERDATA_PATH/model.txt to force a re-probe.
+MODEL_CACHE="$USERDATA_PATH/model.txt"
+if [ -s "$MODEL_CACHE" ]; then
+	export MY_MODEL=`cat "$MODEL_CACHE"`
+else
+	export MY_MODEL=`strings -n 5 /customer/app/MainUI | grep MY`
+	echo "$MY_MODEL" > "$MODEL_CACHE"
+fi
 
 MIYOO_VERSION=`/etc/fw_printenv miyoo_version`
 export MIYOO_VERSION=${MIYOO_VERSION#miyoo_version=}
