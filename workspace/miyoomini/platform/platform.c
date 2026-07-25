@@ -239,11 +239,22 @@ static void* input_thread(void* arg) {
 // MI_AO hardware mute. Same ioctl libmsettings uses for volume 0. Unmute is deferred slightly:
 // the DAC needs a moment after being enabled before it is safe to let signal through, otherwise
 // we just move the pop rather than remove it.
-// SDL2's MMIYOO driver power-cycles the codec (MI_AO_Disable/DisableChn) on close, which pops.
-// keymon and minui hold /dev/mi_ao open anyway, so keeping it enabled costs nothing and removes
-// the transient on game exit (and the matching one on the next launch, since Enable then finds
-// the module already initialized).
-int PLAT_keepAudioOpen(void) { return 1; }
+//
+// keepAudioOpen is 0. It WAS 1: SDL2's MMIYOO driver calls MI_AO_Disable/DisableChn on close, that
+// power-down is the exit pop, and leaving the codec enabled did genuinely remove it (confirmed on
+// device). But it breaks the NEXT open outright — MEASURED:
+//     MI_AO_SetPubAttr[3364]: Dev0 failed to set pub attr!!! error number:0xa0052009
+//     SDL_OpenAudio error:  — audio disabled
+//     MI_AO_Enable[3413]: Dev0 has not be set pub attribute.
+// MI_AO_SetPubAttr cannot reconfigure a device that is still ENABLED, and the SDL driver calls it
+// unconditionally on every open. So the trade was: no exit pop, but no audio at all in the next
+// game. Silence is far worse than a click, so the codec closes normally again.
+//
+// The pop is still worth solving, but not this way. The remaining levers are the mute discipline
+// around open/close (kept, see SND_init/SND_pause) and — if that is not enough — a persistent
+// holder process that owns MI_AO for the whole session, which is how every other CFW on this SoC
+// does it. Do not simply flip this back to 1 without handling SetPubAttr.
+int PLAT_keepAudioOpen(void) { return 0; }
 
 #define MI_AO_SETMUTE_IOCTL 0x4008690d
 void PLAT_muteAudio(int mute) {
