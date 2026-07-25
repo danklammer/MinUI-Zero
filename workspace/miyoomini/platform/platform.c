@@ -754,18 +754,28 @@ void PLAT_powerOff(void) {
 ///////////////////////////////
 
 // copy/paste of 35XX version now that we have our own overclock.elf
+void PLAT_setCPUMaxFreq(int khz); // defined below, next to the OPP table
+
 void PLAT_setCPUSpeed(int speed) {
-	int freq = 0;
+	// WAS: upstream's verbatim `system("overclock.elf <freq>")` with a 504/1104/1296/1488 MHz
+	// table. That OVERCLOCKS — 1488 MHz is 24% above this SoC's top stock OPP (1200 MHz, which
+	// Onion's own shipped docs confirm as stock in two places) — and overclock.elf reaches it by
+	// poking the SigmaStar MPLL registers through /dev/mem, bypassing cpufreq entirely, so
+	// scaling_setspeed cannot undo it. The in-game "CPU Speed" menu made that reachable at will,
+	// on a fork whose north star is NEVER overclock. 504000 was not a real OPP either, so the
+	// menu left cpufreq and the actual MPLL disagreeing.
+	//
+	// Now: map to REAL measured OPPs and go through the same snapped, clamped actuator the
+	// governor uses, so only one mechanism ever owns the clock (see the note above the OPP table).
+	int khz = 0;
 	switch (speed) {
-		case CPU_SPEED_MENU: 		freq =  504000; break;
-		case CPU_SPEED_POWERSAVE:	freq = 1104000; break;
-		case CPU_SPEED_NORMAL: 		freq = 1296000; break;
-		case CPU_SPEED_PERFORMANCE: freq = 1488000; break;
+		case CPU_SPEED_MENU:		khz =  600000; break; // matches MinUI.pak/launch.sh's boot clock
+		case CPU_SPEED_POWERSAVE:	khz = 1000000; break;
+		case CPU_SPEED_NORMAL:		khz = 1100000; break;
+		case CPU_SPEED_PERFORMANCE:	khz = 1200000; break; // top STOCK OPP — never above
+		default:			khz = 1000000; break;
 	}
-	
-	char cmd[32];
-	sprintf(cmd,"overclock.elf %d\n", freq);
-	system(cmd);
+	PLAT_setCPUMaxFreq(khz);
 }
 
 void PLAT_setRumble(int strength) {
