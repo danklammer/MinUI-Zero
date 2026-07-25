@@ -1615,12 +1615,17 @@ int main (int argc, char *argv[]) {
 				sprintf(res_path, "%s/.res/%s.png", res_root, res_name);
 				LOG_info("res_path: %s\n", res_path);
 				if (exists(res_path)) {
-					had_thumb = 1;
+					// IMG_Load returns NULL on a corrupt/unsupported file, and the old code
+					// dereferenced it immediately (thumb->w) — a guaranteed crash on any bad PNG.
 					SDL_Surface* thumb = IMG_Load(res_path);
-					ox = MAX(FIXED_WIDTH - FIXED_HEIGHT, (FIXED_WIDTH - thumb->w));
-					oy = (FIXED_HEIGHT - thumb->h) / 2;
-					SDL_BlitSurface(thumb, NULL, screen, &(SDL_Rect){ox,oy});
-					SDL_FreeSurface(thumb);
+					if (thumb) {
+						had_thumb = 1;
+						ox = MAX(FIXED_WIDTH - FIXED_HEIGHT, (FIXED_WIDTH - thumb->w));
+						oy = (FIXED_HEIGHT - thumb->h) / 2;
+						SDL_BlitSurface(thumb, NULL, screen, &(SDL_Rect){ox,oy});
+						SDL_FreeSurface(thumb);
+					}
+					else LOG_info("thumbnail: IMG_Load failed for %s: %s\n", res_path, IMG_GetError());
 				}
 			}
 			
