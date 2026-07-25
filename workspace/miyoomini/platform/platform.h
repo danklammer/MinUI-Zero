@@ -31,8 +31,12 @@
 
 #define BUTTON_MENU	 	SDLK_ESCAPE
 #define BUTTON_POWER 	SDLK_POWER
-#define	BUTTON_PLUS		SDLK_RSUPER
-#define	BUTTON_MINUS	SDLK_LSUPER
+// SDL2 renamed the SUPER keysyms to GUI; SDLK_RSUPER/SDLK_LSUPER are SDL 1.2 only and this port
+// builds against SDL2. Kept as real keysyms rather than BUTTON_NA (which is what tg5040 uses)
+// because this device genuinely has volume buttons — CODE_PLUS/CODE_MINUS below are the real
+// evdev codes KEY_VOLUMEUP/KEY_VOLUMEDOWN, so minput's has_volume check must stay true.
+#define	BUTTON_PLUS		SDLK_RGUI
+#define	BUTTON_MINUS	SDLK_LGUI
 
 ///////////////////////////////
 
