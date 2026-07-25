@@ -3679,6 +3679,17 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 	// if (screen->w!=dst_w || screen->h!=dst_w || screen->pitch!=dst_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
+
+	// A platform may hand back a SMALLER surface than requested (miyoomini clamps when the
+	// requested buffer would overflow its fixed MMA render page). The scalers take dst_h as a
+	// parameter and step the destination by dst_p — they never look at the surface's h — so
+	// without this the frontend would keep writing the full unclamped height straight past the
+	// end of the platform's buffer. Honour what we were actually given.
+	// No-op on platforms that never clamp (screen->h == dst_h there, so this is identity).
+	if (screen && screen->h > 0 && renderer.dst_h > screen->h) {
+		LOG_info("resize: platform clamped dst_h %d -> %d\n", renderer.dst_h, screen->h);
+		renderer.dst_h = screen->h;
+	}
 }
 static void present_frame(const void *data, unsigned width, unsigned height, size_t pitch, int do_flip) {
 	// return;

@@ -1380,7 +1380,12 @@ static void ChargingScreen(SDL_Surface* screen) {
 }
 
 int main (int argc, char *argv[]) {
-	LOG_info("time from launch to:\n");
+	// OPT-IN boot timing (ZERO_BOOT_TIMING=1). These probes are shared with tg5040 and stdout is
+	// redirected to a file on the SD card by MinUI.pak/launch.sh, so shipping them enabled would
+	// add SD writes to every launch on the primary platform. Left available, not on.
+	const char* bt_env = getenv("ZERO_BOOT_TIMING");
+	int boot_timing = (bt_env && bt_env[0] && bt_env[0] != '0');
+	if (boot_timing) LOG_info("time from launch to:\n");
 	unsigned long main_begin = SDL_GetTicks();
 	unsigned long first_draw = 0;
 	
@@ -1392,19 +1397,19 @@ int main (int argc, char *argv[]) {
 	InitSettings();
 	
 	SDL_Surface* screen = GFX_init(MODE_MAIN);
-	LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PAD_init();
-	LOG_info("- input init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- input init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PWR_init();
 	if (!HAS_POWER_BUTTON && !simple_mode) PWR_disableSleep();
-	LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	SDL_Surface* version = NULL;
 	
 	Menu_init();
-	LOG_info("- menu init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- menu init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	// now that (most of) the heavy lifting is done, take a load off
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
@@ -1416,7 +1421,7 @@ int main (int argc, char *argv[]) {
 	int show_setting = 0; // 1=brightness,2=volume
 	int was_online = PLAT_isOnline();
 	
-	LOG_info("- loop start: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- loop start: %lu\n", SDL_GetTicks() - main_begin);
 	while (!quit) {
 		GFX_startFrame();
 		unsigned long now = SDL_GetTicks();
@@ -1799,7 +1804,7 @@ int main (int argc, char *argv[]) {
 		
 		if (!first_draw) {
 			first_draw = SDL_GetTicks();
-			LOG_info("- first draw: %lu\n", first_draw - main_begin);
+			if (boot_timing) LOG_info("- first draw: %lu\n", first_draw - main_begin);
 		}
 		
 		// handle HDMI change
