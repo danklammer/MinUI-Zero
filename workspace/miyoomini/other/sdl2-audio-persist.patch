@@ -1,0 +1,97 @@
+Persist the MI_AO codec across SDL audio open/close.
+
+WHY
+---
+The audible pop when a game exits IS the MI_AO analog power-down. This is measured, not inferred:
+holding the codec open made the exit pop vanish completely (confirmed by ear on device), while
+muting and rail-settling around the disable changed nothing — the data path was never involved.
+
+The stock MMIYOO driver enables the codec on every SDL_OpenAudio and disables it on every
+SDL_CloseAudio, so every game launch and every game exit powers the analog stage up and down.
+
+WHY NOT THE MyMinUI APPROACH
+----------------------------
+MyMinUI (other/sdl2.patch) solves the same problem by deleting the MI_AO calls entirely and
+routing audio through /dev/dsp into the `audioserver` daemon, which owns the hardware for the
+lifetime of the system ("il demone terrà l'hardware acceso (Zero Pop!)").
+
+That works, but it costs a resident daemon (idle CPU/power — the thing this fork exists to
+minimise) plus a socket hop of latency, which is why they then had to write a lower-latency
+audioserver replacement. We keep talking to MI_AO directly and simply stop cycling it.
+
+WHAT THIS CHANGES
+-----------------
+1. CloseDevice no longer disables. There is nothing to power down, so nothing to pop.
+
+2. OpenDevice ADOPTS an already-configured device instead of failing. MI_AO_SetPubAttr cannot
+   reconfigure a device that is still enabled — it returns 0xa0052009 — and the stock driver
+   treats that as fatal. That is exactly why our first attempt at keeping the codec open left the
+   SECOND game silent: the open "succeeded" at the SDL layer only after our own recovery path
+   disabled the codec again (re-introducing the pop) or failed outright.
+
+   Every core on this device resolves to the same 48kHz output (MEASURED: gambatte/gpsp/fceumm/
+   supafaust/picodrive all report "48000 (rec)"), so an already-configured device is already
+   configured the way we want it. The GetPubAttr call is kept as a sanity read rather than a
+   gate.
+
+UNVERIFIED: this patch has not yet been built or heard. It must not ship until there is a way to
+verify AUDIBILITY automatically — "SDL_OpenAudio returned 0" is not the same claim as "sound came
+out", and trusting that difference is what let an audio regression reach the device twice.
+
+--- a/src/audio/mmiyoo/SDL_audio_mmiyoo.c
++++ b/src/audio/mmiyoo/SDL_audio_mmiyoo.c
+@@
+ static void MMIYOO_CloseDevice(_THIS)
+ {
+     SDL_free(this->hidden->mixbuf);
+     SDL_free(this->hidden);
+ #if defined(MMIYOO)
+-    MI_AO_DisableChn(AoDevId, AoChn);
+-    MI_AO_Disable(AoDevId);
++    /* Deliberately DO NOT disable. MI_AO_Disable powers the analog stage down and that
++       transition is the audible pop on game exit (measured on device). The codec is left
++       enabled for the next process to adopt; MMIYOO_OpenDevice handles that case. */
+ #endif
+ }
+@@
+     miret = MI_AO_SetPubAttr(AoDevId, &stSetAttr);
+     if(miret != MI_SUCCESS) {
+-        printf("%s, failed to set PubAttr\n", __func__);
+-        return -1;
++        /* The device is still enabled from a previous process: SetPubAttr cannot reconfigure a
++           live device. Do NOT treat this as fatal and do NOT disable to reconfigure — that
++           power-down is precisely the pop we are removing. Adopt the existing configuration. */
++        printf("%s, PubAttr rejected (device already enabled) — adopting existing config\n", __func__);
++        already_enabled = 1;
+     }
+-    miret = MI_AO_GetPubAttr(AoDevId, &stGetAttr);
+-    if(miret != MI_SUCCESS) {
+-        printf("%s, failed to get PubAttr\n", __func__);
+-        return -1;
+-    }
+-    miret = MI_AO_Enable(AoDevId);
+-    if(miret != MI_SUCCESS) {
+-        printf("%s, failed to enable AO\n", __func__);
+-        return -1;
+-    }
+-    miret = MI_AO_EnableChn(AoDevId, AoChn);
+-    if(miret != MI_SUCCESS) {
+-        printf("%s, failed to enable Channel\n", __func__);
+-        return -1;
+-    }
++    /* Sanity read only — never a gate. */
++    MI_AO_GetPubAttr(AoDevId, &stGetAttr);
++
++    if(!already_enabled) {
++        miret = MI_AO_Enable(AoDevId);
++        if(miret != MI_SUCCESS) {
++            printf("%s, failed to enable AO\n", __func__);
++            return -1;
++        }
++    }
++    /* Enabling an already-enabled channel is not an error for us. */
++    miret = MI_AO_EnableChn(AoDevId, AoChn);
++    if(miret != MI_SUCCESS && !already_enabled) {
++        printf("%s, failed to enable Channel\n", __func__);
++        return -1;
++    }
