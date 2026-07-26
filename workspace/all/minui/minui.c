@@ -952,40 +952,43 @@ static void queueNext(char* cmd) {
 	quit = 1;
 }
 
-// based on https://stackoverflow.com/a/31775567/145965
-static int replaceString(char *line, const char *search, const char *replace) {
-   char *sp; // start of pattern
-   if ((sp = strstr(line, search)) == NULL) {
-      return 0;
-   }
-   int count = 1;
-   int sLen = strlen(search);
-   int rLen = strlen(replace);
-   if (sLen > rLen) {
-      // move from right to left
-      char *src = sp + sLen;
-      char *dst = sp + rLen;
-      while((*dst = *src) != '\0') { dst++; src++; }
-   } else if (sLen < rLen) {
-      // move from left to right
-      int tLen = strlen(sp) - sLen;
-      char *stop = sp + rLen;
-      char *src = sp + sLen + tLen;
-      char *dst = sp + rLen + tLen;
-      while(dst >= stop) { *dst = *src; dst--; src--; }
-   }
-   memcpy(sp, replace, rLen);
-   count += replaceString(sp + rLen, search, replace);
-   return count;
+// Wrap a string in single quotes for /bin/sh, rewriting each embedded apostrophe as '\''.
+// Writes to a SEPARATE destination and returns 0 rather than overrunning it.
+//
+// This replaces an in-place expansion that could corrupt the stack. The old escapeSingleQuotes()
+// grew the string where it sat — one apostrophe became four characters, shifting the tail RIGHT —
+// inside a fixed char[256] path buffer that knew nothing about the growth. The result was then
+// sprintf'd as "'%s' '%s'" into ANOTHER char[256], so two long paths overflowed it on their own,
+// apostrophes or not. Both are reachable from ordinary ROM names: a deep folder plus something
+// like "Tony Hawk's Pro Skater (USA).bin" is a long path that also contains apostrophes.
+//
+// Callers MUST check the return value. Refusing to launch is the correct failure here — the
+// alternative is a corrupted command string, or smashed stack, at the moment we hand control off.
+static int shellQuote(const char* in, char* out, size_t out_sz) {
+	size_t o = 0;
+	if (out_sz < 3) return 0;
+	out[o++] = '\'';
+	for (const char* p = in; *p; p++) {
+		if (*p == '\'') {
+			// close quote, escaped literal apostrophe, reopen quote
+			if (o + 4 + 1 > out_sz) return 0;
+			out[o++] = '\''; out[o++] = '\\'; out[o++] = '\''; out[o++] = '\'';
+		}
+		else {
+			if (o + 1 + 1 > out_sz) return 0;
+			out[o++] = *p;
+		}
+	}
+	if (o + 1 + 1 > out_sz) return 0;
+	out[o++] = '\'';
+	out[o] = '\0';
+	return 1;
 }
-static char* escapeSingleQuotes(char* str) {
-	// why not call replaceString directly?
-	// call points require the modified string be returned
-	// but replaceString is recursive and depends on its
-	// own return value (but does it need to?)
-	replaceString(str, "'", "'\\''");
-	return str;
-}
+
+// Worst case: every character of a 255-char path is an apostrophe (4x) plus the two wrapping
+// quotes. Sized so shellQuote never fails on any path that fits the char[256] buffers used here.
+#define QUOTED_MAX (255 * 4 + 3)
+#define CMD_MAX    (QUOTED_MAX * 2 + 2)
 
 ///////////////////////////////////////
 
@@ -1059,23 +1062,33 @@ static int autoResume(void) {
 	
 	// putFile(LAST_PATH, FAUX_RECENT_PATH); // saveLast() will crash here because top is NULL
 	
-	char cmd[256];
-	sprintf(cmd, "'%s' '%s'", escapeSingleQuotes(emu_path), escapeSingleQuotes(sd_path));
+	char q_emu[QUOTED_MAX], q_rom[QUOTED_MAX];
+	if (!shellQuote(emu_path, q_emu, sizeof(q_emu)) || !shellQuote(sd_path, q_rom, sizeof(q_rom))) {
+		LOG_info("autoResume: path too long to quote, refusing to launch: %s\n", sd_path);
+		return 0;
+	}
+	char cmd[CMD_MAX];
+	snprintf(cmd, sizeof(cmd), "%s %s", q_emu, q_rom);
 	putInt(RESUME_SLOT_PATH, AUTO_RESUME_SLOT);
 	queueNext(cmd);
 	return 1;
 }
 
 static void openPak(char* path) {
-	// NOTE: escapeSingleQuotes() modifies the passed string 
-	// so we need to save the path before we call that
 	if (prefixMatch(ROMS_PATH, path)) {
 		addRecent(path, NULL);
 	}
 	saveLast(path);
-	
-	char cmd[256];
-	sprintf(cmd, "'%s/launch.sh'", escapeSingleQuotes(path));
+
+	// Quote the FULL launcher path, not the directory with "/launch.sh" appended outside the
+	// quotes — otherwise the suffix sits outside the escaping the rest of the path relies on.
+	char full[512];
+	snprintf(full, sizeof(full), "%s/launch.sh", path);
+	char cmd[QUOTED_MAX];
+	if (!shellQuote(full, cmd, sizeof(cmd))) {
+		LOG_info("openPak: path too long to quote, refusing to launch: %s\n", path);
+		return;
+	}
 	queueNext(cmd);
 }
 static void openRom(char* path, char* last) {
@@ -1129,13 +1142,16 @@ static void openRom(char* path, char* last) {
 	char emu_path[256];
 	getEmuPath(emu_name, emu_path);
 	
-	// NOTE: escapeSingleQuotes() modifies the passed string 
-	// so we need to save the path before we call that
 	addRecent(recent_path, recent_alias); // yiiikes
 	saveLast(last==NULL ? sd_path : last);
-	
-	char cmd[256];
-	sprintf(cmd, "'%s' '%s'", escapeSingleQuotes(emu_path), escapeSingleQuotes(sd_path));
+
+	char q_emu[QUOTED_MAX], q_rom[QUOTED_MAX];
+	if (!shellQuote(emu_path, q_emu, sizeof(q_emu)) || !shellQuote(sd_path, q_rom, sizeof(q_rom))) {
+		LOG_info("openRom: path too long to quote, refusing to launch: %s\n", sd_path);
+		return;
+	}
+	char cmd[CMD_MAX];
+	snprintf(cmd, sizeof(cmd), "%s %s", q_emu, q_rom);
 	queueNext(cmd);
 }
 static void openDirectory(char* path, int auto_launch) {
