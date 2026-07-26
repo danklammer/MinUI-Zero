@@ -22,12 +22,24 @@ mkdir -p "$BIOS_PATH/$EMU_TAG"
 mkdir -p "$SAVES_PATH/$EMU_TAG"
 HOME="$USERDATA_PATH"
 cd "$HOME"
-# closed-loop governor clock bracket (kHz). OPPs on this SoC: 400/600/800/1000/1100/1200.
-# NOTE: the old "SNES saturates at 1200" note here was measured with mednafen_supafaust, which is
-# no longer the core for this system. snes9x2005_plus is far lighter and the real floor is
-# UNMEASURED — the governor will find it inside this bracket. Re-measure and lower FMIN if it
-# settles well below 600.
-export MINARCH_FMIN=600000
+# Closed-loop governor clock bracket (kHz). OPPs on this SoC: 400/600/800/1000/1100/1200.
+#
+# FMIN=1000000 — the SAME floor as SUPA.pak, because this pak loads the SAME core.
+#
+# The note that used to sit here justified 600 by saying the core was snes9x2005_plus. That was a
+# stale copy from the tg5040 pak: line 15 loads mednafen_supafaust, and snes9x2005_plus is not
+# even built for this platform (see CORES in workspace/miyoomini/cores/makefile). So the floor was
+# defended by evidence about a core that does not exist here.
+#
+# The real measurement, from SUPA.pak against a 60.1 target with this core at 292x224:
+#     ceil 1200 -> 59.6-59.7   holds
+#     ceil 1000 -> 59.6-59.7   holds
+#     ceil  800 -> 51.7-59.7   marginal
+#     ceil  600 -> 29.8-49.7   cannot run the game
+# A floor the core cannot hold is not a saving: the governor sinks into it, the frame rate
+# collapses, it panics back to 1200 and probes again — a permanent limit cycle that is both
+# slower AND less efficient than simply not going there.
+export MINARCH_FMIN=1000000
 export MINARCH_FMAX=1200000
 
 # NOTE: ZERO_MEASURE was exported here to judge supafaust vs snes9x2005_plus on numbers. The
