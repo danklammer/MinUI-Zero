@@ -1733,11 +1733,20 @@ __attribute__((weak)) void PLAT_resetAudio(void) { }
 
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
-		PLAT_muteAudio(1); // silence the DAC BEFORE it is torn down, else the shutdown pops
+		// Stop feeding the device first, either way.
 		SDL_PauseAudio(1);
 		// Closing calls MI_AO_Disable/DisableChn on SigmaStar, and that power-down IS the pop.
 		// Leave the codec enabled and let the next process reuse it.
-		if (!PLAT_keepAudioOpen()) SDL_CloseAudio();
+		//
+		// MUTE ONLY IF WE ARE ACTUALLY CLOSING. The mute exists solely to silence the DAC across
+		// that power-down. When the codec is kept open there is no power-down to protect, and
+		// because the device stays ENABLED between processes the mute would be GLOBAL and
+		// PERSISTENT — MEASURED on device: the exit pop went away but the next game launched
+		// silent, because nothing in the new process cleared a mute it never set.
+		if (!PLAT_keepAudioOpen()) {
+			PLAT_muteAudio(1);
+			SDL_CloseAudio();
+		}
 	}
 
 	if (snd.buffer) {
