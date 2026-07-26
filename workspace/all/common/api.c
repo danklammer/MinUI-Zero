@@ -784,20 +784,19 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 	
 	if (pwr.is_charging) {
 		GFX_blitAsset(ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
-
-		// Show the level while charging too. Previously this branch drew only the outline and a
-		// bolt, so plugging in made the battery read EMPTY regardless of how full it actually was.
-		// Fill first, bolt on top, so the bolt still reads clearly against it.
-		rect = asset_rects[ASSET_BATTERY_FILL];
-		SDL_Rect clip = rect;
-		clip.w = rect.w * pwr.charge / 100;
-		if (clip.w > 0) {
-			clip.x = rect.w - clip.w;
-			clip.y = 0;
-			// Always the normal fill here — a low battery that is CHARGING is not a warning state.
-			GFX_blitAsset(ASSET_BATTERY_FILL, &clip, dst, &(SDL_Rect){x+SCALE1(3)+clip.x,y+SCALE1(2)});
-		}
-
+		// Bolt only, no level fill.
+		//
+		// This briefly drew the fill and then the bolt on top, on the assumption that "the bolt
+		// still reads clearly against it". It does not: ASSET_BATTERY_FILL and ASSET_BATTERY_BOLT
+		// are BOTH solid white and BOTH 12x6 — the same rect — so the bolt is invisible everywhere
+		// the fill covers. On device that renders as a stub of diagonal on the unfilled left plus a
+		// featureless white block on the right, which reads as a corrupted glyph rather than a
+		// battery (reported from a charging Miyoo, and the tg5040 build had it too).
+		//
+		// Showing level AND charge state at once needs a bolt that can be distinguished from the
+		// fill — a knockout/outlined variant in the asset sheet. Until that asset exists, the bolt
+		// alone is the honest signal: it says "charging" unambiguously at every level, which is the
+		// question this icon is asked while a cable is attached.
 		GFX_blitAsset(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x+SCALE1(3),y+SCALE1(2)});
 	}
 	else {
