@@ -2255,7 +2255,12 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	
 	if (PAD_justPressed(BTN_POWER)) {
 		power_pressed_at = now;
-		power_press_is_wake = PLAT_supportsDeepSleep() && pwr.resume_tick && now-pwr.resume_tick<1000;
+		// NOT gated on PLAT_supportsDeepSleep(). pwr.resume_tick is set at the end of PWR_sleep(),
+		// which is the COMMON path — faux sleep reaches it just as deep sleep does — so this
+		// debounce is meaningful on every platform. Gating it meant that on a device without deep
+		// sleep the guard below collapsed to "always sleep on release", so the release of the very
+		// press that woke the device put it straight back to sleep.
+		power_press_is_wake = pwr.resume_tick && now-pwr.resume_tick<1000;
 		if (power_press_is_wake) LOG_debug("guarding power button release (just resumed)\n");
 	}
 	int power_released = PAD_justReleased(BTN_POWER);
@@ -2266,7 +2271,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && power_released && (!PLAT_supportsDeepSleep() || (power_pressed_at && !power_press_is_wake))) // manual sleep (resume-press guard only where deep sleep is on)
+		(pwr.can_sleep && power_released && power_pressed_at && !power_press_is_wake) // manual sleep (resume-press guarded on EVERY platform)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
@@ -2370,13 +2375,17 @@ static void PWR_enterSleep(void) {
 	// an already-active rumble, and nothing else on this path clears it. Onion calls rumble(0) in
 	// its suspend sequence for the same reason.
 	VIB_setStrength(0);
+	// MUTE BEFORE closing the device, not after. SND_pause() tears the audio device down, and on
+	// SigmaStar that power-down of a still-live output stage is audible as a pop — the same
+	// discontinuity the game-exit path already mutes for (see PLAT_muteAudio). Volume was
+	// previously dropped several lines later, i.e. after the pop had already happened.
+	if (!GetHDMI()) SetRawVolume(MUTE_VOLUME_RAW);
 	SND_pause(); // fully closes the audio device (thread stops); no-op when sound isn't initialized (minui)
 	if (GetHDMI()) {
 		PLAT_clearVideo(gfx.screen);
 		PLAT_flip(gfx.screen, 0);
 	}
 	else {
-		SetRawVolume(MUTE_VOLUME_RAW);
 		PLAT_enableBacklight(0);
 	}
 	system("killall -STOP keymon.elf");
