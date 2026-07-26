@@ -2,7 +2,7 @@
 
 ## Same simple MinUI — Runs cooler. Lasts longer. Plays smoother.
 
-**MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI Brick** and **TrimUI Smart Pro**.
+**MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI Brick** and **TrimUI Smart Pro**, with an **experimental Miyoo Mini Plus build** ([see below](#miyoo-mini-plus-experimental)).
 
 It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
@@ -23,14 +23,15 @@ It keeps MinUI's fast, distraction-free experience while tuning everything under
 - **Longer battery life** — ~7.5 hours on Game Boy, ~7 on PlayStation
 - **Smoother gameplay** — panel-matched frame pacing, improved audio resampling, and roughly one frame less input latency
 - **No CPU settings to manage** — every game is tuned automatically, continuously
-- **Deep sleep by default** — near-zero draw, instant resume, never running hot in your bag
+- **Deep sleep by default** (TrimUI) — near-zero draw, instant resume, never running hot in your bag
 - **The simplicity of MinUI** — no box art, stores, accounts, or themes, and nothing running in the background but input handling
 
 MinUI Zero is for people who want to turn on a handheld and play games — not spend their time configuring it.
 
 ## Measured results
 
-Tests were performed on real TrimUI hardware, against stock MinUI on the same device.
+Tests were performed on real TrimUI hardware, against stock MinUI on the same device. **None of these
+numbers are from the Miyoo Mini Plus** — that build is new and unmeasured; see its own section below.
 
 | Test | Result |
 |---|---|
@@ -61,7 +62,7 @@ philosophy. Zero's measured performance numbers are in the table above.
 | Features | None by design — no box art, WiFi, stores, or themes | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor — plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes | Yes |
-| Devices | Brick, Smart Pro | Brick, Smart Pro, Smart Pro S |
+| Devices | Brick, Smart Pro (+ experimental Miyoo Mini Plus) | Brick, Smart Pro, Smart Pro S |
 
 Measured at MinUI Zero v1.5 and NextUI v6.14.0. Source lines count each firmware's own
 `.c`/`.h` (launcher, frontend, platform) and exclude the third-party emulator cores both ship,
@@ -130,6 +131,40 @@ screen, then sleeps — cooler charging, honest percentages.
 **Also aboard, dormant:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System,
 TurboGrafx-16, Virtual Boy, PICO-8 — create the matching Roms folder (eg. "Virtual Boy (VB)")
 and the system appears, tuned core already installed.
+
+## Miyoo Mini Plus (experimental)
+
+There is an **alpha** build for the Miyoo Mini Plus (SigmaStar SSD202D, dual Cortex-A7). It is a
+real port — same launcher, same closed-loop governor, the same eleven emulator cores rebuilt for
+ARMv7/NEON — but it is **newer and less proven than the TrimUI builds**, and it is missing
+features they have. Treat it as a preview, back up your card, and expect rough edges.
+
+| | TrimUI Brick / Smart Pro | Miyoo Mini Plus |
+|---|---|---|
+| Closed-loop governor | Yes | Yes |
+| Emulator cores | 11 | 11 (same pinned versions) |
+| Systems with a ready folder | 6 (+8 dormant) | 6 (+5 dormant) |
+| **Deep sleep** | **Yes** | **Not possible** — see below |
+| **Optimize CPU (undervolt)** | **Yes** | **No** |
+| Charging screen | Yes | Yes |
+| Measured battery/thermal figures | Yes, see above | **None yet** |
+
+None of the measured results in this README were taken on a Miyoo. The efficiency work that makes
+Zero worthwhile on TrimUI hardware has not been quantified on this SoC, and an early port
+investigation found the CPU is a much smaller share of total power here — so do not assume the
+battery-life numbers transfer. They probably do not.
+
+Its PlayStation support leans on a 128 MB swapfile because the device has ~100 MB of usable RAM;
+expect SD-backed swapping, not the TrimUI PS1 experience.
+
+**Why there's no deep sleep here.** This is a hardware limit, not a missing feature. The Miyoo's
+vendor kernel is built without suspend support at all — `/sys/power/state` is empty on the device,
+so there is no suspend mode for any firmware to ask for. Every other Miyoo custom firmware works
+around it the same way we do, with a "faux sleep" that blanks the screen, closes audio and drops
+the clock; spruceOS says so in as many words in its own source. Closing it for real would mean
+rebuilding the vendor kernel and reflashing SPI NOR — the kernel does not live on the SD card —
+which is a brick risk we will not take for a sleep mode. Instead, POWER blanks and idles, and
+after two minutes the device quicksaves and powers off, resuming where you left off.
 
 ## What's left out
 
