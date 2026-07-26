@@ -265,27 +265,27 @@ static void* input_thread(void* arg) {
 // around open/close (kept, see SND_init/SND_pause) and — if that is not enough — a persistent
 // holder process that owns MI_AO for the whole session, which is how every other CFW on this SoC
 // does it. Do not simply flip this back to 1 without handling SetPubAttr.
-// Keep the MI_AO codec ENABLED across game exits (1 = never close it).
+// 0 = close the codec when a game exits (i.e. MI_AO_Disable runs).
 //
-// This is the fix for the exit pop, and it works because the pop is the ANALOG POWER-DOWN, not
-// the data path. Muting first does not help — that was tried (mute + a 40ms rail settle before
-// disable, mirroring the enable sequence) and the pop survived, which is what SND_quit's own
-// comment always claimed: "that power-down IS the pop".
+// This costs an audible pop on exit, and we know exactly why: the pop IS the analog power-down,
+// CONFIRMED BY EAR — holding the codec open made the exit pop vanish completely. Muting and
+// rail-settling around the disable does nothing, because the data path was never the problem.
 //
-// So the only real fix is to never power the codec down. That is exactly what the stock
-// audioserver does, and why stock firmware does not pop; we cannot use audioserver itself
-// (libpadsp segfaults binaries from this toolchain), but we can stop cycling the device.
+// It is still 0, because holding it open breaks the NEXT launch: game 1 has sound, game 2 is
+// silent (confirmed by ear, and the same failure that forced an earlier revert). The SigmaStar
+// SDL driver calls MI_AO_SetPubAttr on every open, and that cannot reconfigure a device which is
+// still enabled — so the second process opens "successfully" and produces nothing.
 //
-// This was reverted once before, because leaving the codec enabled made MI_AO_SetPubAttr refuse
-// to reconfigure it and every game after the first ran silent. That no longer reproduces —
-// MEASURED, 5 systems back to back:
-//   * audio opened on all 5
-//   * ZERO uses of SND_init's reset+retry recovery (every open succeeded first try)
-//   * ZERO MI_AO_SetPubAttr failures
-// The recovery path added since that revert (PLAT_resetAudio + one retry) is what makes this safe
-// to hold: even if a future core asks for attrs the enabled device will not accept, the open
-// fails, the codec is reset once, and the retry succeeds. Silence cannot become permanent.
-int PLAT_keepAudioOpen(void) { return 1; }
+// Silence is worse than a click, so this stays 0 until the second-launch path is actually solved.
+// Solving it means one of:
+//   * patch the SDL MMIYOO audio driver to skip reconfiguration when the attrs already match, or
+//   * own MI_AO in a long-lived process (which is precisely what the stock audioserver does, and
+//     why stock never pops; we cannot reuse audioserver because libpadsp segfaults binaries built
+//     by this toolchain).
+// AND it means building a way to verify AUDIBILITY automatically. The bench only asserts that
+// SDL_OpenAudio returned 0, which is not the same claim as "sound reaches the speaker" — that gap
+// is what let this regression ship twice.
+int PLAT_keepAudioOpen(void) { return 0; }
 
 // Force the AO device back to a closed state so a fresh SDL_OpenAudio can succeed.
 //
