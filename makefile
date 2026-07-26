@@ -150,14 +150,22 @@ system:
 
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
 ifeq (miyoomini,$(PLATFORM))
-	# miyoomini ships exactly the six its Emus paks load, all built from pinned source.
-	# None of the tg5040 extras below exist here (no MGBA/PCE/GG/SMS/VB/P8 paks on this device).
+	# The core set matches tg5040 exactly, INCLUDING cores no Miyoo pak loads yet. Adding a system
+	# here then needs no core work, and it kills the failure mode where a pak names a core this
+	# platform never built (SFC.pak was moved to supafaust purely because snes9x2005_plus was
+	# missing, and kept a comment describing the core it had stopped loading).
 	cp ./workspace/miyoomini/cores/output/fceumm_libretro.so ./build/SYSTEM/miyoomini/cores
 	cp ./workspace/miyoomini/cores/output/gambatte_libretro.so ./build/SYSTEM/miyoomini/cores
 	cp ./workspace/miyoomini/cores/output/gpsp_libretro.so ./build/SYSTEM/miyoomini/cores
 	cp ./workspace/miyoomini/cores/output/picodrive_libretro.so ./build/SYSTEM/miyoomini/cores
 	cp ./workspace/miyoomini/cores/output/pcsx_rearmed_libretro.so ./build/SYSTEM/miyoomini/cores
 	cp ./workspace/miyoomini/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/miyoomini/cores
+	# dormant on this device today — shipped so parity with tg5040 is a fact, not an intention
+	cp ./workspace/miyoomini/cores/output/snes9x2005_plus_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_pce_fast_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mgba_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/fake08_libretro.so ./build/SYSTEM/miyoomini/cores
 	# Guard against silently shipping a foreign binary again: every core in the artifact must
 	# come from OUR toolchain. The six that shipped before this were Buildroot 2017.11 / gcc 7.2
 	# lifted off the stock card, and nothing in the build noticed.
