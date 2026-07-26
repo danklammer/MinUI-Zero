@@ -265,7 +265,27 @@ static void* input_thread(void* arg) {
 // around open/close (kept, see SND_init/SND_pause) and — if that is not enough — a persistent
 // holder process that owns MI_AO for the whole session, which is how every other CFW on this SoC
 // does it. Do not simply flip this back to 1 without handling SetPubAttr.
-int PLAT_keepAudioOpen(void) { return 0; }
+// Keep the MI_AO codec ENABLED across game exits (1 = never close it).
+//
+// This is the fix for the exit pop, and it works because the pop is the ANALOG POWER-DOWN, not
+// the data path. Muting first does not help — that was tried (mute + a 40ms rail settle before
+// disable, mirroring the enable sequence) and the pop survived, which is what SND_quit's own
+// comment always claimed: "that power-down IS the pop".
+//
+// So the only real fix is to never power the codec down. That is exactly what the stock
+// audioserver does, and why stock firmware does not pop; we cannot use audioserver itself
+// (libpadsp segfaults binaries from this toolchain), but we can stop cycling the device.
+//
+// This was reverted once before, because leaving the codec enabled made MI_AO_SetPubAttr refuse
+// to reconfigure it and every game after the first ran silent. That no longer reproduces —
+// MEASURED, 5 systems back to back:
+//   * audio opened on all 5
+//   * ZERO uses of SND_init's reset+retry recovery (every open succeeded first try)
+//   * ZERO MI_AO_SetPubAttr failures
+// The recovery path added since that revert (PLAT_resetAudio + one retry) is what makes this safe
+// to hold: even if a future core asks for attrs the enabled device will not accept, the open
+// fails, the codec is reset once, and the retry succeeds. Silence cannot become permanent.
+int PLAT_keepAudioOpen(void) { return 1; }
 
 // Force the AO device back to a closed state so a fresh SDL_OpenAudio can succeed.
 //
@@ -280,11 +300,19 @@ int PLAT_keepAudioOpen(void) { return 0; }
 // Disabling is safe when the device is already disabled (the driver just logs "has not been
 // enabled" and returns), so this is idempotent and cheap to call on the failure path.
 void PLAT_resetAudio(void) {
+	// Mute and let the rail settle BEFORE removing power. Disabling a live output stage is a step
+	// discontinuity — the pop. The enable path mutes first for the same reason; this is its mirror.
+	// PLAT_muteAudio already carries the settle delay, so no extra sleep here.
+	PLAT_muteAudio(1);
 	MI_AO_DisableChn(0, 0);
 	MI_AO_Disable(0);
 }
 
 #define MI_AO_SETMUTE_IOCTL 0x4008690d
+// Rail-settle window, both directions. The enable path in libmsettings already waits ~40ms
+// between bringing the channel up and unmuting, for exactly this reason: the analog stage does
+// not follow the digital gate instantly.
+#define MI_AO_SETTLE_US 40000
 void PLAT_muteAudio(int mute) {
 	int fd = open("/dev/mi_ao", O_RDWR);
 	if (fd < 0) return;
@@ -293,6 +321,11 @@ void PLAT_muteAudio(int mute) {
 	uint64_t buf1[] = {sizeof(buf2), (uintptr_t)buf2};
 	ioctl(fd, MI_AO_SETMUTE_IOCTL, buf1);
 	close(fd);
+	// SETTLE AFTER MUTING TOO. Every caller that mutes is about to tear the codec down
+	// (SND_quit -> SDL_CloseAudio -> MI_AO_Disable, PWR_enterSleep, PLAT_resetAudio). Returning
+	// the instant the ioctl lands meant the power-down hit an output stage that was still
+	// settling, which is audible as the exit pop. Symmetric with the unmute side above.
+	if (mute) usleep(MI_AO_SETTLE_US);
 }
 
 void PLAT_initInput(void) {
