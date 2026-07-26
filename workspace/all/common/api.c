@@ -1733,6 +1733,12 @@ __attribute__((weak)) void PLAT_resetAudio(void) { }
 // -1 = "no idea", which the telemetry prints as dac=? rather than inventing a number.
 __attribute__((weak)) int PLAT_getAudioQueued(void) { return -1; }
 
+// Exact charge percentage for the charging screen, or -1 when this platform has no better source
+// than PLAT_getBatteryStatus's coarse buckets. Added because the charging screen was reading
+// tg5040-only sysfs (axp2202-battery/capacity) DIRECTLY, so on every other platform it rendered
+// "..." instead of a number. Platforms that can answer override this; the rest are unchanged.
+__attribute__((weak)) int PLAT_getChargePercent(void) { return -1; }
+
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
 		// Stop feeding the device first, either way.
