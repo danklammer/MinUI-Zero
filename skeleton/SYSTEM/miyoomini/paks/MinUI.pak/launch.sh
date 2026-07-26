@@ -127,8 +127,20 @@ keymon.elf & # &> /mnt/SDCARD/keymon.txt &
 # shutdown, so the clock walks backwards every boot. Verified after inverting: system, RTC and
 # wall clock all read 22:18:03.
 #
-# Opt back into the file-restore behaviour with `disable-rtc` (for a unit whose RTC cell is dead).
-if [ -f "$DATETIME_PATH" ] && [ -f "$USERDATA_PATH/disable-rtc" ]; then
+# IMPORTANT — this must stay safe on the OTHER models in this family. The Plus has an RTC; the
+# original Miyoo Mini is widely reported not to (and any unit's backup cell can die). Trusting the
+# RTC unconditionally would leave such a device sitting at the kernel's 1970 epoch with the
+# file-restore fallback disabled — a worse clock than before.
+#
+# So this does NOT assume an RTC exists: it asks whether the clock the kernel came up with is
+# PLAUSIBLE. The kernel seeds the system clock from the RTC at boot when one is present, so a
+# sane year means a working RTC, and 1970 means there isn't one (or it lost power).
+#   RTC present + sane  -> keep it (correct time, no rewind)
+#   no RTC / dead cell  -> fall back to datetime.txt exactly as upstream does
+# `disable-rtc` forces the file-restore path regardless.
+RTC_SANE=0
+[ "$(date +%Y)" -ge 2024 ] 2>/dev/null && RTC_SANE=1
+if [ -f "$DATETIME_PATH" ] && { [ "$RTC_SANE" = "0" ] || [ -f "$USERDATA_PATH/disable-rtc" ]; }; then
 	DATETIME=`cat "$DATETIME_PATH"`
 	date +'%F %T' -s "$DATETIME"
 	DATETIME=`date +'%s'`
