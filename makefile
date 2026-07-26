@@ -129,6 +129,16 @@ system:
 			{ echo "ERROR: shipped libSDL2 has no OSS backend — the audio pop would return"; exit 1; }; \
 		echo "miyoomini libSDL2: OSS backend present"; \
 	fi
+	# NEVER-OVERCLOCK is a project non-negotiable, so it is enforced by the build rather than by
+	# a comment. overclock.elf pokes the SigmaStar MPLL through /dev/mem, bypassing cpufreq
+	# entirely; workspace/miyoomini/makefile deliberately does not build it — yet a STALE, gitignored
+	# copy sat in skeleton/SYSTEM/miyoomini/bin and `cp -R ./skeleton ./build` shipped it in every
+	# artifact, invisible to git (*.elf is ignored). Exactly how six foreign cores shipped before.
+	@if find ./build -name 'overclock.elf' -o -name 'as_preload.so' | grep -q .; then \
+		echo "ERROR: artifact contains an overclock/preload binary this fork does not ship:"; \
+		find ./build -name 'overclock.elf' -o -name 'as_preload.so'; \
+		exit 1; \
+	fi
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
 	if [ "$(PLATFORM)" = "tg5040" ]; then \
 		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
@@ -197,6 +207,17 @@ setup: name
 	# remove authoring detritus
 	cd ./build && find . -type f -name '.keep' -delete
 	cd ./build && find . -type f -name '*.meta' -delete
+
+	# Ship only the platform(s) actually being built. `cp -R ./skeleton ./build` brings EVERY
+	# platform along, so a Miyoo artifact carried .system/tg5040 and Tools/tg5040 — aarch64
+	# binaries a Miyoo can never execute, inflating install/update I/O and making "what is on this
+	# card?" unanswerable. `res` is shared assets and always stays.
+	@for d in ./build/SYSTEM/* ./build/EXTRAS/Tools/*; do \
+		[ -d "$$d" ] || continue; \
+		n=$$(basename "$$d"); \
+		[ "$$n" = "res" ] && continue; \
+		echo "$(PLATFORMS)" | grep -qw "$$n" || { echo "  pruned foreign payload: $$d"; rm -rf "$$d"; }; \
+	done
 	echo $(BUILD_HASH) > ./workspace/hash.txt
 	
 	# copy readmes to workspace so we can use Linux fmt instead of host's
