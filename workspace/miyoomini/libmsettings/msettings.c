@@ -158,12 +158,19 @@ void InitSettings(void) {
 	// applied, so the output snapped from off to its default level and that step hit the speaker
 	// as a pop. Mute first, bring the channel up, set the real level while still muted, let the
 	// rail settle, then unmute. Same mute ioctl the volume path already uses (MI_AO_SETMUTE).
-	setMute(1);
-	MI_AO_Enable(0);
-	MI_AO_EnableChn(0,0);
+	// DO NOT enable MI_AO here. `audioserver` owns the codec for the lifetime of the system and
+	// brings it up exactly once; anything else touching MI_AO reintroduces a power transition, and
+	// a power transition IS the pop (proven on device: muting never helped, removing MI_AO_Disable
+	// did). MyMinUI comments these same two calls out for the same reason.
+	// SDL2 reaches the daemon through /dev/dsp: its STOCK OSS backend, selected per-game with
+	// SDL_AUDIODRIVER=dsp, with the vendor libpadsp.so redirecting /dev/dsp into audioserver.
+	// No SDL audio patch is involved (an earlier draft that rewrote the MMIYOO driver was dead
+	// reference code and black-screened every game).
+	//
+	// NOTE: on models where the daemon is unavailable the launcher falls back to direct MMIYOO,
+	// and that path DOES own the codec — see PLAT_resetAudio in platform.c, which is a no-op in
+	// daemon mode and performs the full teardown in direct mode.
 	SetVolume(GetVolume());
-	usleep(40000); // ~40ms for the DAC/amp to settle before we let it through
-	setMute(0);
 	SetBrightness(GetBrightness());
 }
 void QuitSettings(void) {

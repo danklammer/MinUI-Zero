@@ -276,15 +276,24 @@ static void* input_thread(void* arg) {
 // SDL driver calls MI_AO_SetPubAttr on every open, and that cannot reconfigure a device which is
 // still enabled — so the second process opens "successfully" and produces nothing.
 //
-// Silence is worse than a click, so this stays 0 until the second-launch path is actually solved.
-// Solving it means one of:
-//   * patch the SDL MMIYOO audio driver to skip reconfiguration when the attrs already match, or
-//   * own MI_AO in a long-lived process (which is precisely what the stock audioserver does, and
-//     why stock never pops; we cannot reuse audioserver because libpadsp segfaults binaries built
-//     by this toolchain).
-// AND it means building a way to verify AUDIBILITY automatically. The bench only asserts that
-// SDL_OpenAudio returned 0, which is not the same claim as "sound reaches the speaker" — that gap
-// is what let this regression ship twice.
+// Silence is worse than a click, so this stays 0 — and it is now the FALLBACK path only.
+//
+// RESOLVED 2026-07-26, the second way listed below: the stock /customer/app/audioserver owns MI_AO
+// for the whole session, and SDL2 reaches it through its own OSS backend (SDL_AUDIODRIVER=dsp) with
+// the vendor libpadsp.so redirecting /dev/dsp. The codec then powers up once and never cycles, so
+// the game-boundary pops have nothing to fire on. Selected per launch by MinUI.pak/launch.sh, which
+// exports AUDIO_DAEMON=1; this function is only consulted on the direct-MMIYOO fallback, where
+// closing on exit is still mandatory for the reasons above.
+//
+// CORRECTION to what this comment used to claim: "libpadsp segfaults binaries built by this
+// toolchain" is FALSE as a blanket statement. Retested — SDL2 runs fine under it. It is true for
+// some raw /dev/dsp clients (a hand-written OSS probe did segfault under it), which is why the
+// preload is scoped to the game process and never exported globally.
+//
+// STILL UNSOLVED: automatic AUDIBILITY verification. MI_AO_QueryChnStat was built as that oracle
+// and FAILED its negative control (see PLAT_getAudioQueued). The bench can only assert that
+// SDL_OpenAudio returned 0, which is not the claim "sound reaches the speaker" — that gap is what
+// let this regression ship twice, and it is still open.
 int PLAT_keepAudioOpen(void) { return 0; }
 
 // Force the AO device back to a closed state so a fresh SDL_OpenAudio can succeed.
@@ -321,7 +330,37 @@ int PLAT_getAudioQueued(void) {
 	return (int)st.u32ChnBusyNum;
 }
 
+// Audio ownership for THIS launch, latched at process start from the launcher.
+//   AUDIO_DAEMON=1 -> the vendor audioserver owns the codec and outlives us; we are only an OSS
+//                     client (SDL dsp driver + libpadsp).
+//   AUDIO_DAEMON=0 -> direct MMIYOO: this process owns the codec, exactly as before.
+//
+// Latched in a constructor, not read on use, because the readers are SIGNAL HANDLERS
+// (Term_handler/Crash_handler -> PLAT_resetAudio) and getenv() is not async-signal-safe. A
+// constructor also runs before any handler can fire, so there is no ordering assumption.
+static int audio_daemon_mode = 0;
+__attribute__((constructor)) static void latch_audio_mode(void) {
+	const char* e = getenv("AUDIO_DAEMON");
+	audio_daemon_mode = (e && e[0] == '1');
+}
+
 void PLAT_resetAudio(void) {
+	if (audio_daemon_mode) {
+		// NOT OURS TO TEAR DOWN. The daemon owns the codec and survives this process, so disabling
+		// it here would power down hardware still in use — and that transition IS the pop this
+		// design exists to remove.
+		//
+		// Muting is equally wrong: MI_AO_SETMUTE is device-global, and in daemon mode nothing
+		// unmutes per game (the daemon is already up), so a mute on exit would silence every
+		// LATER game. Closing our own OSS stream is all we are entitled to do, and process exit
+		// does that for us.
+		return;
+	}
+	// Direct-MMIYOO path (including the explicit dead-daemon fallback): unchanged, and still
+	// REQUIRED. libmi_ao tracks enablement per process, and a process that dies without disabling
+	// leaves the codec wedged with no userspace way back — every later game silent until reboot
+	// (measured across a reboot, 5 systems; see Crash_handler in minarch.c).
+	//
 	// Mute and let the rail settle BEFORE removing power. Disabling a live output stage is a step
 	// discontinuity — the pop. The enable path mutes first for the same reason; this is its mirror.
 	// PLAT_muteAudio already carries the settle delay, so no extra sleep here.
