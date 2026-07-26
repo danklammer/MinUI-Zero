@@ -125,13 +125,21 @@ system:
 
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
 ifeq (miyoomini,$(PLATFORM))
-	# miyoomini ships 6 cores, already committed under skeleton/SYSTEM/miyoomini/cores/ and
-	# therefore already staged into build/ by `setup`. Nothing to copy from cores/output/, and
-	# none of the tg5040 extras below exist here (no MGBA/PCE/GG/SMS/VB/P8 paks on this device).
-	# See the SKIPPING-core-build notice in workspace/makefile for the reproducibility caveat.
-	@ls ./build/SYSTEM/miyoomini/cores/*.so >/dev/null 2>&1 || \
-		{ echo "ERROR: no cores staged in build/SYSTEM/miyoomini/cores — skeleton is incomplete"; exit 1; }
-	@echo "miyoomini cores staged from skeleton: $$(ls ./build/SYSTEM/miyoomini/cores/*.so | wc -l | tr -d ' ')"
+	# miyoomini ships exactly the six its Emus paks load, all built from pinned source.
+	# None of the tg5040 extras below exist here (no MGBA/PCE/GG/SMS/VB/P8 paks on this device).
+	cp ./workspace/miyoomini/cores/output/fceumm_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/gambatte_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/gpsp_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/picodrive_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/pcsx_rearmed_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/miyoomini/cores
+	# Guard against silently shipping a foreign binary again: every core in the artifact must
+	# come from OUR toolchain. The six that shipped before this were Buildroot 2017.11 / gcc 7.2
+	# lifted off the stock card, and nothing in the build noticed.
+	@for f in ./build/SYSTEM/miyoomini/cores/*.so; do \
+		strings "$$f" | grep -q "GNU Toolchain for the A-profile" || \
+			{ echo "ERROR: $$f was not built by our toolchain — refusing to ship a foreign core"; exit 1; }; \
+	done; echo "miyoomini cores: all built by our toolchain"
 else
 	# stock cores
 	cp ./workspace/$(PLATFORM)/cores/output/fceumm_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
