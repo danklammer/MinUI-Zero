@@ -31,6 +31,7 @@ else
 	IS_PLUS=false
 fi
 export IS_PLUS
+
 export PLATFORM="miyoomini"
 export SDCARD_PATH="/mnt/SDCARD"
 export BIOS_PATH="$SDCARD_PATH/Bios"
@@ -84,33 +85,133 @@ export PATH=$SYSTEM_PATH/bin:$PATH
 
 #######################################
 
-# MinUI Zero is an SDL2 build: its MMIYOO audio driver opens MI_AO directly, so we neither
-# start audioserver (which would OWN MI_AO and lock us out) nor preload libpadsp.
-# libpadsp is the SDL 1.2 /dev/dsp shim and it SEGFAULTS binaries from this toolchain
-# (verified with a minimal open("/dev/dsp") test), so exporting it would break every app here.
-unset LD_PRELOAD
+# AUDIO: one system-lifetime codec owner.
+#
+# Every pop on this device is an MI_AO power transition -- boot enable, per-game enable/disable,
+# poweroff. Muting cannot hide one: MI_AO_SETMUTE gates the DATA path only (proven on device --
+# muting never fixed the exit pop; not calling MI_AO_Disable did). One long-lived owner means the
+# codec powers up once and never cycles, so the game-boundary pops have nothing to fire on.
+#
+# SDL2 uses its STOCK OSS backend (src/audio/dsp), selected per-game with SDL_AUDIODRIVER=dsp,
+# and libpadsp redirects /dev/dsp into audioserver. This is what MyMinUI actually ships; their
+# other/sdl2.patch is an unused draft and applying it here broke game launch.
+# The Mini PLUS uses the STOCK /customer/app/audioserver (audioserver.mod is the non-Plus path).
+AUDIO_SHIM=/customer/lib/libpadsp.so
+AUDIO_FIFO=/tmp/audio_fifo_server
+
+# Is the daemon USABLE right now? Every condition is checked at the moment of use, never cached:
+# a boot-time verdict goes stale the instant the daemon dies, and acting on a stale one forces
+# games onto a dead OSS path, which is silence.
+audio_daemon_ok() {
+	# Plus ONLY. The stock /customer/app/audioserver is the qualified path for THIS model; other
+	# Miyoo models use audioserver.mod, which is not qualified here. Testing for the binary is not
+	# enough -- keep everything else on explicit direct MMIYOO.
+	[ "$IS_PLUS" = "true" ] || return 1
+	[ -x /customer/app/audioserver ] || return 1
+	# The client shim is what actually routes /dev/dsp into the daemon. Without it, selecting the
+	# OSS driver just opens the raw device and the game is silent.
+	[ -f "$AUDIO_SHIM" ] || return 1
+	pgrep audioserver >/dev/null 2>&1 || return 1
+	[ -e "$AUDIO_FIFO" ] || return 1
+	return 0
+}
+
+# Bring the daemon up and WAIT until it is genuinely serving. Bounded (~5s) so a broken daemon can
+# never hang the launcher; returns non-zero instead, and the caller falls back.
+audio_daemon_start() {
+	[ "$IS_PLUS" = "true" ] || return 1
+	[ -x /customer/app/audioserver ] || return 1
+	# Check the CLIENT SHIM *before* spawning anything. Without libpadsp we cannot route games to
+	# the daemon — but a spawned daemon would still CLAIM MI_AO, and then the direct-MMIYOO fallback
+	# could not open the codec and the game would be silent. Never start an owner we cannot use.
+	[ -f "$AUDIO_SHIM" ] || return 1
+	if ! pgrep audioserver >/dev/null 2>&1; then
+		# The FIFOs OUTLIVE the daemon (measured: SIGKILL it and /tmp/audio_fifo_server is still
+		# there). A leftover would make readiness pass instantly against a daemon that has not
+		# started serving yet. Safe to remove -- nothing owns them when no daemon is running.
+		rm -f /tmp/audio_fifo_server /tmp/audio_fifo_ioctl_req /tmp/audio_fifo_ioctl_res
+		# idempotent: this branch only runs when no owner exists, so we never stack a second one
+		/customer/app/audioserver -60 &
+	fi
+	i=0
+	while [ $i -lt 50 ]; do
+		audio_daemon_ok && return 0
+		sleep 0.1
+		i=$((i+1))
+	done
+	return 1
+}
+
+# Release the codec from a daemon we are NOT going to use. A daemon that is alive but not serving
+# (no FIFO, or no shim to reach it with) still OWNS MI_AO, so handing the device to a direct-MMIYOO
+# game would leave that game unable to open the codec — silent, with nothing in the logs to say why.
+# Stop it and confirm it is gone before selecting direct audio.
+audio_daemon_release() {
+	pgrep audioserver >/dev/null 2>&1 || return 0
+	killall audioserver 2>/dev/null
+	i=0
+	while [ $i -lt 20 ]; do
+		pgrep audioserver >/dev/null 2>&1 || break
+		sleep 0.1
+		i=$((i+1))
+	done
+	pgrep audioserver >/dev/null 2>&1 && killall -9 audioserver 2>/dev/null
+	sleep 0.3
+	# its FIFOs outlive it; leave nothing that could later look like readiness
+	rm -f /tmp/audio_fifo_server /tmp/audio_fifo_ioctl_req /tmp/audio_fifo_ioctl_res
+	pgrep audioserver >/dev/null 2>&1 && return 1
+	return 0
+}
 
 #######################################
 
 lumon.elf & # adjust lcd luma and saturation
 
-# Charging screen. Runs in the foreground by design — it is what you see INSTEAD of booting when
-# the device is powered on plugged in — but it is now safe to do that:
-#   POWER          -> exits, boot continues
+# CHARGE-ONLY MODE — deliberately the FIRST thing after backlight setup, and ahead of audioserver,
+# keymon, minui, the governor and any core. Plugging in a powered-off device should light a battery
+# screen, not boot a games console in the dark: nothing below this line has any business running
+# while the user is only charging.
+#
+# Behaviour (matches the Brick/SP screen this renders):
+#   POWER          -> exits, boot continues (exactly once)
 #   charger pulled -> exits, boot continues  (the old one ran `shutdown` here, so unplugging
 #                     powered the device off)
 #   idle           -> dims only, stays responsive  (the old one blanked after 3s and blocked,
 #                     which was indistinguishable from a hang and got reported as a crash twice)
-# It draws a real fill level and percentage from AXP reg 0xB9, not a static png, and no longer
-# busy-spins a core for the whole charging session.
-if [ -f /customer/app/axp_test ]; then
-	# Plus: AXP reg 0x00 bit2 = battery current direction (1 = charging)
-	CHARGING=`/customer/app/axp_test | awk -F'[,: {}]+' '{print $7}'`
-	[ "$CHARGING" = "3" ] && batmon.elf
-else
-	CHARGING=`cat /sys/devices/gpiochip0/gpio/gpio59/value 2>/dev/null`
-	[ "$CHARGING" = "1" ] && batmon.elf
-fi
+#
+# ONE predicate, and it lives in batmon. The launcher used to gate on `axp_test` field 7 == 3,
+# which is AXP reg 0x00 BIT 2 — battery current direction. That bit CLEARS when the battery is
+# full, so a plugged-in device at 100% read as "not charging" and booted straight to the menu,
+# while batmon (which gates on ACIN/VBUS presence) would have stayed. Two notions of "charging" in
+# two places is how that divergence survived. batmon now decides, and exits immediately when the
+# device is not externally powered.
+# No shell-side model test. batmon owns the whole decision: its preflight reads the PMIC once and
+# returns immediately unless external power is actually present — and on a model with no AXP that
+# read simply fails, which is also an immediate return. Measured: 20 invocations on battery in 0s.
+#
+# The shell used to re-derive "does this device have an AXP" itself, which meant the same hardware
+# rule existed in C (platform.c has_axp) AND in shell, in two languages, free to drift. It already
+# had: the shell said Plus-only, the C said Plus-or-Flip. One predicate, one place.
+batmon.elf
+
+#######################################
+
+# Audio comes up AFTER charge mode exits: a charging device needs no codec, and starting the daemon
+# first would have it hold MI_AO through the whole charging session for nothing.
+# Still before minui.elf, and that ordering is load-bearing: the daemon must claim MI_AO before
+# anything else opens it, or MI_AO_SetPubAttr fails with 0xa0052009 and it dies. This is the only
+# moment in the session when it can win the codec.
+audio_daemon_start
+AUDIO_DAEMON=0
+audio_daemon_ok && AUDIO_DAEMON=1
+AUDIO_RETRY=1   # one revival attempt is allowed if the daemon later dies; see the launch site
+
+# Do NOT export the shim globally. libpadsp is fragile for non-SDL clients -- a program that
+# actually drives /dev/dsp segfaults under it (measured) -- and keymon, the shutdown helper and
+# every other child inherit whatever is exported here. The menu plays no audio and does not need
+# it; only the game process tree does (applied at the launch site below).
+unset LD_PRELOAD
+export AUDIO_DAEMON
 
 keymon.elf & # &> /mnt/SDCARD/keymon.txt &
 
@@ -169,7 +270,39 @@ while [ -f "$EXEC_PATH" ]; do
 	
 	if [ -f $NEXT_PATH ]; then
 		CMD=`cat $NEXT_PATH`
+		# Re-decide ownership at EVERY launch. The daemon can die between games, and a verdict
+		# computed at boot would keep routing games to an OSS endpoint that no longer exists — the
+		# game would run silently while looking perfectly healthy.
+		#
+		# Revival is attempted AT MOST ONCE per session, and usually cannot work. MEASURED: once
+		# minui.elf has the codec open, a restarted daemon dies immediately with
+		#     MI_AO_SetPubAttr[3364]: Dev0 failed to set pub attr!!! error number:0xa0052009
+		# the same "cannot reconfigure an ENABLED device" wall this project keeps hitting. The
+		# daemon only wins the codec at boot, before the menu opens it. So retrying on every launch
+		# would stall each one for the full readiness timeout and still fail; after one failure we
+		# stay on direct MMIYOO for the rest of the session and recover at the next boot.
+		if audio_daemon_ok || { [ "$AUDIO_RETRY" = "1" ] && audio_daemon_start; }; then
+			AUDIO_DAEMON=1
+			export SDL_AUDIODRIVER=dsp
+			export LD_PRELOAD=$AUDIO_SHIM
+		else
+			# EXPLICIT fallback, and it must name the driver. Merely unsetting SDL_AUDIODRIVER is
+			# not enough: OSS is registered BEFORE MMIYOO in SDL2 bootstrap[] (src/audio/SDL_audio.c
+			# -- DSP at 114, MMIYOO at 126), so SDL would auto-pick dsp again and route into
+			# nothing. The pop returns on this path; silence would be the worse failure.
+			# Take the codec back first. Reaching here with a daemon still running means it is
+			# wedged or unreachable; it would keep MI_AO and this game would open nothing.
+			audio_daemon_release
+			AUDIO_DAEMON=0
+			AUDIO_RETRY=0   # do not stall every later launch on a revival that cannot succeed
+			export SDL_AUDIODRIVER=MMIYOO
+			unset LD_PRELOAD
+		fi
+		# The game needs its OWN ownership mode: in daemon mode minarch is only an OSS client and
+		# must NOT disable the codec on exit/crash (PLAT_resetAudio honours this).
+		export AUDIO_DAEMON
 		eval $CMD
+		unset LD_PRELOAD SDL_AUDIODRIVER
 		rm -f $NEXT_PATH
 		if [ -f "/tmp/using-swap" ]; then
 			swapoff $USERDATA_PATH/swapfile
