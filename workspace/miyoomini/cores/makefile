@@ -1,10 +1,13 @@
 # miyoomini (Miyoo Mini Plus) — SigmaStar SSD202D, dual Cortex-A7, ARMv7ve, NEON-VFPv4.
 #
-# Only the cores this device actually ships are built. The Emus paks map to exactly six:
-#   FC->fceumm  GB/GBC->gambatte  GBA->gpsp  MD->picodrive  PS->pcsx_rearmed  SFC/SUPA->supafaust
-# snes9x2005_plus is deliberately NOT built: SFC.pak moved to supafaust, so nothing loads it and
-# building it is pure time. tg5040's extra systems (PCE/VB/GG/SMS/MGBA/P8) have no paks here.
-CORES = fceumm gambatte gpsp pcsx_rearmed picodrive mednafen_supafaust
+# The core set is deliberately IDENTICAL to tg5040's, including cores no pak on this device loads
+# yet (snes9x2005_plus, mednafen_pce_fast, mednafen_vb, mgba, fake-08). Keeping the two platforms
+# on one list means a system added to the Miyoo later needs no core work, and it removes the class
+# of bug where a pak references a core this platform silently never built — SFC.pak was switched to
+# supafaust purely because snes9x2005_plus was missing here, and kept a comment describing the core
+# it no longer loaded.
+CORES = fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus
+CORES+= mednafen_pce_fast mednafen_vb mednafen_supafaust mgba fake-08
 
 ###############################
 
@@ -31,6 +34,11 @@ gpsp_HASH               = 69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4
 pcsx_rearmed_HASH       = 050981b6eeb715f142854f57c68086f62921f027
 picodrive_HASH          = 9e011174842a098a99290622b14db7ffafa717d1
 mednafen_supafaust_HASH = 2b93c0d7dff5b8f6c4e60e049d66849923fa8bba
+snes9x2005_plus_HASH    = b60356971fc9caae02cd0853676dced886a08be7
+mednafen_pce_fast_HASH  = 4727b96c10f50405167d98d364844469307fcc41
+mednafen_vb_HASH        = 38e7a0ec9ac7079ca1c1e3dd9aaf5b56f527efca
+mgba_HASH               = 6dce57eef127dc4cc292644f38196e0e7c58590c
+fake-08_HASH            = 814991a2571ad3970e386cef48f3b148aa1c27b9
 
 ###############################
 
@@ -52,6 +60,13 @@ pcsx_rearmed_MAKEFILE = Makefile.libretro
 
 picodrive_REPO = https://github.com/irixxxx/picodrive
 picodrive_MAKEFILE = Makefile.libretro
+snes9x2005_plus_REPO = https://github.com/libretro/snes9x2005
+snes9x2005_plus_FLAGS = USE_BLARGG_APU=1
+mednafen_pce_fast_REPO = https://github.com/libretro/beetle-pce-fast-libretro
+mednafen_vb_REPO = https://github.com/libretro/beetle-vb-libretro
+fake-08_REPO = https://github.com/jtothebell/fake-08
+fake-08_CORE = fake08_libretro.so
+fake-08_BUILD_PATH = fake-08/platform/libretro
 # picodrive recurses into cpu/cyclone to GENERATE Cyclone.s (the ARM32 M68K JIT). That sub-make
 # mishandles the jobserver and dies with "write jobserver: Bad file descriptor" under any -jN,
 # deterministically. Serial for this core only — the ARM32 Cyclone/SH2 DRC path is worth the wait,

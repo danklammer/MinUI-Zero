@@ -73,7 +73,14 @@ hash_for() { case "$1" in
   mednafen_supafaust) echo 2b93c0d7dff5b8f6c4e60e049d66849923fa8bba ;;
 esac; }
 
-for C in fceumm gambatte gpsp pcsx_rearmed picodrive mednafen_supafaust; do
+# ALL 11 cores, matching tg5040's set. The five added later (snes9x2005_plus, mednafen_pce_fast,
+# mednafen_vb, mgba, fake-08) previously kept LEGACY hand-inherited patches that this script never
+# regenerated — and one of them was poisoned: fake-08.patch carried a stray `_vm->UpdateAndDraw()`
+# captured from a dirty working tree, calling a method that is commented out in vm.h at the pinned
+# commit, so the core could not compile at all. Generating every core the platform ships keeps that
+# from recurring.
+for C in fceumm gambatte gpsp pcsx_rearmed picodrive mednafen_supafaust \
+         snes9x2005_plus mednafen_pce_fast mednafen_vb mgba fake-08; do
   R=$(repo_for "$C"); H=$(hash_for "$C")
   echo "=============================================================="
   echo "$C  @ ${H:0:10}"
