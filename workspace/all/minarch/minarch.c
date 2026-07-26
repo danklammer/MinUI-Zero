@@ -5619,6 +5619,13 @@ static void Menu_loop(void) {
 		screen = GFX_resize(DEVICE_WIDTH,DEVICE_HEIGHT,DEVICE_PITCH);
 	}
 	
+	// Drop the debug HUD for the duration of the menu. The overlay pointers are only refreshed
+	// from the video-refresh path, which does not run while the menu is up — so without this the
+	// LAST game frame's HUD strips stay live and every platform's flip keeps compositing them
+	// over the menu (both tg5040 and miyoomini call drawDebugOverlay() unconditionally in flip).
+	// The next rendered game frame re-arms it if the HUD is still enabled.
+	PLAT_setDebugOverlay(NULL, NULL, 0, 0, 0);
+
 	Core_flushMemory();
 	PWR_warn(0);
 	if (!HAS_POWER_BUTTON) PWR_enableSleep();
