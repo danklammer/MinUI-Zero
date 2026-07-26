@@ -1,6 +1,6 @@
 #!/bin/sh
 
-EMU_EXE=mednafen_supafaust
+EMU_EXE=snes9x2005_plus
 
 ###############################
 
