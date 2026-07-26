@@ -167,9 +167,25 @@ void quit(int exitcode) {
 
 #define LID_PATH "/sys/devices/soc0/soc/soc:hall-mh248/hallvalue" // hall sensor: clamshell (Flip) only
 
+// Last readings that were actually VALID. axp_read() returns -1 when the i2c transfer fails, and
+// minui/minarch poll the same bus, so contention makes that happen transiently. Feeding -1 through
+// the old masks was badly wrong in the UNSAFE direction:
+//     getADCValue: -1 & 0x7F == 127  -> a failed read reported 127% charge
+//     isCharging:  -1 & 0x04 == 4    -> a failed read reported "charging"
+// so a device with a flaky bus never showed a low battery. Hold the last valid value instead.
+static int last_valid_charge = -1;
+static int last_valid_charging = -1;
+
 static int getADCValue(void) {
-	if (has_axp) return axp_read(0xB9) & 0x7F;
-	
+	if (has_axp) {
+		int v = axp_read(0xB9);
+		if (v < 0) return last_valid_charge >= 0 ? last_valid_charge : 50; // never 127
+		v &= 0x7F;
+		if (v > 100) return last_valid_charge >= 0 ? last_valid_charge : 50; // gauge garbage
+		last_valid_charge = v;
+		return v;
+	}
+
 	ioctl(sar_fd, IOCTL_SAR_SET_CHANNEL_READ_VALUE, &adc_config);
 	
 	int current_charge = 0;
@@ -207,7 +223,16 @@ static void putInt(const char* path, int i) {
 	close(fd);
 }
 static int isCharging(void) {
-	if (has_axp) return (axp_read(0x00) & 0x4) > 0;
+	if (has_axp) {
+		int v = axp_read(0x00);
+		// A failed read must not read as "charging" — see last_valid_charging above.
+		if (v < 0) return last_valid_charging >= 0 ? last_valid_charging : 0;
+		// EXTERNAL POWER PRESENCE (bit7 ACIN, bit4 VBUS), matching platform.c and batmon.
+		// NOT bit2, which is battery current DIRECTION and clears once the cell is full — that
+		// made a plugged-in device at 100% read as discharging, in three different places.
+		last_valid_charging = ((v & 0x80) || (v & 0x10)) ? 1 : 0;
+		return last_valid_charging;
+	}
 	return getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
 }
 static void initADC(void) {
