@@ -34,8 +34,8 @@ cd "$HOME"
 export MINARCH_FMIN=1000000
 export MINARCH_FMAX=1200000
 
-# TEMPORARY (bench): logs "MEASURE ... fps=actual/target cpu=.. ceil=..MHz" once a second so the
-# core/clock choice gets settled on numbers. REMOVE once tuning is done — it is one SD write/sec.
-export ZERO_MEASURE=1
+# NOTE: ZERO_MEASURE was exported here while the clock bracket above was being settled. It is a
+# debug facility (one SD write per second, forever) and has no place in a shipped pak, so it is
+# gone now that the numbers above are decided. Re-export it by hand when re-tuning.
 
 nice -20 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"

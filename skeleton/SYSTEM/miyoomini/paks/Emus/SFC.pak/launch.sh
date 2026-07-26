@@ -30,9 +30,8 @@ cd "$HOME"
 export MINARCH_FMIN=600000
 export MINARCH_FMAX=1200000
 
-# TEMPORARY (bench): logs "MEASURE ... fps=actual/target cpu=.. ceil=..MHz" once a second to
-# $LOGS_PATH/SFC.txt so we can judge supafaust vs snes9x2005_plus on real numbers instead of
-# feel. Costs one SD write per second — REMOVE once the core choice is settled.
-export ZERO_MEASURE=1
+# NOTE: ZERO_MEASURE was exported here to judge supafaust vs snes9x2005_plus on numbers. The
+# choice is settled (supafaust — it holds 60fps where snes9x2005_plus did not), and a debug
+# facility that writes to the SD card once a second must not ship. Re-export by hand to re-tune.
 
 nice -20 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
