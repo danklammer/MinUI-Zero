@@ -140,6 +140,15 @@ typedef struct {
 static SAR_ADC_CONFIG_READ  adc_config = {0,0};
 static int is_charging = 0;
 static int is_plus = 0;
+// has_axp: this unit reads battery/charge from the AXP PMIC over i2c rather than the original
+// Mini's SAR-ADC + gpio59. TRUE for the Plus and ALSO for the Flip.
+//
+// Why the Flip counts: Allium (goweiwen/Allium) ships all three models off one card and maps
+// Flip -> the SAME battery implementation as the Mini Plus (Miyoo354Battery), only the original
+// Mini gets its own (Miyoo283Battery). Keying battery off `is_plus` alone would hand a Flip the
+// ORIGINAL MINI's hand-tuned voltage-divider constants below — silently wrong readings on
+// hardware nobody here has tested. Detected via the hall sensor, which only the clamshell has.
+static int has_axp = 0;
 static int eased_charge = 0;
 static int sar_fd = 0;
 static struct input_event	ev;
@@ -156,8 +165,10 @@ void quit(int exitcode) {
 	exit(exitcode);
 }
 
+#define LID_PATH "/sys/devices/soc0/soc/soc:hall-mh248/hallvalue" // hall sensor: clamshell (Flip) only
+
 static int getADCValue(void) {
-	if (is_plus) return axp_read(0xB9) & 0x7F;
+	if (has_axp) return axp_read(0xB9) & 0x7F;
 	
 	ioctl(sar_fd, IOCTL_SAR_SET_CHANNEL_READ_VALUE, &adc_config);
 	
@@ -196,11 +207,12 @@ static void putInt(const char* path, int i) {
 	close(fd);
 }
 static int isCharging(void) {
-	if (is_plus) return (axp_read(0x00) & 0x4) > 0;
+	if (has_axp) return (axp_read(0x00) & 0x4) > 0;
 	return getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
 }
 static void initADC(void) {
 	is_plus = access("/customer/app/axp_test", F_OK)==0;
+	has_axp = is_plus || access(LID_PATH, F_OK)==0; // Plus, or Flip (clamshell hall sensor)
 	sar_fd = open("/dev/sar", O_WRONLY);
 	ioctl(sar_fd, IOCTL_SAR_INIT, NULL);
 }
@@ -226,7 +238,6 @@ static void checkADC(void) {
 	
 	putInt("/tmp/battery", eased_charge);
 }
-#define LID_PATH "/sys/devices/soc0/soc/soc:hall-mh248/hallvalue"
 static void checkUSB(void) {
 	static int init = 0;
 	static int is_flip;

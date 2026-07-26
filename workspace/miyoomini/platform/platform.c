@@ -32,6 +32,11 @@
 
 int is_560p = 0;
 int is_plus = 0;
+// has_axp: battery/charge come from the AXP PMIC over i2c (Plus AND Flip) rather than the
+// original Mini's gpio59. Allium ships all three models off one card and maps the Flip to the
+// SAME battery implementation as the Plus (Miyoo354Battery); only the original Mini gets its
+// own. Keying this off is_plus alone would put a Flip on the original Mini path.
+int has_axp = 0;
 
 #define ALIGN4K(val)	((val+4095)&(~4095))
 
@@ -415,6 +420,7 @@ static void mmpFlipStop(void);
 
 SDL_Surface* PLAT_initVideo(void) {
 	is_plus = exists("/customer/app/axp_test");
+	has_axp = is_plus || exists(LID_PATH); // Plus, or Flip (clamshell hall sensor)
 	is_560p = hasMode(MODES_PATH, "752x560p") && exists(USERDATA_PATH "/enable-560p");
 	LOG_info("is 560p: %i\n", is_560p);
 	
@@ -1008,7 +1014,7 @@ int axp_read(unsigned char address) {
 
 static int online = 0;
 void PLAT_getBatteryStatus(int* is_charging, int* charge) {
-	*is_charging = is_plus ? (axp_read(0x00) & 0x4) > 0 : getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
+	*is_charging = has_axp ? (axp_read(0x00) & 0x4) > 0 : getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
 	
 	int i = getInt("/tmp/battery"); // 0-100?
 
