@@ -1329,18 +1329,10 @@ static void ChargingScreen(SDL_Surface* screen) {
 		// button wakes back to the menu, and idling there returns here.
 		if (now-entered_at >= 300000) { PWR_requestSleep(); break; }
 		if (!rendered_at || now-rendered_at>=60000) {
-			int pct = -1;
-			FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");
-			if (bf) { if (fscanf(bf, "%d", &pct)!=1) pct = -1; fclose(bf); }
-			// honest 100%: the gauge rounds up before the charger actually terminates
-			// (the LED stays red through the final taper). Hold at 99% until the kernel
-			// reports Full — the same moment the LED turns green.
-			if (pct >= 100) {
-				char st[16] = "";
-				FILE* sf = fopen("/sys/class/power_supply/axp2202-battery/status", "r");
-				if (sf) { if (!fgets(st, sizeof(st), sf)) st[0] = 0; fclose(sf); }
-				if (strncmp(st, "Full", 4) != 0) pct = 99;
-			}
+			// The platform answers this. This function used to read axp2202 sysfs paths DIRECTLY
+			// — tg5040 hardware detail sitting in shared menu code — so it was correct on the
+			// Brick and rendered "..." on every other device. -1 means "no reading available".
+			int pct = PLAT_getChargePercent();
 			GFX_clear(screen);
 			char msg[16];
 			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);

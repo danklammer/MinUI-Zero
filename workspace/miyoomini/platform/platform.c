@@ -1110,10 +1110,33 @@ int axp_read(unsigned char address) {
 
 ///////////////////////////////
 
+// Exact fuel-gauge percentage (AXP reg 0xB9 bits[6:0]) — the SAME register and validation batmon
+// uses, so the boot charging screen and the in-menu one cannot disagree about the battery.
+int PLAT_getChargePercent(void) {
+	if (!has_axp) return -1;
+	int v = axp_read(0xB9);
+	if (v < 0) return -1;
+	v &= 0x7F;
+	return v > 100 ? -1 : v;   // the gauge returns garbage occasionally — reject it
+}
+
 static int online = 0;
 void PLAT_getBatteryStatus(int* is_charging, int* charge) {
-	*is_charging = has_axp ? (axp_read(0x00) & 0x4) > 0 : getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
-	
+	// EXTERNAL POWER PRESENCE (reg 0x00: bit7 ACIN, bit4 VBUS), not bit2.
+	// bit2 is battery CURRENT DIRECTION, and it CLEARS once the cell is full — so a device sitting
+	// on the charger at 100% reported "not charging", which took the menu out of its charging
+	// state and let it behave as if running on battery while plugged in. batmon gates on presence
+	// (isPowered) and this must agree with it: two notions of "charging" in two places is exactly
+	// how that divergence survived unnoticed.
+	if (has_axp) {
+		int v = axp_read(0x00);
+		// A failed i2c read must not read as "unplugged"; keep the previous verdict.
+		static int last_powered = 0;
+		if (v >= 0) last_powered = ((v & 0x80) || (v & 0x10)) ? 1 : 0;
+		*is_charging = last_powered;
+	}
+	else *is_charging = getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
+
 	int i = getInt("/tmp/battery"); // 0-100?
 
 	// worry less about battery and more about the game you're playing

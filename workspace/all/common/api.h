@@ -351,6 +351,7 @@ void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int str
 // MUST be called from the process that opened the device: the SigmaStar MI_AO layer tracks
 // enablement per-process, so an out-of-process query always reports "not enabled".
 int PLAT_getAudioQueued(void);
+int PLAT_getChargePercent(void); // exact charge %, or -1 if unavailable (weak fallback: -1)
 // panel-coordinate rect of the most recently presented game frame (0s before first flip)
 void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);
