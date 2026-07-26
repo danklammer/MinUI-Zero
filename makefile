@@ -18,7 +18,10 @@ endif
 
 ###########################################################
 
-BUILD_HASH:=$(shell git rev-parse --short HEAD)
+# Append -dirty when the tree has uncommitted changes. Without this an artifact built from WIP
+# stamps itself with the last clean SHA and claims to be a commit it is not — which makes every
+# "what exactly is on this card?" question unanswerable, and burned a review cycle.
+BUILD_HASH:=$(shell git rev-parse --short HEAD)$(shell test -n "$$(git status --porcelain)" && echo -dirty)
 ZERO_VERSION=v1.5.3
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
@@ -114,6 +117,16 @@ system:
 	cp ./workspace/all/confirm/build/$(PLATFORM)/confirm.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/clock/build/$(PLATFORM)/clock.elf ./build/EXTRAS/Tools/$(PLATFORM)/Clock.pak/
 	cp ./workspace/all/minput/build/$(PLATFORM)/minput.elf ./build/EXTRAS/Tools/$(PLATFORM)/Input.pak/
+	# The miyoomini libSDL2 is NOT stock: it carries SDL2's OSS backend so audio routes through the
+	# vendor audioserver, which is what keeps the codec powered and removes the game-boundary pops
+	# (see MinUI.pak/launch.sh). Losing it is SILENT on device -- audio still works, the pop just
+	# comes back -- so the artifact is checked rather than trusted. Rebuild with
+	# tools/build-miyoomini-sdl2.sh.
+	if [ "$(PLATFORM)" = "miyoomini" ]; then \
+		strings ./build/SYSTEM/miyoomini/lib/libSDL2-2.0.so.0 | grep -q "OSS /dev/dsp standard audio" || \
+			{ echo "ERROR: shipped libSDL2 has no OSS backend — the audio pop would return"; exit 1; }; \
+		echo "miyoomini libSDL2: OSS backend present"; \
+	fi
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
 	if [ "$(PLATFORM)" = "tg5040" ]; then \
 		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
