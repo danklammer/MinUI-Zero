@@ -38,6 +38,11 @@ int is_plus = 0;
 // own. Keying this off is_plus alone would put a Flip on the original Mini path.
 int has_axp = 0;
 
+// Which of the TWO MMA render buffers (PAGE_COUNT==2) the frontend is currently drawing into.
+// Deliberately independent of vid.page, which indexes the up-to-THREE scanout pages: indexing
+// this 2-entry buffer with vid.page walks off the end of the allocation when vid.page==2.
+static int mma_page = 0;
+
 #define ALIGN4K(val)	((val+4095)&(~4095))
 
 // NOTE: these 16bpp render targets use RGBA_MASK_565 — SDL2 requires real channel
@@ -561,8 +566,8 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.cleared = 0;
 	
 	LOG_info("mi_sys: MMA vadd=%p padd=%llx\n", vid.buffer.vadd, (unsigned long long)vid.buffer.padd);
-	vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
-	surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
+	vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(mma_page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
+	surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(mma_page*MMA_PAGE));
 	memset(vid.screen->pixels, 0, vid.pitch * vid.height);
 
 	mmpFlipStart(); // async pan, if the driver gave us 3 pages
@@ -625,8 +630,8 @@ void PLAT_quitVideo(void) {
 }
 
 void PLAT_clearVideo(SDL_Surface* screen) {
-	MI_SYS_FlushInvCache(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE), ALIGN4K(MMA_PAGE));
-	MI_SYS_MemsetPa(vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE), 0, MMA_PAGE);
+	MI_SYS_FlushInvCache(vid.buffer.vadd + ALIGN4K(mma_page*MMA_PAGE), ALIGN4K(MMA_PAGE));
+	MI_SYS_MemsetPa(vid.buffer.padd + ALIGN4K(mma_page*MMA_PAGE), 0, MMA_PAGE);
 	SDL_FillRect(screen, NULL, 0);
 	// memset(screen->pixels, 0, MMA_PAGE); // this causes crashing
 }
@@ -709,8 +714,8 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 				vid.width, vid.height, vid.pitch, (size_t)vid.pitch * vid.height, (int)MMA_PAGE, max_h);
 			vid.height = max_h > 0 ? max_h : 1;
 		}
-		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(vid.page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
-		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
+		vid.screen = SDL_CreateRGBSurfaceFrom(vid.buffer.vadd + ALIGN4K(mma_page*MMA_PAGE),vid.width,vid.height,FIXED_DEPTH,vid.pitch,RGBA_MASK_565);
+		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(mma_page*MMA_PAGE));
 		memset(vid.screen->pixels, 0, vid.pitch * vid.height);
 	}
 
@@ -899,7 +904,6 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	// exactly PAGE_COUNT(2) MMA render buffers, so it needs its own toggle. Keying it off
 	// (vid.page&1) was correct for 2 scanout pages but yields 0,1,0,0,1,0 for 3.
 	if (!vid.direct) {
-		static int mma_page = 0;
 		mma_page ^= 1;
 		vid.screen->pixels = vid.buffer.vadd + ALIGN4K(mma_page*MMA_PAGE);
 		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(mma_page*MMA_PAGE));
