@@ -6065,8 +6065,24 @@ static void trackFPS(void) {
 				static long m_u0 = 0; static int m_d0 = 0;
 				int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
 				int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
-				LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
-					m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+				// dac = frames queued to the DAC, and whether that count MOVED since the last
+				// sample. A ONE-WAY signal: dac=? or STALLED proves there is no audio, but
+				// "flowing" does NOT prove audibility — the known-silent build still reported
+				// flowing on every system (negative control, 2026-07-26). Treat it as a cheap
+				// way to catch dead audio, never as a green light.
+				int m_dac = PLAT_getAudioQueued();
+				static int m_dac0 = -1;
+				int m_dac_moved = (m_dac >= 0 && m_dac0 >= 0 && m_dac != m_dac0);
+				m_dac0 = m_dac;
+				if (m_dac < 0) {
+					LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d dac=?\n",
+						m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+				}
+				else {
+					LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d dac=%d %s\n",
+						m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000,
+						m_dac, m_dac_moved ? "flowing" : "STALLED");
+				}
 			}
 		}
 

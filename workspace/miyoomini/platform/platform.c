@@ -299,6 +299,28 @@ int PLAT_keepAudioOpen(void) { return 0; }
 // silent until reboot. Nothing in the normal path repairs it.
 // Disabling is safe when the device is already disabled (the driver just logs "has not been
 // enabled" and returns), so this is idempotent and cheap to call on the failure path.
+// Frames queued to the DAC right now, or -1 if the channel is not readable.
+//
+// NOT AN AUDIBILITY ORACLE — this was built as one and FAILED ITS NEGATIVE CONTROL. Running the
+// known-silent build (keepAudioOpen=1, where game 2 onward is silent, confirmed by ear) still
+// reported frames flowing on all five systems. So the DAC consuming frames is NECESSARY BUT NOT
+// SUFFICIENT for sound: the silence lives downstream of the channel queue.
+//
+// What it DOES prove:
+//   -1 / dac=?  -> the channel is not enabled or not readable: definitely no audio
+//   STALLED     -> frames queued but not being consumed: definitely no audio
+//   flowing     -> the channel is alive. Says NOTHING about whether it is audible.
+// Useful as a cheap negative detector; useless as a green light.
+//
+// Only meaningful in-process: MI_AO tracks enablement per-process, so a separate probe binary
+// gets "Dev0 has not been enabled" even mid-game (measured, .notes/mmp-build/aoprobe.c).
+int PLAT_getAudioQueued(void) {
+	MI_AO_ChnState_t st;
+	memset(&st, 0, sizeof st);
+	if (MI_AO_QueryChnStat(0, 0, &st) != MI_SUCCESS) return -1;
+	return (int)st.u32ChnBusyNum;
+}
+
 void PLAT_resetAudio(void) {
 	// Mute and let the rail settle BEFORE removing power. Disabling a live output stage is a step
 	// discontinuity — the pop. The enable path mutes first for the same reason; this is its mirror.

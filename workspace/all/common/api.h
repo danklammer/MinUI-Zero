@@ -347,6 +347,10 @@ void PLAT_flip(SDL_Surface* screen, int sync);
 // the buffer's allocated row width. 0xF81F = transparent.
 #define DBG_OVERLAY_SCALE 3
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride);
+// Frames currently queued to the audio DAC, or -1 if the platform cannot report it.
+// MUST be called from the process that opened the device: the SigmaStar MI_AO layer tracks
+// enablement per-process, so an out-of-process query always reports "not enabled".
+int PLAT_getAudioQueued(void);
 // panel-coordinate rect of the most recently presented game frame (0s before first flip)
 void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);
