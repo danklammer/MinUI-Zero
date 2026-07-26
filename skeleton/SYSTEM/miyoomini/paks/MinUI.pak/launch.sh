@@ -116,8 +116,19 @@ keymon.elf & # &> /mnt/SDCARD/keymon.txt &
 
 #######################################
 
-# init datetime
-if [ -f "$DATETIME_PATH" ] && [ ! -f "$USERDATA_PATH/enable-rtc" ]; then
+# init datetime — RTC-FIRST on this device (inverted vs upstream, which restores from a file
+# unless `enable-rtc` exists).
+#
+# MEASURED 2026-07-25: this board has a working battery-backed RTC and it is ACCURATE.
+#   /sys/class/rtc/rtc0/time  22:16:18     <- correct to the second
+#   system clock              22:11:19     <- 5 minutes behind
+#   datetime.txt              22:08:32     <- what upstream's restore had written back
+# Restoring from datetime.txt therefore OVERWRITES a good clock with the timestamp of the last
+# shutdown, so the clock walks backwards every boot. Verified after inverting: system, RTC and
+# wall clock all read 22:18:03.
+#
+# Opt back into the file-restore behaviour with `disable-rtc` (for a unit whose RTC cell is dead).
+if [ -f "$DATETIME_PATH" ] && [ -f "$USERDATA_PATH/disable-rtc" ]; then
 	DATETIME=`cat "$DATETIME_PATH"`
 	date +'%F %T' -s "$DATETIME"
 	DATETIME=`date +'%s'`

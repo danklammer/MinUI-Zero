@@ -1199,9 +1199,10 @@ void PLAT_setCPUMaxFreq(int khz) {
 }
 
 ///////////////////////////////
-// Debug-HUD hooks. Zero's frontend calls these unconditionally; the HUD itself is not
-// implemented on this platform yet, so these are honest no-ops (not a silent partial HUD).
-// PLAT_getGameRect must still report a sane rect — callers divide by w/h.
+// Debug-HUD hooks. (This block used to say the HUD was "not implemented on this platform yet,
+// so these are honest no-ops" — that is stale: the code below draws real pixels and the HUD is
+// verified working on device. PLAT_getGameRect must still report a sane rect — callers divide
+// by w/h.)
 
 // Debug HUD. minarch hands us two RGB565 strips (top/bottom) generated at screen->w /
 // DBG_OVERLAY_SCALE and expects them presented SCALED so they span the panel — see minarch.c:3809
