@@ -656,6 +656,21 @@ void PLAT_setVsync(int vsync) {
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
+	// QUIESCE THE PANNER FIRST. Everything below is hostile to a pan in flight: it memsets every
+	// framebuffer page, frees vid.screen, and re-points it at a different MMA offset. The async
+	// flip thread meanwhile may be inside fb_pan() on a page we are about to zero, or holding a
+	// flip_pending index for one.
+	//
+	// This is a real, user-visible bug, not theory: entering the in-game menu calls GFX_resize
+	// (minarch Menu_loop), so pressing MENU raced the panner and INTERMITTENTLY presented a
+	// half-zeroed page — reported from device as "sometimes when I hit the menu button" with a
+	// screen of blue garbage instead of the menu.
+	//
+	// mmpFlipStop() joins the thread (it does not cancel it), so once it returns no pan can be in
+	// flight and no page index is held. Restarted at the bottom. Resizes are rare — menu open and
+	// close, plus core geometry changes — so a thread teardown here costs nothing measurable.
+	mmpFlipStop();
+
 	// Geometry change => the region the present blit covers changes too. Anything outside the new
 	// game rect (letterbox/pillarbox) would otherwise keep showing the PREVIOUS content, which is
 	// the glitchy band. Clear BOTH framebuffer pages here; per-frame clearing would be wasteful.
@@ -692,7 +707,9 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 		surf_setPa(vid.screen, vid.buffer.padd + ALIGN4K(vid.page*MMA_PAGE));
 		memset(vid.screen->pixels, 0, vid.pitch * vid.height);
 	}
-	
+
+	mmpFlipStart(); // buffers are stable again; resume async panning
+
 	return vid.direct ? vid.video : vid.screen;
 }
 
