@@ -115,6 +115,11 @@ extern int is_560p;
 #define FIXED_PITCH		(FIXED_WIDTH * FIXED_BPP)
 #define FIXED_SIZE		(FIXED_PITCH * FIXED_HEIGHT)
 
+// Debug HUD presented at 2x, not api.h's 3x default: the strips are sized in panel fractions
+// (CHAR_HEIGHT x scale), so 3x on a 480-line panel is half again taller relative to the screen
+// than the same text on the Brick's 768 lines. 2x here ≈ the Brick's proportions.
+#define DBG_OVERLAY_SCALE 2
+
 ///////////////////////////////
 
 #define MAIN_ROW_COUNT (is_560p?8:6)
