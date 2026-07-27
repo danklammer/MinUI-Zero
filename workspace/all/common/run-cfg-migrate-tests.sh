@@ -16,16 +16,16 @@ trap 'rm -rf "$OUT"' EXIT
 [ -f "$SRC" ] || { echo "cannot find minarch.c at $SRC"; exit 1; }
 
 {
-	grep -E '^#define (CFG_VERSION|CFG_VERSION_KEY) ' "$SRC"
+	grep -E '^#define (CFG_VERSION|CFG_VERSION_KEY|CFG_STALE_MAX) ' "$SRC"
 	awk '/^static const char\* cfg_stale_keys\[\] = \{/,/^\};/' "$SRC"
-	awk '/^static int Config_isStaleKey\(/,/^}/' "$SRC"
+	awk '/^static int Config_staleIndex\(/,/^}/' "$SRC"
+	grep -E '^static int Config_isStaleKey\(.*\}$' "$SRC"
 	awk '/^static int Config_getValue\(/,/^}/' "$SRC"
 } > "$OUT/cfg_migrate_extracted.h"
 
-grep -q 'CFG_VERSION_KEY'      "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed CFG_VERSION_KEY"; exit 1; }
-grep -q 'cfg_stale_keys'       "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed cfg_stale_keys"; exit 1; }
-grep -q 'Config_isStaleKey'    "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed Config_isStaleKey"; exit 1; }
-grep -q 'Config_getValue'      "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed Config_getValue"; exit 1; }
+for SYM in CFG_VERSION_KEY CFG_STALE_MAX cfg_stale_keys Config_staleIndex Config_isStaleKey Config_getValue; do
+	grep -q "$SYM" "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed $SYM"; exit 1; }
+done
 
 cc -std=gnu99 -g -fsanitize=address -fno-omit-frame-pointer \
    -I"$OUT" "$HERE/cfg_migrate_test.c" -o "$OUT/cfg_migrate_test"

@@ -1718,17 +1718,30 @@ static void Config_quit(void) {
 // Config_write stamps the version, and from then on a deliberate choice sticks like any other.
 //
 // Bump CFG_VERSION and add to cfg_stale_keys when a shipped default changes in a way a stale save
-// would defeat. Keep the list SHORT — every entry silently discards a player's setting once.
+// would defeat. Keep the list SHORT — every entry discards a player's setting once.
 #define CFG_VERSION 1
 #define CFG_VERSION_KEY "minarch_cfg_version"
 static const char* cfg_stale_keys[] = {
 	"minarch_screen_scaling", // v1: pak defaults moved to Native; stale Aspect saves shimmer
 	NULL,
 };
-static int Config_isStaleKey(const char* key) {
-	for (int i=0; cfg_stale_keys[i]; i++) if (!strcmp(key, cfg_stale_keys[i])) return 1;
-	return 0;
+#define CFG_STALE_MAX 8
+static int Config_staleIndex(const char* key) {
+	for (int i=0; cfg_stale_keys[i]; i++) if (!strcmp(key, cfg_stale_keys[i])) return i;
+	return -1;
 }
+static int Config_isStaleKey(const char* key) { return Config_staleIndex(key) >= 0; }
+
+// Did the SHIPPED chain (system.cfg + pak default.cfg) actually state a value for this stale key,
+// this launch? Reset and refilled by Config_readOptions.
+//
+// This gate is what keeps the migration minimal, and it is not a nicety. Only GB/GBC/FC ship a
+// scaling default; MGBA/GBA/SUPA/MD/PS ship none, and minarch's compiled-in default is index 1 —
+// "Aspect" — the very value we are dropping. Without this check the migration would discard the
+// save and land on the identical value on those systems: no fix, and a player who deliberately
+// chose Fullscreen or Cropped loses it for nothing. Drop a stale value only where we have a
+// shipped opinion to replace it with.
+static int cfg_stale_shipped[CFG_STALE_MAX];
 
 // user_version: the CFG_VERSION stamped in this saved cfg (0 = unstamped/pre-migration). Ignored
 // unless is_user, since shipped files are always current by definition.
@@ -1743,12 +1756,17 @@ static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 		Option* option = &config.frontend.options[i];
 		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
-		if (migrate && Config_isStaleKey(option->key)) {
-			// Say so — same reason as the locked case below. A dropped line that IS in the file
-			// otherwise sends anyone debugging chasing a setting that looks applied and is not.
-			LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
-				user_version, CFG_VERSION, option->key, value);
-			continue;
+		int stale_i = Config_staleIndex(option->key);
+		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
+			if (!is_user) cfg_stale_shipped[stale_i] = 1; // we have an opinion on this key
+			else if (migrate && cfg_stale_shipped[stale_i]) {
+				// Say so — same reason as the locked case below. A dropped line that IS in the
+				// file otherwise sends anyone debugging chasing a setting that looks applied and
+				// is not.
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
+					user_version, CFG_VERSION, option->key, value);
+				continue;
+			}
 		}
 		if (is_user && was_locked) {
 			// Say so. Silently discarding a line that IS in the file on the card sends anyone
@@ -1772,10 +1790,14 @@ static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
 		// Core options migrate too — cfg_stale_keys is not frontend-only. D48's stale
 		// `gpu_thread_rendering` is exactly this shape, and it is a CORE key.
-		if (migrate && Config_isStaleKey(option->key)) {
-			LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
-				user_version, CFG_VERSION, option->key, value);
-			continue;
+		int stale_i = Config_staleIndex(option->key);
+		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
+			if (!is_user) cfg_stale_shipped[stale_i] = 1;
+			else if (migrate && cfg_stale_shipped[stale_i]) {
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
+					user_version, CFG_VERSION, option->key, value);
+				continue;
+			}
 		}
 		if (is_user && was_locked) {
 			LOG_info("ignoring locked core option from saved cfg: %s = %s\n", option->key, value);
@@ -1917,6 +1939,9 @@ static void Config_free(void) {
 	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
+	// Per-launch: the shipped chain is re-read every time, so its opinions must be too.
+	memset(cfg_stale_shipped, 0, sizeof(cfg_stale_shipped));
+
 	Config_readOptionsString(config.system_cfg, 0, CFG_VERSION);
 	Config_readOptionsString(config.default_cfg, 0, CFG_VERSION);
 
