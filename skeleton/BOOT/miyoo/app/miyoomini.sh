@@ -4,6 +4,11 @@ IS_PLUS=false
 if [ -f "/customer/app/axp_test" ]; then
 	IS_PLUS=true
 fi
+# Tested as [ "$IS_PLUS" = "true" ], never as bare `if $IS_PLUS`. The bare form expands to a SYNTAX
+# ERROR if the variable is ever empty, and bin/shutdown already shipped that exact bug: it exited
+# without powering off, and the caller waited forever for a shutdown that never came. It is set
+# locally here so the bare form works today — but this file is the install bootstrap, and a syntax
+# error in it strands the device.
 
 SDCARD_PATH=/mnt/SDCARD
 MIYOO_PATH=$(cd "$(dirname "$0")"/.. && pwd)
@@ -40,7 +45,7 @@ cp -rf .tmp_update $SDCARD_PATH/
 if [ ! -f "$SDCARD_PATH/.tmp_update/updater" ]; then
 	echo "$(date '+%F %T') Could not copy the MinUI bootstrap to the SD card (full card, or a write error). Nothing was removed - free some space and try again." > "$SDCARD_PATH/MinUI-install-failed.txt"
 	sync
-	if $IS_PLUS; then poweroff; else reboot; fi
+	if [ "$IS_PLUS" = "true" ]; then poweroff; else reboot; fi
 fi
 sync                      # commit the bootstrap BEFORE deleting our way back to it
 rm -rf "$MIYOO_PATH"
@@ -48,7 +53,7 @@ sync
 $SDCARD_PATH/.tmp_update/updater
 
 # under no circumstances should stock be allowed to touch this card
-if $IS_PLUS; then
+if [ "$IS_PLUS" = "true" ]; then
 	poweroff
 else
 	reboot
