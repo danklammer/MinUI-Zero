@@ -174,6 +174,34 @@ audio_daemon_release() {
 bt "lumon"
 lumon.elf & # adjust lcd luma and saturation
 
+# Restore the USER's brightness before the charge screen.
+#
+# LCD init above parks the backlight at duty 6 — the value SetBrightness(0) maps to, i.e. the
+# dimmest step — and the saved level is only applied later by keymon's InitSettings(). batmon runs
+# in between, so it both DREW and RESTORED at duty 6: plugging in a powered-off device showed the
+# battery screen as dim as the panel goes, whatever the user had set.
+#
+# Brightness only, deliberately: syncsettings.elf would do this but also calls SetVolume(), which
+# touches MI_AO — and audioserver has not claimed the codec yet at this point. Enabling MI_AO here
+# would risk the 0xa0052009 "cannot reconfigure an enabled device" wall that stops the daemon
+# starting at all. This is pure PWM sysfs and cannot interfere.
+#
+# msettings.bin is a struct of ints: version, brightness, headphones, speaker, jack.
+# Brightness is the second, at byte offset 4. Mapping matches msettings.c SetBrightness():
+# 0 -> duty 6, otherwise value*10.
+MSETTINGS="$USERDATA_PATH/msettings.bin"
+if [ -s "$MSETTINGS" ]; then
+	B=$(od -An -tu4 -j4 -N4 "$MSETTINGS" 2>/dev/null | tr -d ' ')
+	case "$B" in
+		''|*[!0-9]*) B="" ;;
+		*) [ "$B" -gt 10 ] && B="" ;;   # out of range: leave the boot default alone
+	esac
+	if [ -n "$B" ]; then
+		[ "$B" = "0" ] && DUTY=6 || DUTY=$((B * 10))
+		echo $DUTY > /sys/class/pwm/pwmchip0/pwm0/duty_cycle 2>/dev/null
+	fi
+fi
+
 # CHARGE-ONLY MODE — deliberately the FIRST thing after backlight setup, and ahead of audioserver,
 # keymon, minui, the governor and any core. Plugging in a powered-off device should light a battery
 # screen, not boot a games console in the dark: nothing below this line has any business running
