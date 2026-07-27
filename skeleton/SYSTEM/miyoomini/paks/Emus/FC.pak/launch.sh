@@ -21,9 +21,16 @@ cd "$HOME"
 #
 # This shipped at 400 on the strength of a comment reading "GBC held 59.7fps at 400" — a claim that
 # was later DISPROVEN for GBC itself (re-measured after the -O3 core rebuild and raised to 800), so
-# NES was resting on evidence that had already been retracted. The symptom was visible: jittery
-# scrolling in Contra, which is exactly what a floor below the core's real cost looks like once the
-# governor sinks into it.
+# NES was resting on evidence that had already been retracted.
+#
+# WHAT THIS DOES NOT FIX, honestly recorded: raising this floor was NOT the cause of the jittery
+# scrolling reported in Contra, and did not cure it. The governor memory sidecar for that game reads
+# 800000 — the closed loop had ALREADY settled Contra at 800MHz and never sank to 400. The numbers
+# above were taken with the clock PINNED (FMIN=FMAX), which answers "can 400 run NES" (no), not
+# "does the governor choose 400" (it does not). The jitter was a scaling artifact; see default.cfg.
+#
+# So this is a GUARD RAIL, not a fix: it keeps a clock the core provably cannot hold out of the
+# search space, so the loop cannot spend a probe (and a stutter) discovering that again.
 #
 # 600 rather than 800: 600 already clears the target with margin, and this is the lightest system we
 # ship — taking the extra OPP step would cost power for nothing, which is the opposite of the point.
