@@ -17,13 +17,18 @@ trap 'rm -rf "$OUT"' EXIT
 
 {
 	grep -E '^#define (CFG_VERSION|CFG_VERSION_KEY|CFG_STALE_MAX) ' "$SRC"
-	awk '/^static const char\* cfg_stale_keys\[\] = \{/,/^\};/' "$SRC"
+	awk '/^typedef struct CfgStaleKey \{/,/^\} CfgStaleKey;/' "$SRC"
+	awk '/^static const CfgStaleKey cfg_stale_keys\[\] = \{/,/^\};/' "$SRC"
 	awk '/^static int Config_staleIndex\(/,/^}/' "$SRC"
 	grep -E '^static int Config_isStaleKey\(.*\}$' "$SRC"
+	awk '/^static char cfg_stale_shipped\[/' "$SRC"
+	awk '/^static int Config_parseVersion\(/,/^}/' "$SRC"
+	awk '/^static int Config_shouldDropStale\(/,/^}/' "$SRC"
 	awk '/^static int Config_getValue\(/,/^}/' "$SRC"
 } > "$OUT/cfg_migrate_extracted.h"
 
-for SYM in CFG_VERSION_KEY CFG_STALE_MAX cfg_stale_keys Config_staleIndex Config_isStaleKey Config_getValue; do
+for SYM in CFG_VERSION_KEY CFG_STALE_MAX CfgStaleKey cfg_stale_keys cfg_stale_shipped \
+           Config_staleIndex Config_isStaleKey Config_parseVersion Config_shouldDropStale Config_getValue; do
 	grep -q "$SYM" "$OUT/cfg_migrate_extracted.h" || { echo "extraction missed $SYM"; exit 1; }
 done
 

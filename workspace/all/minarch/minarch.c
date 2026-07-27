@@ -1717,37 +1717,78 @@ static void Config_quit(void) {
 // cfg_stale_keys are dropped from it exactly once and the shipped default wins. The next
 // Config_write stamps the version, and from then on a deliberate choice sticks like any other.
 //
-// Bump CFG_VERSION and add to cfg_stale_keys when a shipped default changes in a way a stale save
-// would defeat. Keep the list SHORT — every entry discards a player's setting once.
+// An entry names the value it migrates TO, and the version that introduced it. Both fields are
+// load-bearing:
+//
+//   `to`      A stale value is dropped ONLY where the shipped chain actually resolves to `to`.
+//             Merely "some shipped file mentions this key" is not enough, and getting this wrong
+//             regresses the Brick: tg5040's system.cfg sets `minarch_screen_scaling = Aspect`
+//             GLOBALLY, so a "was it shipped at all" test fires on every Brick launch for every
+//             core and resets any deliberate Native/Fullscreen/Cropped choice to Aspect. Only the
+//             MMP GB/GBC/FC paks actually moved to Native, and those are the only places this
+//             should fire. (Not hypothetical — caught in review against the real config tree.)
+//
+//   `version` Per-entry, NOT a single global `user_version < CFG_VERSION`. Otherwise adding a v2
+//             key would re-drop every v1 key on a valid v1 save, destroying a choice the player
+//             made deliberately after the v1 migration already ran.
+//
+// Add an entry when a shipped default changes in a way a stale save would defeat, and bump
+// CFG_VERSION to match. Keep the list SHORT — every entry discards a player's setting once.
 #define CFG_VERSION 1
 #define CFG_VERSION_KEY "minarch_cfg_version"
-static const char* cfg_stale_keys[] = {
-	"minarch_screen_scaling", // v1: pak defaults moved to Native; stale Aspect saves shimmer
-	NULL,
-};
 #define CFG_STALE_MAX 8
+typedef struct CfgStaleKey {
+	const char* key;
+	const char* to;   // drop the saved value only if the shipped chain resolves to exactly this
+	int version;      // drop only if the save predates this version
+} CfgStaleKey;
+static const CfgStaleKey cfg_stale_keys[] = {
+	// v1: the MMP GB/GBC/FC pak defaults moved to Native; saves predating that pinned Aspect and
+	// shimmered on fractional scale. tg5040 ships Aspect and is deliberately NOT affected.
+	{ "minarch_screen_scaling", "Native", 1 },
+	{ NULL, NULL, 0 },
+};
 static int Config_staleIndex(const char* key) {
-	for (int i=0; cfg_stale_keys[i]; i++) if (!strcmp(key, cfg_stale_keys[i])) return i;
+	for (int i=0; cfg_stale_keys[i].key; i++) if (!strcmp(key, cfg_stale_keys[i].key)) return i;
 	return -1;
 }
 static int Config_isStaleKey(const char* key) { return Config_staleIndex(key) >= 0; }
 
-// Did the SHIPPED chain (system.cfg + pak default.cfg) actually state a value for this stale key,
-// this launch? Reset and refilled by Config_readOptions.
-//
-// This gate is what keeps the migration minimal, and it is not a nicety. Only GB/GBC/FC ship a
-// scaling default; MGBA/GBA/SUPA/MD/PS ship none, and minarch's compiled-in default is index 1 —
-// "Aspect" — the very value we are dropping. Without this check the migration would discard the
-// save and land on the identical value on those systems: no fix, and a player who deliberately
-// chose Fullscreen or Cropped loses it for nothing. Drop a stale value only where we have a
-// shipped opinion to replace it with.
-static int cfg_stale_shipped[CFG_STALE_MAX];
+// What the SHIPPED chain (system.cfg -> pak default.cfg) last said for each stale key this launch;
+// empty means it said nothing. Load order is preserved because the shipped passes run in order, so
+// this ends up holding the value the shipped chain actually resolves to. Reset by
+// Config_readOptions.
+static char cfg_stale_shipped[CFG_STALE_MAX][64];
+
+// Strict: the value must be ALL digits, non-empty, and in range. A bare strtol() reads "1garbage"
+// as 1 — i.e. a corrupted stamp would claim to be current and the migration would never run, which
+// is the silent-failure direction. Anything we cannot fully parse is treated as version 0
+// (unstamped), so the worst case is that the migration re-evaluates rather than being skipped.
+static int Config_parseVersion(const char* value) {
+	if (!value || !*value) return 0;
+	long v = 0;
+	for (const char* p = value; *p; p++) {
+		if (*p < '0' || *p > '9') return 0;
+		v = v * 10 + (*p - '0');
+		if (v > 100000) return 0; // absurd; treat as corrupt rather than wrapping an int
+	}
+	return (int)v;
+}
+
+// The whole drop decision, in one place so the frontend and core loops cannot drift.
+static int Config_shouldDropStale(int stale_i, int user_version) {
+	if (stale_i < 0 || stale_i >= CFG_STALE_MAX) return 0;
+	const CfgStaleKey* e = &cfg_stale_keys[stale_i];
+	if (user_version >= e->version) return 0;       // save is current for THIS entry
+	if (!cfg_stale_shipped[stale_i][0]) return 0;   // nothing shipped to replace it with
+	return !strcmp(cfg_stale_shipped[stale_i], e->to);
+}
 
 // user_version: the CFG_VERSION stamped in this saved cfg (0 = unstamped/pre-migration). Ignored
 // unless is_user, since shipped files are always current by definition.
 static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 	if (!cfg) return;
-	int migrate = is_user && user_version < CFG_VERSION;
+	if (!is_user) user_version = CFG_VERSION; // shipped files are current by definition
 
 	LOG_info("Config_readOptions\n");
 	char key[256];
@@ -1758,13 +1799,15 @@ static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
 		int stale_i = Config_staleIndex(option->key);
 		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
-			if (!is_user) cfg_stale_shipped[stale_i] = 1; // we have an opinion on this key
-			else if (migrate && cfg_stale_shipped[stale_i]) {
+			// Record what the SHIPPED chain says; later shipped files override earlier ones, which
+			// is exactly the resolution order we need to compare against.
+			if (!is_user) snprintf(cfg_stale_shipped[stale_i], sizeof(cfg_stale_shipped[stale_i]), "%s", value);
+			else if (Config_shouldDropStale(stale_i, user_version)) {
 				// Say so — same reason as the locked case below. A dropped line that IS in the
 				// file otherwise sends anyone debugging chasing a setting that looks applied and
 				// is not.
-				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
-					user_version, CFG_VERSION, option->key, value);
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s (shipped says %s)\n",
+					user_version, CFG_VERSION, option->key, value, cfg_stale_shipped[stale_i]);
 				continue;
 			}
 		}
@@ -1792,10 +1835,10 @@ static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 		// `gpu_thread_rendering` is exactly this shape, and it is a CORE key.
 		int stale_i = Config_staleIndex(option->key);
 		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
-			if (!is_user) cfg_stale_shipped[stale_i] = 1;
-			else if (migrate && cfg_stale_shipped[stale_i]) {
-				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
-					user_version, CFG_VERSION, option->key, value);
+			if (!is_user) snprintf(cfg_stale_shipped[stale_i], sizeof(cfg_stale_shipped[stale_i]), "%s", value);
+			else if (Config_shouldDropStale(stale_i, user_version)) {
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s (shipped says %s)\n",
+					user_version, CFG_VERSION, option->key, value, cfg_stale_shipped[stale_i]);
 				continue;
 			}
 		}
@@ -1951,7 +1994,7 @@ static void Config_readOptions(void) {
 	if (config.user_cfg) {
 		char value[256];
 		if (Config_getValue(config.user_cfg, CFG_VERSION_KEY, value, NULL))
-			user_version = strtol(value, NULL, 10);
+			user_version = Config_parseVersion(value);
 	}
 	Config_readOptionsString(config.user_cfg, 1, user_version); // saved: no lock override, migrated
 
