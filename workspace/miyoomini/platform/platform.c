@@ -1213,7 +1213,17 @@ void PLAT_enableBacklight(int enable) {
 void PLAT_powerOff(void) {
 	sleep(2);
 
+	// Mute the DIGITAL path, then ALSO drive the codec's own mute and let the analog stage settle.
+	// SetRawVolume alone is not sufficient here: it sets the gain/mute registers and returns
+	// immediately, so the rail was still slewing when power was cut. PLAT_muteAudio carries the
+	// measured MI_AO_SETTLE_US window that the game-exit path relies on for exactly this reason.
+	//
+	// HONEST LIMIT: this cannot be expected to remove the power-off pop entirely. That pop is the
+	// analog supply collapsing, not audio data, and this board exposes no speaker-amp enable line
+	// to shut the output stage down first — muting was already proven not to hide a rail
+	// transition. This narrows the window; only an amp mute would close it.
 	SetRawVolume(MUTE_VOLUME_RAW);
+	PLAT_muteAudio(1);
 	PLAT_enableBacklight(0);
 	SND_quit();
 	VIB_quit();
