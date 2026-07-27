@@ -1376,26 +1376,36 @@ void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int str
 	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
 }
 
-static void dbgBlitStrip(uint16_t* strip, int dst_y) {
-	const int S = DBG_OVERLAY_SCALE;
+// Scale the strip into a destination rect measured as a FRACTION of the render surface, not as a
+// fixed pixel count.
+//
+// This is the whole fix for "the HUD keeps changing size mid-game". We composite into vid.screen,
+// which is the CORE-SIZED render target, and PLAT_flip then hands it to MI_GFX to scale up to the
+// panel. So a HUD drawn at a fixed integer scale occupies a fixed number of SOURCE pixels — which
+// is a DIFFERENT fraction of the panel for every game resolution, and PS1 changes resolution
+// constantly (320x240 gameplay vs 640x480 menus), so the HUD visibly doubled and halved.
+//
+// tg5040 never had this because it draws the HUD through SDL's renderer in PANEL space
+// (SDL_RenderCopy), after the game has already been scaled.
+//
+// Here, dst_w/dst_h are pre-scaled by vid.width/FIXED_WIDTH, so after MI_GFX scales the surface to
+// the panel the HUD lands at the SAME on-screen size at every core resolution. That needs a
+// dst->src mapping rather than integer pixel replication, because the ratio is not an integer.
+static void dbgBlitStrip(uint16_t* strip, int dst_y, int dst_w, int dst_h) {
+	if (dst_w <= 0 || dst_h <= 0) return;
 	uint16_t* base = (uint16_t*)vid.screen->pixels;
 	int dpitch = vid.pitch / 2; // vid.pitch is bytes; RGB565 => 2 bytes/px
-	for (int sy = 0; sy < dbg.h; sy++) {
+	for (int dy = 0; dy < dst_h; dy++) {
+		int y = dst_y + dy;
+		if (y < 0 || y >= vid.height) continue;
+		int sy = dy * dbg.h / dst_h;              // nearest-neighbour, integer math only
 		uint16_t* srow = strip + sy * dbg.stride;
-		for (int ry = 0; ry < S; ry++) {
-			int y = dst_y + sy * S + ry;
-			if (y < 0 || y >= vid.height) continue;
-			uint16_t* drow = base + (size_t)y * dpitch;
-			for (int sx = 0; sx < dbg.w; sx++) {
-				uint16_t p = srow[sx];
-				if (p == DBG_KEY) continue; // transparent
-				int x0 = sx * S;
-				for (int rx = 0; rx < S; rx++) {
-					int x = x0 + rx;
-					if (x >= vid.width) break;
-					drow[x] = p;
-				}
-			}
+		uint16_t* drow = base + (size_t)y * dpitch;
+		for (int dx = 0; dx < dst_w; dx++) {
+			if (dx >= vid.width) break;
+			uint16_t p = srow[dx * dbg.w / dst_w];
+			if (p == DBG_KEY) continue;           // transparent
+			drow[dx] = p;
 		}
 	}
 }
@@ -1407,10 +1417,21 @@ static void drawDebugOverlay(void) {
 	if (dbg.stride < dbg.w) return;                       // malformed: refuse rather than read OOB
 	if (!vid.screen || !vid.screen->pixels) return;
 	const int S = DBG_OVERLAY_SCALE;
-	int strip_h = dbg.h * S;
-	if (strip_h * 2 + S * 2 > vid.height) return;         // no room; skip rather than overlap
-	dbgBlitStrip(dbg.top, S);
-	dbgBlitStrip(dbg.bottom, vid.height - strip_h - S);
+	if (vid.width <= 0 || vid.height <= 0) return;
+
+	// Target size expressed in RENDER-SURFACE pixels such that, once MI_GFX scales the surface to
+	// the panel, the HUD is the same size it would be if we had drawn it at panel resolution.
+	// Rounded UP so the strip never leaves a sliver of unpainted background at low core widths.
+	int dst_w = (dbg.w * S * vid.width  + FIXED_WIDTH  - 1) / FIXED_WIDTH;
+	int dst_h = (dbg.h * S * vid.height + FIXED_HEIGHT - 1) / FIXED_HEIGHT;
+	int margin = (S * vid.height + FIXED_HEIGHT - 1) / FIXED_HEIGHT;
+	if (dst_w > vid.width) dst_w = vid.width;
+	if (dst_h < 1) dst_h = 1;                             // a tiny core must still show something
+	if (margin < 1) margin = 1;
+
+	if (dst_h * 2 + margin * 2 > vid.height) return;      // no room; skip rather than overlap
+	dbgBlitStrip(dbg.top, margin, dst_w, dst_h);
+	dbgBlitStrip(dbg.bottom, vid.height - dst_h - margin, dst_w, dst_h);
 }
 
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
