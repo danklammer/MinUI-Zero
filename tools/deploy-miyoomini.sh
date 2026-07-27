@@ -1,18 +1,26 @@
 #!/bin/sh
-# Deploy the four device-gated fixes to the Miyoo Mini Plus over SSH.
+# Sync the built .system payload to the Miyoo Mini Plus over SSH.
 #
-#   sh .notes/mmp-build/deploy-mmp.sh [user@host[:port]]
+#   sh tools/deploy-miyoomini.sh [user@host[:port]]
 #
 # Defaults to root@192.168.1.10. Run from the repo root AFTER a successful
 #   make PLATFORMS=miyoomini miyoomini
-# (this copies out of ./build/PAYLOAD, so a stale build deploys stale bits — the version stamp
-# printed at the end is how you tell.)
 #
-# What is going over and why it needs a device to judge:
-#   minarch.elf         telemetry battery discovery (axp223 path was blank), saved-cfg migration
-#   minui.elf           charging-screen POWER hand-back, charging battery bolt
-#   MinUI.pak/launch.sh boot-path audio-daemon release (wedged daemon held MI_AO -> silent games)
-#   fake08_libretro.so  -O3 + the _vm->Step() load fix (PICO-8 was on upstream -O2 and unpatched)
+# WHY THIS SYNCS THE WHOLE TREE, not a hand-picked file list.
+# An earlier version copied four files (minarch.elf, minui.elf, MinUI.pak/launch.sh, one core).
+# That is unsound whenever a change spans files, and it bit immediately: MinUI.pak/launch.sh was
+# updated to hand the audio shim to minarch via MINARCH_PRELOAD instead of exporting LD_PRELOAD,
+# but the eight Emus/*/launch.sh that CONSUME MINARCH_PRELOAD were not in the list. The device ran
+# a new MinUI.pak against stale emu paks, so the shim never reached minarch, SDL picked the `dsp`
+# driver, /dev/dsp could not be opened without libpadsp, and every game lost audio. The repo was
+# correct the whole time; only the deploy was partial.
+#
+# So: compare md5 of every file and send whatever differs. First run is slow (~48MB), later runs
+# send only what changed.
+#
+# NOT scp. The MMP firmware ships neither /usr/libexec/sftp-server (so modern scp, which speaks
+# SFTP by default, dies "Connection closed") nor an scp binary (so `scp -O`, the legacy-protocol
+# fallback, dies "scp: not found"). Piping through the shell needs only cat, which busybox has.
 set -e
 
 TARGET=${1:-root@192.168.1.10}
@@ -37,44 +45,63 @@ NEWER=$(find workspace skeleton -newer ./build/latest.txt \
 	exit 1
 }
 
-SSH="ssh -p $PORT -o ConnectTimeout=5"
-
-# NOT scp. The MMP firmware ships neither /usr/libexec/sftp-server (so modern scp, which speaks
-# SFTP by default, dies with "Connection closed") nor an scp binary (so `scp -O`, the legacy-protocol
-# fallback, dies with "scp: not found"). Piping through the shell needs only cat, which busybox has.
-#
-# Stage to a temp path and mv into place: minui.elf/minarch.elf may be RUNNING, and writing directly
-# over a live binary is ETXTBSY. mv within the same filesystem is atomic, so a yanked battery
-# mid-deploy leaves either the old file or the new one, never a half-written one.
-put() { # put <local> <remote>
-	$SSH "$TARGET" "cat > '$2.new' && chmod 755 '$2.new' && mv -f '$2.new' '$2'" < "$1"
-}
+SSH="ssh -p $PORT -o ConnectTimeout=8"
 
 echo "target : $TARGET:$PORT"
 echo "build  : $(cat ./build/latest.txt)"
 
 $SSH "$TARGET" true 2>/dev/null || {
 	echo "device unreachable at $TARGET:$PORT"
-	echo "  - power it on and confirm it is on the network"
-	echo "  - deep sleep is disabled on MMP, but the screen may still be off"
+	echo "  - power it on; run Tools > SSH once per boot (it insmods the wifi module)"
+	echo "  - after a reboot it takes ~2 minutes to reassociate; poll ssh, not ping"
 	exit 1
 }
 
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+
+REMOTE_MANIFEST="cd $DST 2>/dev/null && find . -type f | sed 's|^\./||' | sort | while IFS= read -r f; do echo \"\$(md5sum \"\$f\" | cut -d' ' -f1)  \$f\"; done"
+
+# Local manifest: "<md5>  <path relative to SRC>"
+( cd "$SRC" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r f; do
+	echo "$( (md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -d' ' -f1) )  $f"
+done ) > "$WORK/local.txt"
+
+$SSH "$TARGET" "$REMOTE_MANIFEST" 2>/dev/null > "$WORK/remote.txt" || true
+
+# Anything whose (md5, path) pair is absent remotely needs sending.
+CHANGED="$WORK/changed.txt"
+: > "$CHANGED"
+while IFS= read -r line; do
+	grep -qxF "$line" "$WORK/remote.txt" || echo "${line#*  }" >> "$CHANGED"
+done < "$WORK/local.txt"
+
+N=$(wc -l < "$CHANGED" | tr -d ' ')
+TOTAL=$(wc -l < "$WORK/local.txt" | tr -d ' ')
+echo "files  : $N of $TOTAL differ"
+if [ "$N" -eq 0 ]; then
+	echo "nothing to do — device already matches this build"
+	exit 0
+fi
+
 echo "--- deploying ---"
-for f in bin/minarch.elf bin/minui.elf paks/MinUI.pak/launch.sh cores/fake08_libretro.so; do
+while IFS= read -r f; do
 	echo "  -> $f"
-	put "$SRC/$f" "$DST/$f"
-done
+	# Stage then mv: minui.elf/minarch.elf may be RUNNING, and writing over a live binary is
+	# ETXTBSY. mv within one filesystem is atomic, so a yanked battery leaves old or new, never half.
+	$SSH "$TARGET" "mkdir -p '$DST/$(dirname "$f")' && cat > '$DST/$f.new' && chmod 755 '$DST/$f.new' && mv -f '$DST/$f.new' '$DST/$f'" < "$SRC/$f"
+done < "$CHANGED"
 
 # Flush to the card before anything can power-cycle it. FAT32 + a yanked battery loses the write.
 $SSH "$TARGET" "sync"
 
 echo "--- verifying ---"
-for f in bin/minarch.elf bin/minui.elf paks/MinUI.pak/launch.sh cores/fake08_libretro.so; do
-	L=$(wc -c < "$SRC/$f" | tr -d ' ')
-	R=$($SSH "$TARGET" "wc -c < $DST/$f" | tr -d ' ')
-	[ "$L" = "$R" ] && echo "  ok   $f ($L bytes)" || { echo "  FAIL $f: local $L != remote $R"; exit 1; }
-done
+$SSH "$TARGET" "$REMOTE_MANIFEST" 2>/dev/null > "$WORK/after.txt"
+BAD=0
+while IFS= read -r line; do
+	grep -qxF "$line" "$WORK/after.txt" || { echo "  FAIL ${line#*  }"; BAD=1; }
+done < "$WORK/local.txt"
+if [ "$BAD" -ne 0 ]; then exit 1; fi
+echo "  ok   all $TOTAL files match the build"
 
 cat <<EOF
 
@@ -83,23 +110,14 @@ deployed $(cat ./build/latest.txt)
 TWO DIFFERENT RESTARTS — they do not pick up the same things.
 
   $SSH $TARGET 'killall minui.elf'
-      Picks up minui.elf, minarch.elf and the cores. This only makes MinUI.pak/launch.sh
-      ITERATE its menu loop (the loop is lines ~319-373); everything above it, including
-      audio_daemon_start and the boot-path daemon release, does NOT re-run. The running shell
-      also still holds the OLD launch.sh inode, because this script installs via mv.
+      Picks up minui.elf, minarch.elf, the cores, and every Emus/*/launch.sh (those are read
+      fresh on each game launch). This only makes MinUI.pak/launch.sh ITERATE its menu loop;
+      everything above the loop, including audio_daemon_start and the boot-path daemon release,
+      does NOT re-run. The running shell also still holds the OLD MinUI.pak/launch.sh inode,
+      because this script installs via mv.
 
   full power cycle
-      The ONLY way to exercise a launch.sh change or anything about daemon startup ordering.
-      The daemon can only win MI_AO at boot, before the menu opens the codec, so daemon
+      The ONLY way to exercise a MinUI.pak/launch.sh change or anything about daemon startup
+      ordering. The daemon can only win MI_AO at boot, before the menu opens the codec, so daemon
       behaviour is simply not testable without one.
-
-Then the gates that still need your eyes/ears:
-  1. AUDIO   boot, launch a game, exit, launch another, power off — listen for pops.
-  2. CHARGE  plug in at ~100%: bolt icon renders as a bolt (not a white block);
-             charge screen shows a number; POWER once sleeps (not twice).
-  3. PICO-8  launch Celeste — it must reach the title screen (the Step() fix) and hold 60.
-  4. PS1     BR2 + THPS.
-  5. SCALING launch a GBC game that had a stale 'Aspect' save — the log should show
-             "migrating saved cfg (v0 -> v1): dropping minarch_screen_scaling = Aspect"
-             and the scroll shimmer should be gone. Menu must still OFFER scaling.
 EOF
