@@ -40,9 +40,14 @@ cd "$HOME"
 export MINARCH_FMIN=600000
 export MINARCH_FMAX=1200000
 
-# NOTE: ZERO_MEASURE was exported here to judge supafaust vs snes9x2005_plus on numbers. The
-# choice is settled (supafaust — it holds 60fps where snes9x2005_plus did not), and a debug
-# facility that writes to the SD card once a second must not ship. Re-export by hand to re-tune.
+# NOTE: ZERO_MEASURE was exported here to compare cores on numbers; a debug facility that writes to
+# the SD card once a second must not ship. Re-export by hand to re-tune.
+#
+# The old text here claimed "the choice is settled (supafaust - it holds 60fps where
+# snes9x2005_plus did not)", which contradicted this very file: line 15 loads snes9x2005_plus. That
+# comparison was made while snes9x2005_plus was not even BUILT for this platform, so SFC had been
+# pointed at supafaust as a stand-in. Both cores ship now and the paks match tg5040: SFC = the light
+# core, SUPA = the accurate one (and SUPA is what the base romset uses).
 
 # No `nice`. This said `nice -20`, which is the obsolescent INCREMENT form: it means +20 and
 # clamps to 19 — the LOWEST priority on the system — not the -20 boost it reads like. Verified on
