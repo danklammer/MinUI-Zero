@@ -1340,9 +1340,17 @@ static void ChargingScreen(SDL_Surface* screen) {
 		PAD_poll();
 		// NOTE: this loop CONSUMES the button down-edge. PWR_update's manual-sleep test requires
 		// having seen POWER go down, so leaving through here used to swallow it and the user had to
-		// press POWER twice to sleep. Hand the press back by re-arming the sleep request when it was
-		// POWER that woke us.
-		if (PAD_justPressed(BTN_POWER)) { PWR_requestSleep(); break; }
+		// press POWER twice to sleep. Hand the press back by re-arming the sleep request.
+		//
+		// On the RELEASE, though, never the press. PLAT_shouldWake wakes on POWER key-UP
+		// (api.c, SDL_KEYUP/SDL_JOYBUTTONUP), so requesting sleep while the button is still held
+		// means PWR_sleep starts, and the release of that very same press wakes it straight back
+		// up. PWR_update's own manual-sleep test keys on `power_released` for exactly this reason.
+		// So: swallow the POWER press, then act on its release.
+		if (PAD_justReleased(BTN_POWER)) { PWR_requestSleep(); break; }
+		// Held: wait for the release above. Delay explicitly — the loop's own SDL_Delay is at the
+		// BOTTOM, so a bare `continue` would spin hot for as long as the button is down.
+		if (PAD_isPressed(BTN_POWER)) { SDL_Delay(100); continue; }
 		if (PAD_anyJustPressed()) break;
 		uint32_t now = SDL_GetTicks();
 		// after 5 minutes of showing the charge state, hand the device to sleep: charging
