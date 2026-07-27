@@ -1338,6 +1338,11 @@ static void ChargingScreen(SDL_Surface* screen) {
 	uint32_t entered_at = SDL_GetTicks();
 	while (PWR_isCharging()) {
 		PAD_poll();
+		// NOTE: this loop CONSUMES the button down-edge. PWR_update's manual-sleep test requires
+		// having seen POWER go down, so leaving through here used to swallow it and the user had to
+		// press POWER twice to sleep. Hand the press back by re-arming the sleep request when it was
+		// POWER that woke us.
+		if (PAD_justPressed(BTN_POWER)) { PWR_requestSleep(); break; }
 		if (PAD_anyJustPressed()) break;
 		uint32_t now = SDL_GetTicks();
 		// after 5 minutes of showing the charge state, hand the device to sleep: charging
