@@ -345,7 +345,11 @@ void PLAT_flip(SDL_Surface* screen, int sync);
 // debug HUD strips (RGB565, native res, presented at DBG_OVERLAY_SCALE anchored to the
 // game's panel rect); NULL top disables. w = used columns (game width / scale), stride =
 // the buffer's allocated row width. 0xF81F = transparent.
+// Platform-overridable (define in platform.h): 3x reads well on 1024x768 but is oversized
+// relative to a 640x480 panel — miyoomini presents at 2x.
+#ifndef DBG_OVERLAY_SCALE
 #define DBG_OVERLAY_SCALE 3
+#endif
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride);
 // Frames currently queued to the audio DAC, or -1 if the platform cannot report it.
 // MUST be called from the process that opened the device: the SigmaStar MI_AO layer tracks
