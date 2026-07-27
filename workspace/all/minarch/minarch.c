@@ -1706,14 +1706,35 @@ static void Config_quit(void) {
 // be an artifact of an older build — never a deliberate choice. Shipped files still override each
 // other in order (a pak may specialise system.cfg); only the saved cfg is held back.
 //
-// SCOPE, precisely: this gate is inert for options we ship UNLOCKED. `minarch_screen_scaling` is
-// the live example — the MMP GB/GBC/FC paks ship `Native` with no `-` prefix, so a card carrying
-// `minarch_screen_scaling = Aspect` from an older build still wins here and still shimmers. That is
-// deliberate, not an oversight: locking it would remove scaling from the menu entirely, which is a
-// product decision that has not been made. Ship the option with a `-` prefix and this gate covers
-// it; until then the stale-save case for scaling is open.
-static void Config_readOptionsString(char* cfg, int is_user) {
+// The lock gate above is inert for options we ship UNLOCKED, and that left a real hole: a saved cfg
+// carries EVERY option, because Config_write dumps the whole list on any change. Touch one setting
+// and scaling is frozen at whatever it happened to be, forever — so cards written before the pak
+// default became `Native` kept `minarch_screen_scaling = Aspect` and kept shimmering on fractional
+// scale, even though nobody ever chose it.
+//
+// Locking scaling would fix it and cost the menu entry. Instead: version the saved cfg. A save
+// written before CFG_VERSION predates the defaults we have since changed, so the keys in
+// cfg_stale_keys are dropped from it exactly once and the shipped default wins. The next
+// Config_write stamps the version, and from then on a deliberate choice sticks like any other.
+//
+// Bump CFG_VERSION and add to cfg_stale_keys when a shipped default changes in a way a stale save
+// would defeat. Keep the list SHORT — every entry silently discards a player's setting once.
+#define CFG_VERSION 1
+#define CFG_VERSION_KEY "minarch_cfg_version"
+static const char* cfg_stale_keys[] = {
+	"minarch_screen_scaling", // v1: pak defaults moved to Native; stale Aspect saves shimmer
+	NULL,
+};
+static int Config_isStaleKey(const char* key) {
+	for (int i=0; cfg_stale_keys[i]; i++) if (!strcmp(key, cfg_stale_keys[i])) return 1;
+	return 0;
+}
+
+// user_version: the CFG_VERSION stamped in this saved cfg (0 = unstamped/pre-migration). Ignored
+// unless is_user, since shipped files are always current by definition.
+static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 	if (!cfg) return;
+	int migrate = is_user && user_version < CFG_VERSION;
 
 	LOG_info("Config_readOptions\n");
 	char key[256];
@@ -1722,6 +1743,13 @@ static void Config_readOptionsString(char* cfg, int is_user) {
 		Option* option = &config.frontend.options[i];
 		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		if (migrate && Config_isStaleKey(option->key)) {
+			// Say so — same reason as the locked case below. A dropped line that IS in the file
+			// otherwise sends anyone debugging chasing a setting that looks applied and is not.
+			LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
+				user_version, CFG_VERSION, option->key, value);
+			continue;
+		}
 		if (is_user && was_locked) {
 			// Say so. Silently discarding a line that IS in the file on the card sends anyone
 			// debugging (us included) chasing a setting that looks applied and is not.
@@ -1742,6 +1770,13 @@ static void Config_readOptionsString(char* cfg, int is_user) {
 		Option* option = &config.core.options[i];
 		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		// Core options migrate too — cfg_stale_keys is not frontend-only. D48's stale
+		// `gpu_thread_rendering` is exactly this shape, and it is a CORE key.
+		if (migrate && Config_isStaleKey(option->key)) {
+			LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s\n",
+				user_version, CFG_VERSION, option->key, value);
+			continue;
+		}
 		if (is_user && was_locked) {
 			LOG_info("ignoring locked core option from saved cfg: %s = %s\n", option->key, value);
 			continue;
@@ -1882,9 +1917,18 @@ static void Config_free(void) {
 	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
-	Config_readOptionsString(config.system_cfg, 0);
-	Config_readOptionsString(config.default_cfg, 0);
-	Config_readOptionsString(config.user_cfg, 1); // saved: may not override a shipped lock
+	Config_readOptionsString(config.system_cfg, 0, CFG_VERSION);
+	Config_readOptionsString(config.default_cfg, 0, CFG_VERSION);
+
+	// An unstamped saved cfg is pre-migration, which is the whole point of the check — treat a
+	// missing key as version 0 rather than assuming current.
+	int user_version = 0;
+	if (config.user_cfg) {
+		char value[256];
+		if (Config_getValue(config.user_cfg, CFG_VERSION_KEY, value, NULL))
+			user_version = strtol(value, NULL, 10);
+	}
+	Config_readOptionsString(config.user_cfg, 1, user_version); // saved: no lock override, migrated
 
 	// screen_scaling = SCALE_NATIVE; // TODO: tmp
 }
@@ -1949,7 +1993,11 @@ static void Config_write(int override) {
 	else Config_getPath(path, CONFIG_WRITE_ALL);
 
 	ConfigBuffer contents = {};
-	
+
+	// Stamp FIRST, so a save that is truncated mid-write is never mistaken for a current one.
+	// This is what makes the migration one-shot: everything below is a deliberate choice now.
+	ConfigBuffer_append(&contents, "%s = %d\n", CFG_VERSION_KEY, CFG_VERSION);
+
 	for (int i=0; config.frontend.options[i].key; i++) {
 		Option* option = &config.frontend.options[i];
 		ConfigBuffer_append(&contents, "%s = %s\n", option->key, option->values[option->value]);
