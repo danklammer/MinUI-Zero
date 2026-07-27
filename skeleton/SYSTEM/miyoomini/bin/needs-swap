@@ -13,7 +13,10 @@ SWAP_MB=128
 
 fail() {
 	echo "needs-swap: $1" >&2
-	say "Swap unavailable:
+	# say.elf, NOT `say` — there is no such command on this device, only the binary. The whole
+	# "fail loudly" premise of this file was inoperative: every message went to a `not found` that
+	# 2>/dev/null then swallowed.
+	say.elf "Swap unavailable:
 $1" 2>/dev/null
 	sleep 2
 	exit 1
@@ -27,7 +30,7 @@ if [ ! -f "$SWAP_PATH" ]; then
 	esac
 	[ "$FREE_KB" -gt $((SWAP_MB * 1024 + 8192)) ] || fail "card is full"
 
-	say "Creating swap file" 2>/dev/null
+	say.elf "Creating swap file" 2>/dev/null  # see note in fail(): say.elf, not say
 	if ! dd if=/dev/zero of="$SWAP_PATH" bs=1M count=$SWAP_MB 2>/dev/null; then
 		rm -f "$SWAP_PATH"          # never leave a short file behind: mkswap would accept it
 		fail "could not write swapfile"
