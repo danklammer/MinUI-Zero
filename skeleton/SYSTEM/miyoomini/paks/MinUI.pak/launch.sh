@@ -253,7 +253,14 @@ else
 	# SPAWNED but never became ready is still a live process HOLDING MI_AO. Leaving it alive and
 	# quietly selecting direct MMIYOO gave every game of the session a codec it could not open --
 	# silence, with a healthy-looking log. Take the device back before anyone else asks for it.
-	audio_daemon_release
+	#
+	# audio_daemon_release returns non-zero when the process SURVIVED even SIGKILL (or respawned).
+	# Ignoring that lands us in exactly the silent-fallback state this block exists to prevent, so
+	# say so loudly rather than booting into a session where no game can make a sound.
+	if ! audio_daemon_release; then
+		echo "ZERO: audioserver survived release — MI_AO is still held, games will be SILENT" >&2
+		say.elf "audio error" 2>/dev/null || true
+	fi
 	# It never won the codec at boot, which is the only moment it can (see the launch site); a
 	# revival attempt would stall each launch for the readiness timeout and still fail.
 	AUDIO_RETRY=0
