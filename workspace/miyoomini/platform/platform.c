@@ -344,6 +344,10 @@ __attribute__((constructor)) static void latch_audio_mode(void) {
 	audio_daemon_mode = (e && e[0] == '1');
 }
 
+// The codec belongs to audioserver in daemon mode, so device-global audio state (mute, disable) is
+// not ours to change. Shared by PLAT_resetAudio below and by PWR_enterSleep via the api.c seam.
+int PLAT_audioIsShared(void) { return audio_daemon_mode; }
+
 void PLAT_resetAudio(void) {
 	if (audio_daemon_mode) {
 		// NOT OURS TO TEAR DOWN. The daemon owns the codec and survives this process, so disabling
@@ -1112,6 +1116,11 @@ int axp_read(unsigned char address) {
 
 // Exact fuel-gauge percentage (AXP reg 0xB9 bits[6:0]) — the SAME register and validation batmon
 // uses, so the boot charging screen and the in-menu one cannot disagree about the battery.
+// bit2 of AXP reg 0x00: current actually flowing INTO the cell. Updated by PLAT_getBatteryStatus.
+static int axp_topping_up = 0;
+// Only inhibit autosleep while the cell is ACTUALLY filling, not merely while a cable is present.
+int PLAT_isToppingUp(void) { return has_axp ? axp_topping_up : 0; }
+
 int PLAT_getChargePercent(void) {
 	if (!has_axp) return -1;
 	int v = axp_read(0xB9);
@@ -1134,6 +1143,12 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 		static int last_powered = 0;
 		if (v >= 0) last_powered = ((v & 0x80) || (v & 0x10)) ? 1 : 0;
 		*is_charging = last_powered;
+		// bit2 = current actually flowing INTO the cell. Tracked separately because
+		// PWR_preventAutosleep() keys off is_charging, and presence stays true forever while a
+		// cable is attached — which meant a plugged-in device sitting in a game could NEVER
+		// autosleep at any charge level, panel and core live indefinitely. Presence is right for
+		// "show the charging icon"; "still filling" is right for "stay awake".
+		if (v >= 0) axp_topping_up = (v & 0x04) ? 1 : 0;
 	}
 	else *is_charging = getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
 

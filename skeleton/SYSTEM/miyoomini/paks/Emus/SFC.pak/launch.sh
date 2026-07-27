@@ -50,4 +50,5 @@ export MINARCH_FMAX=1200000
 # core, SUPA = the accurate one (and SUPA is what the base romset uses).
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.
-minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
+# The audio shim is applied to THIS process only, never exported to the helpers above.
+LD_PRELOAD="$MINARCH_PRELOAD" minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"

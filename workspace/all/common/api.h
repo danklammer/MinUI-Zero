@@ -352,6 +352,8 @@ void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int str
 // enablement per-process, so an out-of-process query always reports "not enabled".
 int PLAT_getAudioQueued(void);
 int PLAT_getChargePercent(void); // exact charge %, or -1 if unavailable (weak fallback: -1)
+int PLAT_audioIsShared(void); // 1 when another process owns the codec (weak fallback: 0)
+int PLAT_isToppingUp(void); // 1 while the cell is actually filling, -1 = cannot tell (weak fallback)
 // panel-coordinate rect of the most recently presented game frame (0s before first flip)
 void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);

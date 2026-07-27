@@ -71,31 +71,59 @@ if [ -f "$UPDATE_PATH" ]; then
 		echo "$(date '+%F %T') MinUI.zip is corrupt or truncated. Nothing was changed; the file was kept so you can replace it and reboot." > "$FAIL_LOG"
 		sync
 	else
-		# 2. Keep the current bootstrap as a rollback. Clear any stale one first, or the mv below
-		#    fails and we would proceed with no rollback at all.
-		rm -rf "$SDCARD_PATH/.tmp_update-old"
-		mv "$SDCARD_PATH/.tmp_update" "$SDCARD_PATH/.tmp_update-old"
-
-		# 3. Extract, then PROVE the result: unzip's exit status AND the launcher actually present.
-		#    Exit status alone is not enough — a zip can extract "successfully" and still be the
-		#    wrong payload.
-		if unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH" && [ -f "$NEW_LAUNCH" ]; then
-			sync   # commit the new system to the card BEFORE removing anything
-			rm -f "$UPDATE_PATH"
+		# 2. STAGE the extract somewhere harmless. Extracting straight over the LIVE system meant a
+		#    failure part-way left .system as a mix of old and new binaries — and the rollback below
+		#    only ever restored .tmp_update, so the message "the previous version was restored" was
+		#    not true of the system itself. Nothing touches the live tree until the payload is
+		#    complete on disk.
+		STAGE="$SDCARD_PATH/.minui-staging"
+		rm -rf "$STAGE"
+		if ! mkdir -p "$STAGE"; then
+			echo "$(date '+%F %T') Could not create a staging folder on the card - it may be full or write-protected. Nothing was changed." > "$FAIL_LOG"
+			sync
+		elif unzip -o "$UPDATE_PATH" -d "$STAGE" && [ -f "$STAGE/.system/$PLATFORM/paks/MinUI.pak/launch.sh" ] && [ -d "$STAGE/.tmp_update" ]; then
+			# 3. The payload is fully extracted and verified. Only now touch the live system, and do
+			#    it in the order that always leaves something bootable:
+			#      a) keep the current bootstrap as a rollback
+			#      b) move the new system in
+			#      c) move the new bootstrap in
+			sync
 			rm -rf "$SDCARD_PATH/.tmp_update-old"
-			rm -f "$FAIL_LOG"
+			mv "$SDCARD_PATH/.tmp_update" "$SDCARD_PATH/.tmp_update-old"
+
+			cp -rf "$STAGE/.system" "$SDCARD_PATH/" && cp -rf "$STAGE/.tmp_update" "$SDCARD_PATH/"
+			COPY_RC=$?
+			# anything else the zip carried (Bios/Roms/Saves skeletons, Tools) — best effort, and
+			# never fatal: the system itself is already in place.
+			for extra in "$STAGE"/*; do
+				case "$(basename "$extra")" in .system|.tmp_update) continue;; esac
+				cp -rf "$extra" "$SDCARD_PATH/" 2>/dev/null
+			done
 			sync
 
-			# the updated system finishes the install/update
-			if [ -f "$SYSTEM_PATH/$PLATFORM/bin/install.sh" ]; then
-				"$SYSTEM_PATH/$PLATFORM/bin/install.sh"
+			if [ "$COPY_RC" = "0" ] && [ -f "$NEW_LAUNCH" ]; then
+				rm -rf "$STAGE"
+				rm -f "$UPDATE_PATH"
+				rm -rf "$SDCARD_PATH/.tmp_update-old"
+				rm -f "$FAIL_LOG"
+				sync
+				# the updated system finishes the install/update
+				if [ -f "$SYSTEM_PATH/$PLATFORM/bin/install.sh" ]; then
+					"$SYSTEM_PATH/$PLATFORM/bin/install.sh"
+				fi
+			else
+				# The copy itself failed (card filled between staging and install). Put the old
+				# bootstrap back and KEEP both the staging tree and the zip for a retry.
+				echo "$(date '+%F %T') Update failed while installing (the card may be full). The previous bootstrap was restored and MinUI.zip was kept - free some space and reboot to retry." > "$FAIL_LOG"
+				rm -rf "$SDCARD_PATH/.tmp_update"
+				mv "$SDCARD_PATH/.tmp_update-old" "$SDCARD_PATH/.tmp_update"
+				sync
 			fi
 		else
-			# 4. ROLL BACK. Remove whatever partial tree was written, restore the previous
-			#    bootstrap, and KEEP the zip so the update can be retried.
-			echo "$(date '+%F %T') Update failed while extracting (corrupt archive, full card, or interrupted power). The previous version was restored and MinUI.zip was kept - reboot to retry." > "$FAIL_LOG"
-			rm -rf "$SDCARD_PATH/.tmp_update"
-			mv "$SDCARD_PATH/.tmp_update-old" "$SDCARD_PATH/.tmp_update"
+			# 4. Extract failed or produced the wrong payload. The LIVE SYSTEM WAS NEVER TOUCHED —
+			#    that is the point of staging. Drop the staging tree and keep the zip to retry.
+			echo "$(date '+%F %T') Update failed while extracting (corrupt archive, full card, or interrupted power). Nothing was changed and MinUI.zip was kept - reboot to retry." > "$FAIL_LOG"
+			rm -rf "$STAGE"
 			sync
 		fi
 	fi

@@ -220,14 +220,19 @@ fi
 # while batmon (which gates on ACIN/VBUS presence) would have stayed. Two notions of "charging" in
 # two places is how that divergence survived. batmon now decides, and exits immediately when the
 # device is not externally powered.
-# No shell-side model test. batmon owns the whole decision: its preflight reads the PMIC once and
-# returns immediately unless external power is actually present — and on a model with no AXP that
-# read simply fails, which is also an immediate return. Measured: 20 invocations on battery in 0s.
+# batmon owns the decision on AXP hardware: its preflight reads the PMIC once and returns
+# immediately unless external power is actually present (measured: 20 invocations on battery in 0s).
 #
-# The shell used to re-derive "does this device have an AXP" itself, which meant the same hardware
-# rule existed in C (platform.c has_axp) AND in shell, in two languages, free to drift. It already
-# had: the shell said Plus-only, the C said Plus-or-Flip. One predicate, one place.
-batmon.elf
+# But batmon is AXP-ONLY -- isPowered() is a raw i2c read with no gpio path. On the original Mini
+# (no AXP) that read always fails, so "one predicate in batmon" silently meant NO CHARGE SCREEN AT
+# ALL on that model, even though platform.c and keymon both read gpio59 there correctly. The gate
+# below is therefore not a duplicate hardware rule, it is the non-AXP branch batmon does not have.
+if [ -e /dev/i2c-1 ]; then
+	batmon.elf
+else
+	CHARGING=`cat /sys/devices/gpiochip0/gpio/gpio59/value 2>/dev/null`
+	[ "$CHARGING" = "1" ] && batmon.elf
+fi
 
 #######################################
 
@@ -322,7 +327,11 @@ while [ -f "$EXEC_PATH" ]; do
 		if audio_daemon_ok || { [ "$AUDIO_RETRY" = "1" ] && audio_daemon_start; }; then
 			AUDIO_DAEMON=1
 			export SDL_AUDIODRIVER=dsp
-			export LD_PRELOAD=$AUDIO_SHIM
+			# NOT exported. Exporting put the shim on every helper the pak spawns -- needs-swap,
+			# dd, mkswap, say.elf -- and this file states two screens up that libpadsp segfaults
+			# non-SDL clients that drive /dev/dsp. Applied to the minarch process ALONE, at its
+			# exec, via MINARCH_PRELOAD (see the pak launch.sh invocation).
+			MINARCH_PRELOAD=$AUDIO_SHIM
 		else
 			# EXPLICIT fallback, and it must name the driver. Merely unsetting SDL_AUDIODRIVER is
 			# not enough: OSS is registered BEFORE MMIYOO in SDL2 bootstrap[] (src/audio/SDL_audio.c
@@ -334,13 +343,13 @@ while [ -f "$EXEC_PATH" ]; do
 			AUDIO_DAEMON=0
 			AUDIO_RETRY=0   # do not stall every later launch on a revival that cannot succeed
 			export SDL_AUDIODRIVER=MMIYOO
-			unset LD_PRELOAD
+			MINARCH_PRELOAD=
 		fi
 		# The game needs its OWN ownership mode: in daemon mode minarch is only an OSS client and
 		# must NOT disable the codec on exit/crash (PLAT_resetAudio honours this).
-		export AUDIO_DAEMON
+		export AUDIO_DAEMON MINARCH_PRELOAD
 		eval $CMD
-		unset LD_PRELOAD SDL_AUDIODRIVER
+		unset SDL_AUDIODRIVER MINARCH_PRELOAD
 		rm -f $NEXT_PATH
 		if [ -f "/tmp/using-swap" ]; then
 			swapoff $USERDATA_PATH/swapfile

@@ -176,12 +176,26 @@ void quit(int exitcode) {
 static int last_valid_charge = -1;
 static int last_valid_charging = -1;
 
+// How many consecutive failed reads we will paper over before admitting we do not know. batmon uses
+// the same budget for the same bus (batmon.c). Without a bound, a wedged i2c pins the reported
+// charge for the whole session and the low-battery warning never fires — the device just dies flat.
+#define ADC_MAX_MISS 5
+static int adc_miss = 0;
+
 static int getADCValue(void) {
 	if (has_axp) {
 		int v = axp_read(0xB9);
-		if (v < 0) return last_valid_charge >= 0 ? last_valid_charge : 50; // never 127
-		v &= 0x7F;
-		if (v > 100) return last_valid_charge >= 0 ? last_valid_charge : 50; // gauge garbage
+		if (v >= 0) { v &= 0x7F; if (v > 100) v = -1; }
+		if (v < 0) {
+			// Hold the last VALID reading through a transient, but only for a bounded number of
+			// them, and NEVER invent one. Returning a made-up 50 here (as this did) reports a
+			// near-empty battery as half full and suppresses every low-battery warning until the
+			// first successful read — a fabricated device value in the unsafe direction, which is
+			// exactly what the project rules forbid.
+			if (last_valid_charge >= 0 && ++adc_miss <= ADC_MAX_MISS) return last_valid_charge;
+			return -1;   // unknown: callers must not treat this as a level
+		}
+		adc_miss = 0;
 		last_valid_charge = v;
 		return v;
 	}
@@ -246,7 +260,10 @@ static void checkADC(void) {
 	is_charging = isCharging();
 
 	int current_charge = getADCValue();
-	
+	// Unknown (-1) is not a level. Leave /tmp/battery holding whatever was last known rather than
+	// publishing a guess; the eased value is only ever moved by a real reading.
+	if (current_charge < 0) return;
+
 	static int first_run = 1;
 	if (first_run || (was_charging && !is_charging)) {
 		first_run = 0;
