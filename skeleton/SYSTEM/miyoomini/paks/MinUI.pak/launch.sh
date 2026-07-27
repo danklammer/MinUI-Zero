@@ -53,6 +53,12 @@ mkdir -p "$SHARED_USERDATA_PATH/.minui"
 # These stay for the menu//tmp/next path, but note 1296/1488 exceed the top STOCK OPP (1200) --
 # overclock.elf reaches them by poking the MPLL directly, which we do not do. Menu runs at a
 # real OPP instead.
+# OPT-IN shell-side boot timing (ZERO_BOOT_TIMING=1), same switch minui.elf uses for its own
+# startup probes. /proc/uptime is monotonic seconds since kernel start, so these stamps line up
+# with the kernel's own clock and cost one read each. Off by default: this writes to the SD card.
+bt() { [ "$ZERO_BOOT_TIMING" = "1" ] && echo "$(cut -d' ' -f1 /proc/uptime) $1" >> /mnt/SDCARD/boot-timing.txt; }
+bt "launch.sh start"
+
 export CPU_SPEED_MENU=600000
 export CPU_SPEED_GAME=1200000
 export CPU_SPEED_PERF=1200000
@@ -165,6 +171,7 @@ audio_daemon_release() {
 
 #######################################
 
+bt "lumon"
 lumon.elf & # adjust lcd luma and saturation
 
 # CHARGE-ONLY MODE — deliberately the FIRST thing after backlight setup, and ahead of audioserver,
@@ -201,7 +208,9 @@ batmon.elf
 # Still before minui.elf, and that ordering is load-bearing: the daemon must claim MI_AO before
 # anything else opens it, or MI_AO_SetPubAttr fails with 0xa0052009 and it dies. This is the only
 # moment in the session when it can win the codec.
+bt "audio daemon start"
 audio_daemon_start
+bt "audio daemon ready"
 AUDIO_DAEMON=0
 audio_daemon_ok && AUDIO_DAEMON=1
 AUDIO_RETRY=1   # one revival attempt is allowed if the daemon later dies; see the launch site
@@ -213,6 +222,7 @@ AUDIO_RETRY=1   # one revival attempt is allowed if the daemon later dies; see t
 unset LD_PRELOAD
 export AUDIO_DAEMON
 
+bt "keymon"
 keymon.elf & # &> /mnt/SDCARD/keymon.txt &
 
 #######################################
