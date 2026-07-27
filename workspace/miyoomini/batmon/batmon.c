@@ -358,7 +358,15 @@ int main(int argc, char** argv) {
 			}
 		}
 		else if (r == 0 && ++idle >= 20 && !dimmed) { // ~20s idle: dim, stay responsive, keep drawing
-			setDuty(1);
+			// Dim, do NOT go dark. setDuty(1) against a period of 800 is indistinguishable from a
+			// powered-off panel, and this screen is the ONLY thing on screen while charging — a
+			// black rectangle that ignores everything but POWER is exactly the "looks like a hang"
+			// report the batmon rewrite existed to end. 6 is the dimmest level the brightness scale
+			// itself uses (SetBrightness(0) -> duty 6), so it is known to be visible.
+			int dim = duty0 / 4;
+			if (dim < 6) dim = 6;
+			if (dim > duty0) dim = duty0;
+			setDuty(dim);
 			dimmed = 1;
 		}
 	}

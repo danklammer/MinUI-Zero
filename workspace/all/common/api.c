@@ -1738,6 +1738,14 @@ __attribute__((weak)) int PLAT_getAudioQueued(void) { return -1; }
 // "..." instead of a number. Platforms that can answer override this; the rest are unchanged.
 __attribute__((weak)) int PLAT_getChargePercent(void) { return -1; }
 
+// Is the audio codec owned by ANOTHER process that outlives us? 1 = yes, do not touch device-global
+// audio state. Default 0: we own it, current behaviour is unchanged everywhere that does.
+__attribute__((weak)) int PLAT_audioIsShared(void) { return 0; }
+
+// Is the battery still being filled? Platforms that cannot tell fall back to "same as charging",
+// preserving existing behaviour; only platforms that distinguish the two override this.
+__attribute__((weak)) int PLAT_isToppingUp(void) { return -1; }
+
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
 		// Stop feeding the device first, either way.
@@ -2379,7 +2387,12 @@ static void PWR_enterSleep(void) {
 	// SigmaStar that power-down of a still-live output stage is audible as a pop — the same
 	// discontinuity the game-exit path already mutes for (see PLAT_muteAudio). Volume was
 	// previously dropped several lines later, i.e. after the pop had already happened.
-	if (!GetHDMI()) SetRawVolume(MUTE_VOLUME_RAW);
+	// Do NOT mute a codec we do not own. MI_AO_SETMUTE is DEVICE-GLOBAL, and when another process
+	// owns the codec nothing unmutes per game on resume: PWR_exitSleep's SetVolume() reads the
+	// current level first, and that read fails for a process which never brought AO up, so the
+	// `old==-60 -> setMute(0)` boundary never fires and the device stays silent for the menu and
+	// every later game until reboot. PLAT_resetAudio refuses the same operation for the same reason.
+	if (!GetHDMI() && !PLAT_audioIsShared()) SetRawVolume(MUTE_VOLUME_RAW);
 	SND_pause(); // fully closes the audio device (thread stops); no-op when sound isn't initialized (minui)
 	if (GetHDMI()) {
 		PLAT_clearVideo(gfx.screen);
@@ -2484,7 +2497,14 @@ void PWR_enableAutosleep(void) {
 	pwr.can_autosleep = 1;
 }
 int PWR_preventAutosleep(void) {
-	return pwr.is_charging || !pwr.can_autosleep || GetHDMI() || exists(STAY_AWAKE_PATH);
+	// Inhibit while the cell is still FILLING, not merely while a cable is attached. On a platform
+	// that reports power presence (rather than charge current) as is_charging, the old test meant a
+	// plugged-in device could never autosleep at any level — panel and core live indefinitely,
+	// which is the opposite of this fork's thesis. Platforms that cannot distinguish the two return
+	// -1 and keep the previous behaviour exactly.
+	int topping = PLAT_isToppingUp();
+	int charging_inhibit = (topping < 0) ? pwr.is_charging : topping;
+	return charging_inhibit || !pwr.can_autosleep || GetHDMI() || exists(STAY_AWAKE_PATH);
 }
 
 // updated by PWR_updateBatteryStatus()
