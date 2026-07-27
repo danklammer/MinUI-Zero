@@ -11,13 +11,22 @@ CPU clock that still holds its target frame rate**, so the device stays cool and
 This is *not* a feature fork — it's the opposite. NextUI is the feature-rich/GL fork; this
 one is the distilled, runs-cold one.
 
-## Scope — **tg5040 only** (TrimUI Brick + TrimUI Smart Pro)
-This is a single-platform fork. The whole thesis is A133P-specific (cpufreq/OPP/thermal/PMIC),
-and we only test on the Brick, so we **support `tg5040` exclusively**. Like NextUI, the other
-MinUI platforms are frozen under `workspace/_unmaintained/` — present for history/upstream
-merges, but **not built or supported** (`make` defaults to `PLATFORMS = tg5040`). `workspace/
-macos/` stays as the zero-hardware dev/test platform (launcher build + harnesses), not a device.
-Don't re-add other devices without doing that device's full bring-up (recon + per-SoC wiring).
+## Scope — **`tg5040` is the fork** (TrimUI Brick + TrimUI Smart Pro); `miyoomini` is alpha
+The thesis is A133P-specific (cpufreq/OPP/thermal/PMIC), so `tg5040` is the only platform that
+carries it and the only one that ships as a real release. `make` still defaults to
+`PLATFORMS = tg5040`; a bare `make miyoomini` is rejected on purpose.
+
+**`miyoomini` (Miyoo Mini Plus, SigmaStar SSD202D) is a second, experimental platform** — built,
+running, and advertised in `README.md` as an **alpha**, but it is NOT a second first-class target.
+Build it explicitly: `make PLATFORMS=miyoomini miyoomini`. Its artifacts are stamped `-alpha`.
+MEASURED and worth knowing before spending effort there: **the efficiency thesis does not transfer**
+(~1% — on that SoC the CPU is not where the power goes), so MMP work is parity/polish, not thesis
+work. Deep sleep is proven impossible there. Anything that costs the Brick to serve the MMP loses.
+
+Every other MinUI platform is frozen under `workspace/_unmaintained/` — present for history and
+upstream merges, **not built or supported**. `workspace/macos/` stays as the zero-hardware dev/test
+platform (launcher build + harnesses), not a device. Don't re-add a device without doing that
+device's full bring-up (recon + per-SoC wiring) — the MMP port is what that costs.
 
 ## North star / non-negotiables
 - **Cool + efficient is the whole point.** Every change should serve "lowest clock that holds
