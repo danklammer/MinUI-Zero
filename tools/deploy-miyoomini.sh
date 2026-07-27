@@ -109,12 +109,14 @@ deployed $(cat ./build/latest.txt)
 
 TWO DIFFERENT RESTARTS — they do not pick up the same things.
 
-  $SSH $TARGET 'killall minui.elf'
+  $SSH $TARGET 'kill -9 \$(pidof minui.elf)'
       Picks up minui.elf, minarch.elf, the cores, and every Emus/*/launch.sh (those are read
       fresh on each game launch). This only makes MinUI.pak/launch.sh ITERATE its menu loop;
       everything above the loop, including audio_daemon_start and the boot-path daemon release,
       does NOT re-run. The running shell also still holds the OLD MinUI.pak/launch.sh inode,
       because this script installs via mv.
+      MUST be SIGKILL by pid: 'killall minui.elf' and plain TERM are PROVEN no-ops on this
+      firmware (the vendor SDL2 catches SIGTERM and posts SDL_QUIT, which minui ignores).
 
   full power cycle
       The ONLY way to exercise a MinUI.pak/launch.sh change or anything about daemon startup

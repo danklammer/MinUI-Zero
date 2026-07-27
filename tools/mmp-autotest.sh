@@ -57,33 +57,37 @@ launch() {
 	name=$1; secs=$2; cmdline=$3
 	note "--- $name (${secs}s) ---"
 	printf '%s\n' "$cmdline" | $SSH "$TARGET" "cat > /tmp/next" 2>/dev/null
-	rsh "killall minui.elf 2>/dev/null"
+	# SIGKILL, not TERM and not killall: the vendor SDL2 installs its own SIGTERM handler which
+	# turns the signal into an SDL_QUIT event that minui ignores (api.c has it commented out), so
+	# a polite kill is a PROVEN no-op on the menu (same pid, same start jiffies). minarch is the
+	# opposite: it installs Term_handler and must get TERM so audio/volts release cleanly.
+	rsh "kill -9 \$(pidof minui.elf) 2>/dev/null"
 	i=0; up=0
 	while [ $i -lt 40 ]; do
-		rsh "pgrep minarch.elf >/dev/null" && { up=1; break; }
+		rsh "pidof minarch.elf >/dev/null" && { up=1; break; }
 		sleep 1; i=$((i+1))
 	done
 	[ $up -eq 1 ] || { fail "$name: minarch never started"; return 1; }
 	sleep "$secs"
-	if rsh "pgrep minarch.elf >/dev/null"; then
+	if rsh "pidof minarch.elf >/dev/null"; then
 		pass "$name: ran ${secs}s without crashing"
 	else
 		fail "$name: minarch DIED before ${secs}s elapsed"
 	fi
 	# one framebuffer page as evidence (panel is mounted inverted; converter rotates 180)
 	rsh "dd if=/dev/fb0 of=$DEVSHOT/$name.fb bs=1228800 count=1 2>/dev/null; sync"
-	rsh "killall minarch.elf 2>/dev/null"
+	rsh "kill \$(pidof minarch.elf) 2>/dev/null"
 	i=0
 	while [ $i -lt 20 ]; do
-		rsh "pgrep minarch.elf >/dev/null" || break
+		rsh "pidof minarch.elf >/dev/null" || break
 		sleep 1; i=$((i+1))
 	done
-	rsh "pgrep minarch.elf >/dev/null" && rsh "killall -9 minarch.elf 2>/dev/null"
+	rsh "pidof minarch.elf >/dev/null" && rsh "kill -9 \$(pidof minarch.elf) 2>/dev/null"
 	rsh "cat $DEVSHOT/$name.fb" > "$ART/$name.fb" 2>/dev/null
 	# menu needs a beat to come back before the next injection
 	i=0
 	while [ $i -lt 20 ]; do
-		rsh "pgrep minui.elf >/dev/null" && break
+		rsh "pidof minui.elf >/dev/null" && break
 		sleep 1; i=$((i+1))
 	done
 	return 0
