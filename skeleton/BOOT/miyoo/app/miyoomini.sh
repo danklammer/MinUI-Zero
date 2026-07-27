@@ -45,7 +45,12 @@ cp -rf .tmp_update $SDCARD_PATH/
 if [ ! -f "$SDCARD_PATH/.tmp_update/updater" ]; then
 	echo "$(date '+%F %T') Could not copy the MinUI bootstrap to the SD card (full card, or a write error). Nothing was removed - free some space and try again." > "$SDCARD_PATH/MinUI-install-failed.txt"
 	sync
+	# EXIT, do not just power off. BusyBox poweroff/reboot SIGNAL init and RETURN immediately —
+	# bin/shutdown relies on exactly that (`reboot && sleep 10`). Without the exit, execution fell
+	# through to `rm -rf "$MIYOO_PATH"` below and deleted the stock entry point during the
+	# multi-second shutdown window: the precise brick this bail-out exists to prevent.
 	if [ "$IS_PLUS" = "true" ]; then poweroff; else reboot; fi
+	exit 1
 fi
 sync                      # commit the bootstrap BEFORE deleting our way back to it
 rm -rf "$MIYOO_PATH"
