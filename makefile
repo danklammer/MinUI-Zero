@@ -54,7 +54,7 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory test-dupskip test-snd-pacing test-shellquote test-install-safety test-cfg-migrate check-threading-policy
+.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory test-dupskip test-snd-pacing test-shellquote test-install-safety test-cfg-migrate check-parity check-threading-policy
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-shellquote:
@@ -63,6 +63,8 @@ test-install-safety:
 	sh ./workspace/all/common/run-install-safety-tests.sh
 test-cfg-migrate:
 	sh ./workspace/all/common/run-cfg-migrate-tests.sh
+check-parity:
+	sh ./tools/check-parity.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
 test-save-io:
