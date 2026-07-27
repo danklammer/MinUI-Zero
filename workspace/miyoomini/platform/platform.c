@@ -1226,12 +1226,21 @@ void PLAT_powerOff(void) {
 	// HONEST LIMIT: this cannot remove the pop entirely. Whatever remains is the analog supply
 	// collapsing, and this board exposes no speaker-amp enable line to shut the output stage down
 	// first (gpio48 is the RUMBLE motor, not an amp — checked). Only an amp mute would close it.
+	// Ramp DOWN FROM WHERE THE HARDWARE ACTUALLY IS, and never ramp if it is already muted.
+	//
+	// Starting the ramp from the SAVED level was a bug in the unsafe direction: the idle
+	// auto-power-off path arrives here already muted (PWR_enterSleep does
+	// SetRawVolume(MUTE_VOLUME_RAW), then the wake wait times out into PWR_powerOff). Ramping from
+	// the saved level then wrote a LOUDER value first, and SetRawVolume's boundary rule
+	// (`else if (old==-60) setMute(0)`) un-muted the codec — a full-volume burst on every idle
+	// power-off, which is the opposite of what this ramp is for.
 	{
-		int v = GetVolume();                 // 0-20 user scale
-		if (v < 0) v = 0;
-		while (v > 0) {
-			v--;
-			SetRawVolume(-60 + v * 3);       // same mapping libmsettings uses
+		int raw = 0;
+		if (MI_AO_GetVolume(0, &raw) != 0) raw = MUTE_VOLUME_RAW; // unknown: assume muted, do not raise
+		while (raw > MUTE_VOLUME_RAW) {
+			raw -= 3;                        // one user step, same 3dB grid libmsettings uses
+			if (raw < MUTE_VOLUME_RAW) raw = MUTE_VOLUME_RAW;
+			SetRawVolume(raw);
 			usleep(8000);
 		}
 	}
@@ -1408,15 +1417,27 @@ static void dbgBlitStrip(uint16_t* strip, int dst_y, int dst_w, int dst_h) {
 	if (dst_w <= 0 || dst_h <= 0) return;
 	uint16_t* base = (uint16_t*)vid.screen->pixels;
 	int dpitch = vid.pitch / 2; // vid.pitch is bytes; RGB565 => 2 bytes/px
-	for (int dy = 0; dy < dst_h; dy++) {
+	// Fixed-point stepping, NOT a divide per pixel. The obvious `srow[dx * dbg.w / dst_w]` costs an
+	// integer multiply AND divide for every destination pixel — on a 640-wide strip that is ~9k
+	// divides per frame on a dual Cortex-A7, added to the present path, in a fork whose whole thesis
+	// is not spending cycles it does not have to. A 16.16 accumulator gives the identical
+	// nearest-neighbour mapping with one add per pixel.
+	// The step is rounded UP. A truncated step lets the accumulator lag by one source pixel at the
+	// far edge; rounding up makes this bit-for-bit identical to `dx * dbg.w / dst_w` at every
+	// destination pixel (verified exhaustively over the resolutions this device produces) and keeps
+	// the index strictly inside the strip.
+	const uint32_t xstep = (((uint32_t)dbg.w << 16) + (uint32_t)dst_w - 1) / (uint32_t)dst_w;
+	const uint32_t ystep = (((uint32_t)dbg.h << 16) + (uint32_t)dst_h - 1) / (uint32_t)dst_h;
+	int wlim = dst_w < vid.width ? dst_w : vid.width;
+	uint32_t yacc = 0;
+	for (int dy = 0; dy < dst_h; dy++, yacc += ystep) {
 		int y = dst_y + dy;
 		if (y < 0 || y >= vid.height) continue;
-		int sy = dy * dbg.h / dst_h;              // nearest-neighbour, integer math only
-		uint16_t* srow = strip + sy * dbg.stride;
+		uint16_t* srow = strip + (yacc >> 16) * dbg.stride;
 		uint16_t* drow = base + (size_t)y * dpitch;
-		for (int dx = 0; dx < dst_w; dx++) {
-			if (dx >= vid.width) break;
-			uint16_t p = srow[dx * dbg.w / dst_w];
+		uint32_t xacc = 0;
+		for (int dx = 0; dx < wlim; dx++, xacc += xstep) {
+			uint16_t p = srow[xacc >> 16];
 			if (p == DBG_KEY) continue;           // transparent
 			drow[dx] = p;
 		}
