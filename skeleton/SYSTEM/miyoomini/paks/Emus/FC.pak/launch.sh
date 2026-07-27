@@ -10,9 +10,24 @@ mkdir -p "$BIOS_PATH/$EMU_TAG"
 mkdir -p "$SAVES_PATH/$EMU_TAG"
 HOME="$USERDATA_PATH"
 cd "$HOME"
-# closed-loop governor clock bracket (kHz) — MEASURED on this SoC
-# OPPs: 400/600/800/1000/1100/1200. GBC held 59.7fps at 400; supafaust saturated at 1200.
-export MINARCH_FMIN=400000
+# Closed-loop governor clock bracket (kHz). OPPs: 400/600/800/1000/1100/1200.
+#
+# FMIN=600000, MEASURED on this device with fceumm (Contra Force, 25s per clock, generated fps
+# against a 60.1 target):
+#     400 MHz  avg 57.7  min 55.2  below-59fps 15/22   <- CANNOT hold rate
+#     600 MHz  avg 74.2  min 72.1  below-59fps  0/24   <- holds with ~20% headroom
+#     800 MHz  avg 86.5  min 85.3  below-59fps  0/24
+#    1000 MHz  avg 95.7  min 92.8  below-59fps  0/24
+#
+# This shipped at 400 on the strength of a comment reading "GBC held 59.7fps at 400" — a claim that
+# was later DISPROVEN for GBC itself (re-measured after the -O3 core rebuild and raised to 800), so
+# NES was resting on evidence that had already been retracted. The symptom was visible: jittery
+# scrolling in Contra, which is exactly what a floor below the core's real cost looks like once the
+# governor sinks into it.
+#
+# 600 rather than 800: 600 already clears the target with margin, and this is the lightest system we
+# ship — taking the extra OPP step would cost power for nothing, which is the opposite of the point.
+export MINARCH_FMIN=600000
 export MINARCH_FMAX=1200000
 
 nice -20 minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" &> "$LOGS_PATH/$EMU_TAG.txt"
