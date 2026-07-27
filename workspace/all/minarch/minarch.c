@@ -1695,7 +1695,19 @@ static void Config_quit(void) {
 		free(core_button_mapping[i].name);
 	}
 }
-static void Config_readOptionsString(char* cfg) {
+// is_user: this is the player's SAVED cfg, not something we ship.
+//
+// A saved cfg must not silently override a value we LOCKED. Load order is
+// system.cfg -> pak default.cfg -> saved cfg, and last-write-wins on value, so a stale save
+// pinned settings forever: every GBC game on a test card still carried
+// `minarch_screen_scaling = Aspect` from before the pak default became `Native`, which defeated
+// the fix entirely and reintroduced fractional-scale shimmer. The same shape hid a disabled NES
+// turbo and, per D48, a stale `gpu_thread_rendering`.
+//
+// A locked option is one the player cannot reach in the menu, so a differing saved value can only
+// be an artifact of an older build — never a deliberate choice. Shipped files still override each
+// other in order (a pak may specialise system.cfg); only the saved cfg is held back.
+static void Config_readOptionsString(char* cfg, int is_user) {
 	if (!cfg) return;
 
 	LOG_info("Config_readOptions\n");
@@ -1703,7 +1715,9 @@ static void Config_readOptionsString(char* cfg) {
 	char value[256];
 	for (int i=0; config.frontend.options[i].key; i++) {
 		Option* option = &config.frontend.options[i];
+		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		if (is_user && was_locked) continue; // shipped lock wins over a stale save
 		OptionList_setOptionValue(&config.frontend, option->key, value);
 		Config_syncFrontend(option->key, option->value);
 	}
@@ -1716,7 +1730,9 @@ static void Config_readOptionsString(char* cfg) {
 	
 	for (int i=0; config.core.options[i].key; i++) {
 		Option* option = &config.core.options[i];
+		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		if (is_user && was_locked) continue; // same rule for CORE options (eg. fceumm turbo)
 		OptionList_setOptionValue(&config.core, option->key, value);
 	}
 }
@@ -1853,9 +1869,9 @@ static void Config_free(void) {
 	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
-	Config_readOptionsString(config.system_cfg);
-	Config_readOptionsString(config.default_cfg);
-	Config_readOptionsString(config.user_cfg);
+	Config_readOptionsString(config.system_cfg, 0);
+	Config_readOptionsString(config.default_cfg, 0);
+	Config_readOptionsString(config.user_cfg, 1); // saved: may not override a shipped lock
 
 	// screen_scaling = SCALE_NATIVE; // TODO: tmp
 }
