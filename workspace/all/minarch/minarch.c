@@ -1698,15 +1698,20 @@ static void Config_quit(void) {
 // is_user: this is the player's SAVED cfg, not something we ship.
 //
 // A saved cfg must not silently override a value we LOCKED. Load order is
-// system.cfg -> pak default.cfg -> saved cfg, and last-write-wins on value, so a stale save
-// pinned settings forever: every GBC game on a test card still carried
-// `minarch_screen_scaling = Aspect` from before the pak default became `Native`, which defeated
-// the fix entirely and reintroduced fractional-scale shimmer. The same shape hid a disabled NES
-// turbo and, per D48, a stale `gpu_thread_rendering`.
+// system.cfg -> pak default.cfg -> saved cfg, and last-write-wins on value, so a stale save pinned
+// settings forever: a disabled NES turbo survived the pak default that re-enabled it, and per D48 a
+// stale `gpu_thread_rendering` survived the default that turned it off.
 //
 // A locked option is one the player cannot reach in the menu, so a differing saved value can only
 // be an artifact of an older build — never a deliberate choice. Shipped files still override each
 // other in order (a pak may specialise system.cfg); only the saved cfg is held back.
+//
+// SCOPE, precisely: this gate is inert for options we ship UNLOCKED. `minarch_screen_scaling` is
+// the live example — the MMP GB/GBC/FC paks ship `Native` with no `-` prefix, so a card carrying
+// `minarch_screen_scaling = Aspect` from an older build still wins here and still shimmers. That is
+// deliberate, not an oversight: locking it would remove scaling from the menu entirely, which is a
+// product decision that has not been made. Ship the option with a `-` prefix and this gate covers
+// it; until then the stale-save case for scaling is open.
 static void Config_readOptionsString(char* cfg, int is_user) {
 	if (!cfg) return;
 

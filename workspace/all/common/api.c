@@ -784,19 +784,20 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 	
 	if (pwr.is_charging) {
 		GFX_blitAsset(ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
-		// Bolt only, no level fill.
+
+		// Bolt only, no level fill — same as upstream, and it is not an oversight.
 		//
-		// This briefly drew the fill and then the bolt on top, on the assumption that "the bolt
-		// still reads clearly against it". It does not: ASSET_BATTERY_FILL and ASSET_BATTERY_BOLT
-		// are BOTH solid white and BOTH 12x6 — the same rect — so the bolt is invisible everywhere
-		// the fill covers. On device that renders as a stub of diagonal on the unfilled left plus a
-		// featureless white block on the right, which reads as a corrupted glyph rather than a
-		// battery (reported from a charging Miyoo, and the tg5040 build had it too).
+		// ASSET_BATTERY_BOLT is a KNOCKOUT: an opaque 12x6 block with the bolt shape punched out as
+		// transparency, so the bolt you see is the background showing through. It is the exact same
+		// 12x6 rect as ASSET_BATTERY_FILL, so it covers any fill drawn beneath it completely — and
+		// where it does not cover (the punched-out bolt), a white fill underneath shows through and
+		// erases the bolt instead. Drawing both gives a featureless block, not a level + a bolt.
+		// (That is what the charging Miyoo photo showed when this branch briefly drew the fill.)
 		//
-		// Showing level AND charge state at once needs a bolt that can be distinguished from the
-		// fill — a knockout/outlined variant in the asset sheet. Until that asset exists, the bolt
-		// alone is the honest signal: it says "charging" unambiguously at every level, which is the
-		// question this icon is asked while a cable is attached.
+		// Showing level AND charge state in the same 12x6 needs a bolt asset that can be told apart
+		// from the fill. Until that asset exists the bolt alone is the honest signal: it answers the
+		// question the icon is actually asked while a cable is attached, at every level. The charge
+		// screen (ChargingScreen / batmon) is where the number lives.
 		GFX_blitAsset(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x+SCALE1(3),y+SCALE1(2)});
 	}
 	else {

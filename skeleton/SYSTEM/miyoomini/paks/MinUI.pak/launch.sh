@@ -245,8 +245,19 @@ bt "audio daemon start"
 audio_daemon_start
 bt "audio daemon ready"
 AUDIO_DAEMON=0
-audio_daemon_ok && AUDIO_DAEMON=1
-AUDIO_RETRY=1   # one revival attempt is allowed if the daemon later dies; see the launch site
+if audio_daemon_ok; then
+	AUDIO_DAEMON=1
+	AUDIO_RETRY=1   # one revival attempt is allowed if it later dies; see the launch site
+else
+	# Same reasoning as the per-launch fallback below, and it has to be here too: a daemon that
+	# SPAWNED but never became ready is still a live process HOLDING MI_AO. Leaving it alive and
+	# quietly selecting direct MMIYOO gave every game of the session a codec it could not open --
+	# silence, with a healthy-looking log. Take the device back before anyone else asks for it.
+	audio_daemon_release
+	# It never won the codec at boot, which is the only moment it can (see the launch site); a
+	# revival attempt would stall each launch for the readiness timeout and still fail.
+	AUDIO_RETRY=0
+fi
 
 # Do NOT export the shim globally. libpadsp is fragile for non-SDL clients -- a program that
 # actually drives /dev/dsp segfaults under it (measured) -- and keymon, the shutdown helper and
