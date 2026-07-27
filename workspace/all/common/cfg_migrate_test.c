@@ -25,6 +25,14 @@ static void ck(int cond, const char* what) {
 // function too entangled with minarch globals to extract) — kept trivial on purpose.
 static int migrates(int user_version) { return user_version < CFG_VERSION; }
 
+// The full drop decision for a saved-cfg key: migrate the save AND have a shipped opinion to
+// replace the value with. Mirrors the gate in Config_readOptionsString.
+static int drops(int user_version, const char* key, int shipped_says_so) {
+	int i = Config_staleIndex(key);
+	if (i < 0 || i >= CFG_STALE_MAX) return 0;
+	return migrates(user_version) && shipped_says_so;
+}
+
 // How Config_readOptions derives the version from a saved cfg. Same shape as the shipping code.
 static int version_of(char* cfg) {
 	char value[256];
@@ -91,6 +99,21 @@ int main(void) {
 	ck(Config_getValue(only_stamp, "minarch_cpu_speed", value, NULL) == 0,
 	   "the stamp alone yields no cpu_speed value");
 
+	// ---- the shipped-opinion gate ----
+	// Dropping a value is only useful when the shipped chain supplies a replacement. minarch's
+	// compiled-in scaling default is index 1, "Aspect" — the same value the stale saves carry — so
+	// on a system that ships no scaling default, dropping achieves nothing and would discard a
+	// deliberate Fullscreen/Cropped choice for free. VERIFIED on the MMP card: GB/GBC/FC ship a
+	// default, MGBA/GBA/SUPA/MD/PS do not, and system.cfg sets no scaling at all.
+	ck(drops(0, "minarch_screen_scaling", 1) == 1,
+	   "GBC (pak ships Native): stale save DROPS");
+	ck(drops(0, "minarch_screen_scaling", 0) == 0,
+	   "GBA/SUPA (nothing shipped): stale save is KEPT, not reset to the same value");
+	ck(drops(1, "minarch_screen_scaling", 1) == 0,
+	   "stamped save is kept even where a default is shipped");
+	ck(drops(0, "minarch_cpu_speed", 1) == 0,
+	   "a shipped non-stale key is never dropped");
+
 	// ---- end-to-end shape: the case that actually shipped broken ----
 	// A GBC card written before the pak default became Native.
 	char gbc_card[] =
@@ -99,18 +122,22 @@ int main(void) {
 		"minarch_cpu_speed = Normal\n"
 		"bind A = A\n";
 	int v = version_of(gbc_card);
-	ck(migrates(v) && Config_isStaleKey("minarch_screen_scaling"),
-	   "stale GBC card: scaling is dropped, default Native wins");
-	ck(migrates(v) && !Config_isStaleKey("minarch_cpu_speed"),
+	ck(drops(v, "minarch_screen_scaling", 1),
+	   "stale GBC card: scaling is dropped, pak default Native wins");
+	ck(!drops(v, "minarch_cpu_speed", 1),
 	   "stale GBC card: cpu_speed is KEPT (not in the table)");
 	ck(Config_getValue(gbc_card, "minarch_screen_sharpness", value, NULL) && !strcmp(value, "Sharp"),
 	   "stale GBC card: sharpness still parses and is kept");
+
+	// The same stale value on a system with no shipped opinion must survive untouched.
+	ck(!drops(v, "minarch_screen_scaling", 0),
+	   "stale SUPA card: scaling survives (no shipped default to replace it with)");
 
 	// Same card after any settings change — now stamped, so the choice sticks.
 	char gbc_resaved[] =
 		"minarch_cfg_version = 1\n"
 		"minarch_screen_scaling = Aspect\n";
-	ck(!migrates(version_of(gbc_resaved)),
+	ck(!drops(version_of(gbc_resaved), "minarch_screen_scaling", 1),
 	   "re-saved card: a deliberate Aspect choice now sticks");
 
 	printf("\n=== cfg migration: %s ===\n", failures ? "FAILURES" : "ALL PASS");
