@@ -1717,7 +1717,12 @@ static void Config_readOptionsString(char* cfg, int is_user) {
 		Option* option = &config.frontend.options[i];
 		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
-		if (is_user && was_locked) continue; // shipped lock wins over a stale save
+		if (is_user && was_locked) {
+			// Say so. Silently discarding a line that IS in the file on the card sends anyone
+			// debugging (us included) chasing a setting that looks applied and is not.
+			LOG_info("ignoring locked frontend option from saved cfg: %s = %s\n", option->key, value);
+			continue;
+		}
 		OptionList_setOptionValue(&config.frontend, option->key, value);
 		Config_syncFrontend(option->key, option->value);
 	}
@@ -1732,7 +1737,10 @@ static void Config_readOptionsString(char* cfg, int is_user) {
 		Option* option = &config.core.options[i];
 		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
-		if (is_user && was_locked) continue; // same rule for CORE options (eg. fceumm turbo)
+		if (is_user && was_locked) {
+			LOG_info("ignoring locked core option from saved cfg: %s = %s\n", option->key, value);
+			continue;
+		}
 		OptionList_setOptionValue(&config.core, option->key, value);
 	}
 }

@@ -136,9 +136,12 @@ system:
 	# entirely; workspace/miyoomini/makefile deliberately does not build it — yet a STALE, gitignored
 	# copy sat in skeleton/SYSTEM/miyoomini/bin and `cp -R ./skeleton ./build` shipped it in every
 	# artifact, invisible to git (*.elf is ignored). Exactly how six foreign cores shipped before.
-	@if find ./build -name 'overclock.elf' -o -name 'as_preload.so' | grep -q .; then \
-		echo "ERROR: artifact contains an overclock/preload binary this fork does not ship:"; \
-		find ./build -name 'overclock.elf' -o -name 'as_preload.so'; \
+	# Scoped to the platform being built. This searched ./build GLOBALLY, so a stray binary belonging
+	# to ANY platform would hard-fail an unrelated build — a trip wire on a target the check was
+	# never written for.
+	@if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' -o -name 'as_preload.so' 2>/dev/null | grep -q .; then \
+		echo "ERROR: $(PLATFORM) artifact contains an overclock/preload binary this fork does not ship:"; \
+		find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' -o -name 'as_preload.so' 2>/dev/null; \
 		exit 1; \
 	fi
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
