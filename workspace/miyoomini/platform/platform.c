@@ -1213,15 +1213,28 @@ void PLAT_enableBacklight(int enable) {
 void PLAT_powerOff(void) {
 	sleep(2);
 
-	// Mute the DIGITAL path, then ALSO drive the codec's own mute and let the analog stage settle.
-	// SetRawVolume alone is not sufficient here: it sets the gain/mute registers and returns
-	// immediately, so the rail was still slewing when power was cut. PLAT_muteAudio carries the
-	// measured MI_AO_SETTLE_US window that the game-exit path relies on for exactly this reason.
+	// RAMP the output down before cutting power, instead of stepping straight to mute.
 	//
-	// HONEST LIMIT: this cannot be expected to remove the power-off pop entirely. That pop is the
-	// analog supply collapsing, not audio data, and this board exposes no speaker-amp enable line
-	// to shut the output stage down first — muting was already proven not to hide a rail
-	// transition. This narrows the window; only an amp mute would close it.
+	// A single SetRawVolume(MUTE) was measurably better than nothing (reported audibly quieter on
+	// device), which tells us the pop is not PURELY the supply rail collapsing — part of it is the
+	// output LEVEL changing in one step. A step is broadband energy; a ramp spreads the same
+	// change over time and moves it below the speaker's response.
+	//
+	// ~20 steps of 8ms = ~160ms, which is free here: the device is powering off and already waits
+	// 2s above.
+	//
+	// HONEST LIMIT: this cannot remove the pop entirely. Whatever remains is the analog supply
+	// collapsing, and this board exposes no speaker-amp enable line to shut the output stage down
+	// first (gpio48 is the RUMBLE motor, not an amp — checked). Only an amp mute would close it.
+	{
+		int v = GetVolume();                 // 0-20 user scale
+		if (v < 0) v = 0;
+		while (v > 0) {
+			v--;
+			SetRawVolume(-60 + v * 3);       // same mapping libmsettings uses
+			usleep(8000);
+		}
+	}
 	SetRawVolume(MUTE_VOLUME_RAW);
 	PLAT_muteAudio(1);
 	PLAT_enableBacklight(0);
