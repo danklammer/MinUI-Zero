@@ -7138,11 +7138,18 @@ int main(int argc , char* argv[]) {
 			 && !zero_ftv2_depth2
 #endif
 			) { // depth-2 telemetry is recorded once per RUN_DONE in the drain
-				static long prev_wait_ms = 0;
+				// us-precision pace subtraction, CLAMPED rather than skipped. The old form used
+				// ms-rounded wait deltas and fell back to the RAW window whenever rounding pushed
+				// the delta past it — so a fully audio-paced frame recorded its whole ~20ms as
+				// "work". On MMP PS1 that painted 1-in-6 frames as over-budget on games
+				// generating at full rate, and the phantom sent an evening chasing clock/dither/
+				// thread/readahead fixes that all "failed" to move a number that was never work
+				// (2026-07-28; the pin-verified +24% clock A/B is what exposed it).
+				static long prev_wait_us = 0;
 				SND_Stats as; SND_getStats(&as);
-				long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
+				long pace_us = as.wait_us - prev_wait_us; prev_wait_us = as.wait_us;
 				uint32_t raw_us  = GFX_getFrameWorkUs();
-				uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
+				uint32_t work_us = (pace_us > 0) ? (((uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : 0) : raw_us;
 				tlm_frame(work_us);
 				tlm_audio(as.queue_frames, as.underruns, as.overruns);
 			}
