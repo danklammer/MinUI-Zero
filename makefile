@@ -135,17 +135,33 @@ system:
 			{ echo "ERROR: shipped libSDL2 has no OSS backend — the audio pop would return"; exit 1; }; \
 		echo "miyoomini libSDL2: OSS backend present"; \
 	fi
-	# NEVER-OVERCLOCK is a project non-negotiable, so it is enforced by the build rather than by
-	# a comment. overclock.elf pokes the SigmaStar MPLL through /dev/mem, bypassing cpufreq
-	# entirely; workspace/miyoomini/makefile deliberately does not build it — yet a STALE, gitignored
-	# copy sat in skeleton/SYSTEM/miyoomini/bin and `cp -R ./skeleton ./build` shipped it in every
-	# artifact, invisible to git (*.elf is ignored). Exactly how six foreign cores shipped before.
-	# Scoped to the platform being built. This searched ./build GLOBALLY, so a stray binary belonging
-	# to ANY platform would hard-fail an unrelated build — a trip wire on a target the check was
-	# never written for.
-	@if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' -o -name 'as_preload.so' 2>/dev/null | grep -q .; then \
-		echo "ERROR: $(PLATFORM) artifact contains an overclock/preload binary this fork does not ship:"; \
-		find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' -o -name 'as_preload.so' 2>/dev/null; \
+	# Artifact hygiene, enforced by the build rather than by a comment. History: a STALE, gitignored
+	# overclock.elf sat in skeleton/SYSTEM/miyoomini/bin and `cp -R ./skeleton ./build` shipped it in
+	# every artifact, invisible to git (*.elf is ignored) — exactly how six foreign cores shipped
+	# before. Scoped to the platform being built.
+	#
+	# AMENDED 2026-07-28 with the overclock rule (CLAUDE.md: quality gameplay outranks it):
+	# miyoomini now ships overclock.elf DELIBERATELY — built from our pinned source by
+	# workspace/miyoomini/makefile, invoked only by PLAT_setCPUMaxFreq's MINARCH_OC_KHZ translation
+	# (PS1 receipt: p95 needs ~1.5GHz vs the 1200 stock top). The check therefore verifies the
+	# shipped binary IS our build (md5 against the workspace artifact) instead of banning it; a
+	# stale/foreign copy still fails. as_preload.so stays banned everywhere. tg5040 still ships no
+	# overclock binary at all.
+	@if [ "$(PLATFORM)" = "miyoomini" ]; then \
+		WANT=$$(md5 -q ./workspace/miyoomini/overclock/overclock.elf 2>/dev/null || md5sum ./workspace/miyoomini/overclock/overclock.elf | cut -d' ' -f1); \
+		GOT=$$(md5 -q ./build/SYSTEM/miyoomini/bin/overclock.elf 2>/dev/null || md5sum ./build/SYSTEM/miyoomini/bin/overclock.elf | cut -d' ' -f1); \
+		[ -n "$$WANT" ] && [ "$$WANT" = "$$GOT" ] || { echo "ERROR: shipped overclock.elf is not our build (want $$WANT got $$GOT)"; exit 1; }; \
+		echo "miyoomini overclock.elf: matches our build"; \
+	else \
+		if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' 2>/dev/null | grep -q .; then \
+			echo "ERROR: $(PLATFORM) artifact contains an overclock binary this platform does not ship:"; \
+			find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' 2>/dev/null; \
+			exit 1; \
+		fi; \
+	fi
+	@if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'as_preload.so' 2>/dev/null | grep -q .; then \
+		echo "ERROR: $(PLATFORM) artifact contains as_preload.so, which this fork never ships:"; \
+		find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'as_preload.so' 2>/dev/null; \
 		exit 1; \
 	fi
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
