@@ -19,17 +19,20 @@ needs-swap || exit 1
 cd "$HOME"
 # Closed-loop governor clock bracket (kHz). OPPs: 400/600/800/1000/1100/1200 (measured).
 #
-# THIS BRACKET IS NOT MEASURED FOR THIS SYSTEM. The header here used to read "MEASURED on this SoC"
-# and cite "GBC held 59.7fps at 400; supafaust saturated at 1200" — BOTH of which have since been
-# retracted by direct measurement on this device:
-#   * the 400MHz GBC datapoint was disproven after the -O3 core rebuild (GBC.pak has the numbers,
-#     and its floor was raised to 800);
-#   * supafaust does NOT saturate at 1200 (SUPA.pak: "at 1200 it never missed").
-# Leaving a retracted claim under a MEASURED banner is exactly what the project rule forbids, so it
-# is labelled honestly instead: the values below are a conservative bracket, not a finding.
-# TODO: bench this system and set the floor from data.
+# MEASURED for this system (2026-07-27 autotest, attract+demo incl. the BR2 480i ranking screen):
+# at the 1200 stock ceiling BR2 misses budget on 16.4% of frames (p95 18.5-20.5ms vs 16.7ms,
+# 106 underruns/4min) and THPS on 18.1% (p95 20.4-20.8ms). Holding rate needs ~1.5GHz.
 export MINARCH_FMIN=1000000
 export MINARCH_FMAX=1200000
+
+# MPLL overclock opt-in (CLAUDE.md overclock rule as amended 2026-07-28): table-top governor
+# requests are served by overclock.elf at this clock; below-top requests take the stock cpufreq
+# path (menu dips still cool down, crashes self-heal on the next cpufreq write). 1488 is what
+# upstream MinUI shipped as PERFORMANCE on this device; the ~25% lift covers BR2 (needs ~1475)
+# and just reaches THPS (~1496). While overclocked, scaling_cur_freq still READS 1200000 — the
+# HUD/telemetry clock column under-reports; judge by generation rate and p95.
+# THERMAL SOAK PENDING: not yet validated over a long session; remove this line to fall back.
+export MINARCH_OC_KHZ=1488000
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.
 # The audio shim is applied to THIS process only, never exported to the helpers above.

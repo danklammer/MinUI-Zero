@@ -18,11 +18,14 @@ all: readmes
 	cd batmon && make
 	cd lumon && make
 	cd show && make
-	# overclock.elf deliberately NOT built: it pokes the SigmaStar MPLL via /dev/mem,
-	# bypassing cpufreq entirely. Nothing we ship calls it, and a leftover third-party
-	# pak invoking it silently fought the closed-loop governor. Never-overclock is a
-	# project non-negotiable, so the binary does not ship.
-	# cd overclock && make
+	# overclock.elf: pokes the SigmaStar MPLL via /dev/mem, beyond cpufreq's 1200 top step.
+	# Excluded while never-overclock was a non-negotiable; that rule was amended 2026-07-28
+	# (CLAUDE.md — quality gameplay outranks it, earned by receipts). The receipt: PS1 p95
+	# needs ~1.5GHz (autotest 2026-07-27), and upstream MinUI ran this very tool at 1296/1488
+	# as its NORMAL/PERFORMANCE clocks. The governor stays the only writer of cpufreq; the
+	# ONLY caller of this tool is PLAT_setCPUMaxFreq's MINARCH_OC_KHZ translation, so the
+	# "two writers fighting" hazard that motivated the exclusion cannot recur.
+	cd overclock && make
 
 early: $(REQUIRES_SDL) $(REQUIRES_COMMANDER)
 	cd other/sdl && ./make.sh

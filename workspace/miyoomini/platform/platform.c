@@ -1343,12 +1343,28 @@ int PLAT_isOnline(void) {
 //
 // NOTE: MinUI/MyMinUI otherwise drive the clock with overclock.elf, which pokes the SigmaStar
 // MPLL registers directly and bypasses cpufreq entirely. Whoever writes last wins, so the
-// governor owns the clock for the duration of a game; do not mix the two.
+// governor stays the ONLY writer here — the OC translation below runs INSIDE the governor's
+// write, never beside it.
 //
 // MEASURED OPP table (scaling_available_frequencies, 2026-07-24):
 //   400000 600000 800000 1000000 1100000 1200000 kHz.
 // Requests are snapped DOWN to a real OPP (never up — never silently overclock) and clamped
-// to the table. 1200000 is the top *stock* step; overclock.elf can exceed it, we do not.
+// to the table. 1200000 is the top *stock* step.
+//
+// MINARCH_OC_KHZ (per-pak opt-in; CLAUDE.md overclock rule as amended 2026-07-28): when set,
+// a request that lands on the TABLE TOP is served by overclock.elf at the requested OC clock
+// instead of a plain setspeed write. overclock.elf itself writes governor=userspace +
+// setspeed=1200000 and then raises the PLL, so the kernel's bookkeeping stays at the top stock
+// step. Every request BELOW the top takes the normal cpufreq path, and that write reprograms
+// the PLL back to a stock clock — so menu dips cool down as before, and climbing back to the
+// top re-applies the OC. A crash while overclocked self-heals the same way: the next process
+// to touch cpufreq (the menu, at menu clock) resets the PLL.
+//
+// Receipt for existence (2026-07-27 autotest, PS1 at the 1200 ceiling): BR2 p95 18.5-20.5ms,
+// THPS 20.4-20.8ms vs the 16.7ms budget — holding rate needs ~1.5GHz. Upstream MinUI ran this
+// device at 1296/1488 (its NORMAL/PERFORMANCE) via this same tool.
+// KNOWN LIE while overclocked: scaling_cur_freq still reads 1200000 (cpufreq cannot see the
+// PLL), so the HUD/telemetry clock column under-reports; judge OC by the p95/over%% delta.
 #define MMP_CPUF_DIR "/sys/devices/system/cpu/cpufreq/policy0"
 static const int mmp_opp_khz[] = { 400000, 600000, 800000, 1000000, 1100000, 1200000 };
 #define MMP_OPP_COUNT ((int)(sizeof(mmp_opp_khz)/sizeof(mmp_opp_khz[0])))
@@ -1359,6 +1375,24 @@ static int mmp_writeStr(const char* path, const char* val) {
 	ssize_t n = write(fd, val, strlen(val));
 	close(fd);
 	return n == (ssize_t)strlen(val);
+}
+
+// Latched once: the env cannot change mid-process, and re-reading it per tick is a getenv on
+// the hot path. Clamped to the range upstream shipped (1296..1488); above the clamp we take
+// 1488, at/below the stock top the opt-in is OFF.
+static int mmp_oc_khz(void) {
+	static int oc = -2; // -2 unread, 0 off
+	if (oc == -2) {
+		const char* v = getenv("MINARCH_OC_KHZ");
+		oc = 0;
+		if (v && *v) {
+			int k = atoi(v);
+			if (k > 1488000) k = 1488000;
+			if (k > 1200000) oc = k;
+			if (oc) LOG_info("gov: MPLL OC armed at %d kHz for table-top requests\n", oc);
+		}
+	}
+	return oc;
 }
 
 void PLAT_setCPUMaxFreq(int khz) {
@@ -1379,6 +1413,17 @@ void PLAT_setCPUMaxFreq(int khz) {
 		gov_set = mmp_writeStr(MMP_CPUF_DIR "/scaling_governor", "userspace");
 	}
 	if (target == last_khz) return; // avoid pointless sysfs writes every tick
+
+	// Table-top request with the OC opt-in armed: overclock.elf does the whole write (it sets
+	// governor+setspeed itself, then raises the PLL). See the block comment above for why this
+	// is the governor's OWN write and not a second writer.
+	if (target == mmp_opp_khz[MMP_OPP_COUNT-1] && mmp_oc_khz()) {
+		char cmd[64];
+		snprintf(cmd, sizeof(cmd), "overclock.elf %d", mmp_oc_khz());
+		if (system(cmd) == 0) last_khz = target;
+		else LOG_info("gov: overclock.elf FAILED for %d kHz (will retry)\n", mmp_oc_khz());
+		return;
+	}
 
 	char buf[16];
 	snprintf(buf, sizeof(buf), "%d", target);

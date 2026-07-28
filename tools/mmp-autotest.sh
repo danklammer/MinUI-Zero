@@ -152,16 +152,16 @@ launch T4-p8-celeste 90 "BENCH=1 BENCH_OUT=\"/mnt/SDCARD/bench-P8-celeste.csv\" 
 	rsh "cat /mnt/SDCARD/bench-P8-celeste.csv" > "$ART/bench-P8-celeste.csv" 2>/dev/null
 }
 
-# T5/T6 — PS1 clock headroom (PS.pak exports BENCH itself; attract modes self-play)
-launch T5-ps-br2 240 "\"$SYS/paks/Emus/PS.pak/launch.sh\" \"$ROMS/6) Sony PlayStation (PS)/Bloody Roar II/Bloody Roar II.cue\"" && {
+# T5/T6 — PS1 clock headroom (attract modes self-play; BENCH via env prefix so no pak edit)
+launch T5-ps-br2 240 "BENCH=1 BENCH_OUT=\"/mnt/SDCARD/bench-PS-br2.csv\" \"$SYS/paks/Emus/PS.pak/launch.sh\" \"$ROMS/6) Sony PlayStation (PS)/Bloody Roar II/Bloody Roar II.cue\"" && {
 	pull_log T5-ps-br2 PS
 	assert_audio T5-ps-br2
-	rsh "cat \"/mnt/SDCARD/bench-PS-Bloody_Roar_II.cue.csv\"" > "$ART/bench-PS-br2.csv" 2>/dev/null
+	rsh "cat /mnt/SDCARD/bench-PS-br2.csv" > "$ART/bench-PS-br2.csv" 2>/dev/null
 }
-launch T6-ps-thps 180 "\"$SYS/paks/Emus/PS.pak/launch.sh\" \"$ROMS/6) Sony PlayStation (PS)/Tony Hawk's Pro Skater/Tony Hawk's Pro Skater.cue\"" && {
+launch T6-ps-thps 180 "BENCH=1 BENCH_OUT=\"/mnt/SDCARD/bench-PS-thps.csv\" \"$SYS/paks/Emus/PS.pak/launch.sh\" \"$ROMS/6) Sony PlayStation (PS)/Tony Hawk's Pro Skater/Tony Hawk's Pro Skater.cue\"" && {
 	pull_log T6-ps-thps PS
 	assert_audio T6-ps-thps
-	rsh "cat \"/mnt/SDCARD/bench-PS-Tony_Hawk's_Pro_Skater.cue.csv\"" > "$ART/bench-PS-thps.csv" 2>/dev/null
+	rsh "cat /mnt/SDCARD/bench-PS-thps.csv" > "$ART/bench-PS-thps.csv" 2>/dev/null
 }
 
 note ""
