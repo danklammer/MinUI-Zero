@@ -1453,8 +1453,25 @@ void PLAT_setCPUMaxFreq(int khz) {
 // panel — anything drawn directly into the framebuffer instead would come out upside-down.
 #define DBG_KEY 0xF81F
 static struct { uint16_t *top, *bottom; int w, h, stride; } dbg = {0};
+// Where the strips were last painted in the render surface, so the OFF transition can scrub them.
+// Needed because the strips are drawn into vid.screen, and the game only rewrites its own inner
+// rect each frame: the slice of a strip overlapping the letterbox/pillarbox bands (painted once,
+// never per-frame) would otherwise stay on screen forever after the HUD is toggled off — reported
+// on-device as "half the HUD left under the game" (2026-07-28).
+static struct { int y_top, y_bot, h; int drawn; } dbg_last = {0};
 
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
+	// OFF transition: scrub the bands the strips last occupied. Full-width rows, black — the only
+	// pixels outside the game's per-frame rect are the black borders, so black is always correct
+	// there, and the in-rect part is repainted by the very next game frame anyway.
+	if (!top && dbg_last.drawn && vid.screen && vid.screen->pixels) {
+		uint8_t* px = (uint8_t*)vid.screen->pixels;
+		for (int y = 0; y < dbg_last.h; y++) {
+			if (dbg_last.y_top + y < vid.height) memset(px + (dbg_last.y_top + y) * vid.pitch, 0, vid.pitch);
+			if (dbg_last.y_bot + y < vid.height) memset(px + (dbg_last.y_bot + y) * vid.pitch, 0, vid.pitch);
+		}
+		dbg_last.drawn = 0;
+	}
 	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
 }
 
@@ -1526,6 +1543,11 @@ static void drawDebugOverlay(void) {
 	if (dst_h * 2 + margin * 2 > vid.height) return;      // no room; skip rather than overlap
 	dbgBlitStrip(dbg.top, margin, dst_w, dst_h);
 	dbgBlitStrip(dbg.bottom, vid.height - dst_h - margin, dst_w, dst_h);
+	// record for the OFF-transition scrub in PLAT_setDebugOverlay
+	dbg_last.y_top = margin;
+	dbg_last.y_bot = vid.height - dst_h - margin;
+	dbg_last.h = dst_h;
+	dbg_last.drawn = 1;
 }
 
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
