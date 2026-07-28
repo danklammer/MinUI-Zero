@@ -25,14 +25,18 @@ cd "$HOME"
 export MINARCH_FMIN=1000000
 export MINARCH_FMAX=1200000
 
-# MPLL overclock opt-in (CLAUDE.md overclock rule as amended 2026-07-28): table-top governor
-# requests are served by overclock.elf at this clock; below-top requests take the stock cpufreq
-# path (menu dips still cool down, crashes self-heal on the next cpufreq write). 1488 is what
-# upstream MinUI shipped as PERFORMANCE on this device; the ~25% lift covers BR2 (needs ~1475)
-# and just reaches THPS (~1496). While overclocked, scaling_cur_freq still READS 1200000 — the
-# HUD/telemetry clock column under-reports; judge by generation rate and p95.
-# THERMAL SOAK PENDING: not yet validated over a long session; remove this line to fall back.
-export MINARCH_OC_KHZ=1488000
+# NO overclock, and that is a MEASURED verdict, not the old blanket rule (which was amended
+# 2026-07-28 precisely to allow one here if it delivered). It does not deliver:
+#
+#   THPS p95 typical   1200 stock: 20.4ms   1488 governor-armed: 20.3ms   1488 PIN-VERIFIED
+#   (PLL register read mid-run) for the whole bench: 20.4ms — a +24% CPU clock moved it 0%.
+#   BR2 typical improved ~12% but its heavy scenes (the 480i ranking screen) stayed flat.
+#
+# PS1 here is NOT CPU-clock-bound: the wall is memory traffic (software GPU rasterization +
+# blit), the same rail the port recon found dominating power. The "needs ~1.5GHz" arithmetic
+# assumed work scales with clock; the direct A/B refuted it. The MINARCH_OC_KHZ mechanism
+# stays available (platform.c) for any future pak WITH a receipt; this pak earned none.
+# If PS1 quality is pursued further, the lever is the render/blit path, not the clock.
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.
 # The audio shim is applied to THIS process only, never exported to the helpers above.
