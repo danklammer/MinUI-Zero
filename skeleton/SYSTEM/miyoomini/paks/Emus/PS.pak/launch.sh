@@ -19,24 +19,25 @@ needs-swap || exit 1
 cd "$HOME"
 # Closed-loop governor clock bracket (kHz). OPPs: 400/600/800/1000/1100/1200 (measured).
 #
-# MEASURED for this system (2026-07-27 autotest, attract+demo incl. the BR2 480i ranking screen):
-# at the 1200 stock ceiling BR2 misses budget on 16.4% of frames (p95 18.5-20.5ms vs 16.7ms,
-# 106 underruns/4min) and THPS on 18.1% (p95 20.4-20.8ms). Holding rate needs ~1.5GHz.
+# MEASURED for this system (2026-07-28, generation-rate ground truth): THPS generates 59.5fps
+# against a 59.94 target and BR2 60.25 against 60 at this bracket — PS1 RUNS AT FULL SPEED here.
 export MINARCH_FMIN=1000000
 export MINARCH_FMAX=1200000
 
-# NO overclock, and that is a MEASURED verdict, not the old blanket rule (which was amended
-# 2026-07-28 precisely to allow one here if it delivered). It does not deliver:
+# NO overclock — and read this before "fixing" PS1 performance here at all. The full story:
 #
-#   THPS p95 typical   1200 stock: 20.4ms   1488 governor-armed: 20.3ms   1488 PIN-VERIFIED
-#   (PLL register read mid-run) for the whole bench: 20.4ms — a +24% CPU clock moved it 0%.
-#   BR2 typical improved ~12% but its heavy scenes (the 480i ranking screen) stayed flat.
+# A telemetry artifact painted 1-in-6 frames as over-budget (p95 ~20.4ms vs the 16.7ms budget),
+# which read as "needs ~1.5GHz". Six successive A/B knobs failed to move that number — including
+# an MPLL overclock PIN-VERIFIED at 1488MHz for a whole bench (+24% clock, 0% change), dithering
+# off, GPU/SPU threads, and CD read-ahead 1024. A number immune to EVERYTHING is not a workload;
+# it was the audio-pacing wall: work_us included ring-full blocking (83% of frames block — that
+# is what paces a full-speed game) and the ms-rounded pace subtraction skipped itself whenever
+# rounding pushed the estimate past the raw window. Fixed in minarch (us-precision, clamped);
+# generation rate is the ground truth that exposed it.
 #
-# PS1 here is NOT CPU-clock-bound: the wall is memory traffic (software GPU rasterization +
-# blit), the same rail the port recon found dominating power. The "needs ~1.5GHz" arithmetic
-# assumed work scales with clock; the direct A/B refuted it. The MINARCH_OC_KHZ mechanism
-# stays available (platform.c) for any future pak WITH a receipt; this pak earned none.
-# If PS1 quality is pursued further, the lever is the render/blit path, not the clock.
+# Real residue, the only one: BR2's heaviest scenes log ~0.4 underruns/sec (light crackle).
+# A future receipt could tune MINARCH_SND_RING_MS for this pak; nothing else here needs saving.
+# The MINARCH_OC_KHZ mechanism remains available (platform.c) for any pak WITH a real receipt.
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.
 # The audio shim is applied to THIS process only, never exported to the helpers above.

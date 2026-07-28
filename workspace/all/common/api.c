@@ -1216,6 +1216,7 @@ static struct SND_Context {
 	_Atomic long underruns;
 	_Atomic long overruns;
 	_Atomic long wait_ms;
+	_Atomic long wait_us; // same waits at us precision — see SND_Stats in api.h
 
 	int resample_diff;
 	SND_Frame resample_prev;
@@ -1532,8 +1533,9 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		// liveness under the audio lock). wait_ms keeps its meaning — wall ms blocked —
 		// which the governor's pure-work sensor and DRC consume as deltas.
 		uint32_t wait_t0 = 0;
+		uint64_t wait_t0_us = 0;
 		while (!snd_ff_nonblock && snd.frame_in==snd.frame_filled) {
-			if (!wait_t0) { wait_t0 = SDL_GetTicks(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
+			if (!wait_t0) { wait_t0 = SDL_GetTicks(); wait_t0_us = getMicroseconds(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
 			pthread_mutex_lock(&snd_space_mx);
 			unsigned g0 = snd_space_gen;
 			SDL_UnlockAudio();
@@ -1553,6 +1555,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		if (wait_t0) {
 			uint32_t waited = SDL_GetTicks() - wait_t0;
 			atomic_fetch_add_explicit(&snd.wait_ms, waited ? waited : 1, memory_order_relaxed);
+			atomic_fetch_add_explicit(&snd.wait_us, (long)(getMicroseconds() - wait_t0_us), memory_order_relaxed);
 		}
 		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
 		// frames and return so emulation never blocks on audio during fast-forward.
@@ -1588,6 +1591,7 @@ void SND_getStats(SND_Stats* out) {
 	out->underruns = atomic_load_explicit(&snd.underruns, memory_order_relaxed);
 	out->overruns = atomic_load_explicit(&snd.overruns, memory_order_relaxed);
 	out->wait_ms = atomic_load_explicit(&snd.wait_ms, memory_order_relaxed);
+	out->wait_us = atomic_load_explicit(&snd.wait_us, memory_order_relaxed);
 	uint64_t ring = atomic_load_explicit(&snd_ring_frames, memory_order_acquire);
 	out->frame_count = (int)(ring >> 32);
 	out->queue_frames = (int)(uint32_t)ring;
