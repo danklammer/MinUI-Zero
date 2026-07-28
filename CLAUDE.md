@@ -72,11 +72,21 @@ sat unlaunchable with their cores already shipping (caught 2026-07-27). The rule
   resistance. User-facing features are still weight — no box art, WiFi/NTP, Pak Store,
   RetroAchievements, ambient-LED, overlays. Authoritative direction + roadmap:
   **`docs/project-direction.md`** (it supersedes this file where they differ).
-- **Never overclock, never fabricate device values.** Real OPP steps / thermal-zone paths come
-  from the hardware (`tools/brick-recon.sh`); query the OPP table at runtime. **Never use
-  2.0 GHz** unless on-device evidence proves it's a stock (non-OC) operating point — default
-  the cap to the highest *verified-stock* OPP. Until measured, use the **clearly-labeled
-  assumptions** in `docs/thermal-governor-design.md` (safe by construction, not hidden guesses).
+- **Quality gameplay outranks the no-overclock rule** (amended 2026-07-28 by Dan; was "never
+  overclock"). The discipline that replaces the ban:
+  - *Root-cause first.* An overclock is never the first fix. The Brick BR2 saga is the template:
+    a 46% deficit that looked clock-shaped was a serialization bug (D48), fixed at stock.
+  - *OC must be earned by measurement*, never vibes: a telemetry receipt showing target rate is
+    unreachable at the verified-stock ceiling (e.g. MMP PS1, 2026-07-27 autotest: p95 needs
+    ~1.5 GHz vs the 1200 stock top; the ~25% gap is closeable, so OC is the honest tool there).
+  - *Stock stays the default* wherever stock holds rate. OC ships per-system (pak-scoped),
+    documented at the point of use, after an on-device thermal/stability soak.
+  - The governor's cap still defaults to the highest *verified-stock* OPP; on tg5040 do not use
+    2.0 GHz unless evidence proves it stock (nothing there needs it — see D48).
+- **Never fabricate device values.** Real OPP steps / thermal-zone paths come from the hardware
+  (`tools/brick-recon.sh`); query the OPP table at runtime. Until measured, use the
+  **clearly-labeled assumptions** in `docs/thermal-governor-design.md` (safe by construction,
+  not hidden guesses).
 
 ## Hardware (target platform = `tg5040`)
 - **SoC:** Allwinner A133P, quad-core Cortex-A53. MinUI's tg5040 code drives it via the
@@ -155,7 +165,8 @@ make shell PLATFORM=tg5040  # drop into the toolchain container
 `minarch.elf` / pak and relaunching — no reflashing per change.
 
 ## Direction & status — see `docs/project-direction.md` for the authoritative plan
-Five pillars: (1) thermals/battery, (2) perfect gameplay **without overclocking**, (3) frame
+Five pillars: (1) thermals/battery, (2) perfect gameplay **at the lowest clock that achieves it**
+(stock preferred; OC only with a receipt — see the amended rule above), (3) frame
 pacing / tear-free, (4) suspend/save reliability, (5) crash resistance. Staged roadmap +
 benchmark/acceptance gates live in `docs/project-direction.md`.
 
