@@ -6705,6 +6705,45 @@ int main(int argc , char* argv[]) {
 	} else {
 		SND_init(core.sample_rate, core.fps);
 	}
+
+	// MINARCH_RATE_PPM: rate-match the core to a panel whose true refresh is below the core's fps.
+	//
+	// Needed by the MMP's Strict present path. Strict makes the PANNER the clock: the producer waits
+	// for FBIOPAN_DISPLAY (~16.76ms, i.e. ~59.67Hz measured), which eliminates dropped frames but
+	// throttles the core below a 60.0988fps core's native rate. The core then produces audio slower
+	// than the DAC consumes it and underruns regardless of ring size (measured: 147/min at the
+	// default ring, still 127/min at 300ms — buffering cannot fix a production DEFICIT).
+	// A negative ppm lowers the resampler's assumed input rate, so each throttled frame yields
+	// proportionally more output samples and the DAC stays fed.
+	//
+	// Sets all three clocks the way DRC does — resampler, core pacer, present pacer. Setting only
+	// the resampler is a no-op on generation, because the core is paced, not audio-driven.
+	{
+		// Preferred form: declare the PANEL's true refresh once and derive the correction per core.
+		// A fixed ppm is wrong shared across systems — each core has its own native fps, so the same
+		// panel needs a different correction for each (NES 60.0988 vs GBC 59.7275 differ by ~6000ppm).
+		int ppm = 0;
+		const char* hz = getenv("MINARCH_PANEL_FPS");
+		if (hz && *hz && core.fps > 1.0) {
+			double panel = atof(hz);
+			if (panel > 1.0) ppm = (int)((panel / core.fps - 1.0) * 1000000.0 + 0.5);
+		}
+		const char* rp = getenv("MINARCH_RATE_PPM"); // explicit override; wins if both are set
+		if (rp && *rp) ppm = atoi(rp);
+		{
+			if (ppm < -50000) ppm = -50000; // >5% is a misconfiguration, not a panel
+			if (ppm >  50000) ppm =  50000;
+			if (ppm) {
+				double target_fps = core.fps * (1.0 + ppm / 1000000.0);
+				SND_setRateAdjustPPM(ppm);
+				core_pace_ppm = ppm;
+				GFX_setPacePeriodUs((uint32_t)(1000000.0 / target_fps));
+				LOG_info("rate match: %+dppm -> %.3f fps target (core %.4f)\n",
+				         ppm, target_fps, core.fps);
+			}
+		}
+	}
+
 	InitSettings(); // after we initialize audio
 	Menu_init();
 	if (use_ftv2) {
