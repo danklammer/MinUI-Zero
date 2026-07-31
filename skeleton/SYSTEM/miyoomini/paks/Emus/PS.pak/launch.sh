@@ -45,13 +45,18 @@ export MINARCH_FMAX=1200000
 #                                   dominates this metric and both arms sit inside the noise
 #   tg5040's 480i minimal-prescale fix ......... does not apply (that feeds the Crisp render-target
 #                                   path; MMP locks sharpness and PLAT_setSharpness is a no-op)
-# What is left: the device cannot both present every frame AND keep BR2's audio ring fed, so the
-# drop mechanism trades visible stutter for audible crackle — correctly.
+# CONCLUSION: the device cannot both present every frame AND keep BR2's audio ring fed. Every lever
+# tried either does nothing (clock) or just chooses WHICH deficit you perceive (drop off, depth-2).
+# The shipped config picks the least-bad point on that curve: occasional visible stutter, mostly
+# clean audio. This is a hardware limit on a dual Cortex-A7, not a missing optimization.
 #
-# STILL UNTESTED: frontend threading v2 at depth-2, which is exactly what fixed BR2 on the Brick
-# (held 60 where serial managed 51) and is the right shape for a dual-core part. An attempt via
-# ZERO_FTV2_DEPTH=2 did NOT engage here — the log shows the locked `minarch_threading = Off` being
-# enforced — so it has not actually been evaluated on this platform. That is the one real lead left.
+#   threading v2 depth-2 ....... TESTED 2026-07-31 and WORSE. (It had to be compiled in first: the
+#                                   makefile gates the engine to tg5040, so earlier ZERO_FTV2_DEPTH
+#                                   attempts were silent no-ops.) Once engaged it removes the
+#                                   stutter entirely — presentation-drop fires 0 times vs 43/13 —
+#                                   but only by not protecting audio: underruns 29-50/min serial ->
+#                                   117-270/min. Same trade as disabling the drop, so it relocates
+#                                   the deficit rather than removing it. Reverted; tg5040-only.
 #
 # METHOD NOTE for whoever picks this up: underruns-per-minute on BR2 is a NOISY metric (10x spread
 # across sub-windows of one run) because the attract loop shows different scenes. Only large effects
