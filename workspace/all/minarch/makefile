@@ -54,6 +54,12 @@ CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 ifeq ($(PLATFORM),tg5040)
 ZERO_FRONTEND_THREADING_V2 ?= 1
 endif
+# miyoomini: deliberately NOT compiled in. Evaluated on-device 2026-07-31 (BR2, alternating 120s
+# runs) and MEASURED WORSE: depth-2 does eliminate the stutter (presentation-drop engaged 0 times vs
+# 43/13 serial) but only by not protecting audio — underruns went 29-50/min serial to 117-270/min.
+# That is the same trade as disabling presentation-drop outright, just less extreme, so it moves the
+# deficit from the eyes to the ears rather than removing it. Carrying an unqualified threading path
+# on a dual-core armv7 part would only invite someone to switch it on.
 ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
 SOURCE += ../common/framering.c ../common/frontend_core.c
 CFLAGS += -DZERO_FRONTEND_THREADING_V2
