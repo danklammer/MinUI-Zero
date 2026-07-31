@@ -1457,7 +1457,19 @@ int main (int argc, char *argv[]) {
 		// charging screen: 30s of no input while on the charger
 		{
 			static uint32_t charge_idle_at = 0;
+			static uint32_t charge_last_tick = 0;
 			uint32_t charge_now = SDL_GetTicks();
+			// Restart the idle countdown across a sleep/resume. PWR_update above can sleep for
+			// minutes or hours, and SDL_GetTicks advances by the WHOLE sleep — so on wake the idle
+			// timer reads as long expired and the charge screen re-opens before the menu is ever
+			// drawn. The user then has to press a SECOND time to reach the menu, which is the
+			// opposite of this block's contract ("any button wakes back to the menu, and idling
+			// there returns here"). Reported on-device 2026-07-31 while charging.
+			// The wake press cannot serve as the reset: PAD_anyPressed is level-triggered and wake
+			// fires on key-UP, so by the time we get here nothing is held. A gap this large is only
+			// ever sleep — a normal menu iteration is tens of milliseconds.
+			if (charge_last_tick && charge_now - charge_last_tick > 5000) charge_idle_at = charge_now;
+			charge_last_tick = charge_now;
 			if (PAD_anyPressed() || !charge_idle_at) charge_idle_at = charge_now;
 			if (PWR_isCharging() && charge_now-charge_idle_at>=30000) {
 				ChargingScreen(screen);
