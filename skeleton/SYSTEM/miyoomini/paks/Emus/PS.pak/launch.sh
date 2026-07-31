@@ -39,14 +39,23 @@ export MINARCH_FMAX=1200000
 # (all MMP/BR2, 4 min or 2 min runs, generation pinned at 60.00 fps in every single arm):
 #   CPU clock      pin-verified 1488MHz MPLL ................ 0% change (memory-bound, not clock)
 #   presentation-drop OFF ..................... 64 -> 1581 underruns (it is PROTECTING; keep it)
-#   audio ring 150ms / 250ms ...... 58 / 28 underruns-per-min vs 15.9 at the default (both worse,
-#                                   matching the tg5040 receipt that a bigger ring is a net loss)
+#   audio ring 150ms / 250ms ...... 58 / 28 underruns-per-min vs a 15.9 baseline — INCONCLUSIVE, do
+#                                   not cite as a refutation: 120s sub-windows of the SAME baseline
+#                                   run span 29.0 / 14.5 / 3.0, so BR2's attract-loop scene mix
+#                                   dominates this metric and both arms sit inside the noise
 #   tg5040's 480i minimal-prescale fix ......... does not apply (that feeds the Crisp render-target
 #                                   path; MMP locks sharpness and PLAT_setSharpness is a no-op)
 # What is left: the device cannot both present every frame AND keep BR2's audio ring fed, so the
-# drop mechanism trades visible stutter for audible crackle — correctly. Locating the remaining
-# cost needs flip-wait in the telemetry CSV (not yet instrumented); until then this is an honest
-# alpha limitation, not a TODO anyone should re-chase with the knobs above.
+# drop mechanism trades visible stutter for audible crackle — correctly.
+#
+# STILL UNTESTED: frontend threading v2 at depth-2, which is exactly what fixed BR2 on the Brick
+# (held 60 where serial managed 51) and is the right shape for a dual-core part. An attempt via
+# ZERO_FTV2_DEPTH=2 did NOT engage here — the log shows the locked `minarch_threading = Off` being
+# enforced — so it has not actually been evaluated on this platform. That is the one real lead left.
+#
+# METHOD NOTE for whoever picks this up: underruns-per-minute on BR2 is a NOISY metric (10x spread
+# across sub-windows of one run) because the attract loop shows different scenes. Only large effects
+# are trustworthy on it; use equal-length runs and treat anything under ~3x as unproven.
 # The MINARCH_OC_KHZ mechanism remains available (platform.c) for any pak WITH a real receipt.
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.

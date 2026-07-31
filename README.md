@@ -162,8 +162,8 @@ Tony Hawk's both generate a measured 60 fps), but on the heaviest scenes the dev
 present every frame and keep the audio buffer fed, so the frontend drops presents to protect sound.
 You see occasional stutter instead of hearing crackle. This is a hardware limit and we have the
 receipts: a pin-verified 24% CPU overclock changed it by 0% (PlayStation here is memory-bound, not
-clock-bound), disabling the audio protection made underruns 25x worse, and larger audio buffers
-were worse still. Lighter systems are unaffected.
+clock-bound), and disabling the audio protection made underruns 25x worse. Lighter systems are
+unaffected.
 
 **Why there's no deep sleep here.** This is a hardware limit, not a missing feature. The Miyoo's
 vendor kernel is built without suspend support at all — `/sys/power/state` is empty on the device,
