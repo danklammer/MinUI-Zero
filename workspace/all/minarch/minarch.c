@@ -6513,7 +6513,14 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
-	presentation_drop_supported = exactMatch((char*)core.tag, "PS");
+	// Presentation-drop protects PS1 audio by SKIPPING presents (up to 6 in a row) whenever the
+	// audio ring dips below 50%. That trade was measured on tg5040, whose audio path is direct SDL.
+	// It is NOT automatically right elsewhere: the MMP routes through the vendor audioserver daemon
+	// plus an OSS shim, so ring occupancy means something different there, and a ring that reads low
+	// as a matter of course would drop presents continuously — visible chop, for audio the daemon
+	// was already buffering. ZERO_NO_PRESENT_DROP (presence-only, project convention) opts a pak out
+	// so the trade can be judged per platform instead of assumed.
+	presentation_drop_supported = exactMatch((char*)core.tag, "PS") && getenv("ZERO_NO_PRESENT_DROP")==NULL;
 	// The Lenient-vsync DRC revival can wind up against the 200ms audio ring and
 	// drive a healthy low-end core below realtime. Keep it diagnostic-only until
 	// its controller has an anti-windup contract and a cross-system device gauntlet.
