@@ -143,13 +143,14 @@ features they have. Treat it as a preview, back up your card, and expect rough e
 |---|---|---|
 | Closed-loop governor | Yes | Yes |
 | Emulator cores | 11 | 11 (same pinned versions) |
-| Systems with a ready folder | 6 (+10 dormant) | 6 (+10 dormant) |
+| Systems with a ready folder | 6 (+9 dormant) | 6 (+9 dormant) |
 | **Deep sleep** | **Yes** | **Not possible** — see below |
 | **Optimize CPU (undervolt)** | **Yes** | **No** |
 | Charging screen | Yes | Yes |
 | Measured battery/thermal figures | Yes, see above | **None yet** |
 
-None of the measured results in this README were taken on a Miyoo. The efficiency work that makes
+Apart from the PlayStation limitation described below, none of the measured results in this README
+were taken on a Miyoo. The efficiency work that makes
 Zero worthwhile on TrimUI hardware has not been quantified on this SoC, and an early port
 investigation found the CPU is a much smaller share of total power here — so do not assume the
 battery-life numbers transfer. They probably do not.
@@ -161,9 +162,10 @@ expect SD-backed swapping, not the TrimUI PS1 experience.
 Tony Hawk's both generate a measured 60 fps), but on the heaviest scenes the device cannot both
 present every frame and keep the audio buffer fed, so the frontend drops presents to protect sound.
 You see occasional stutter instead of hearing crackle. This is a hardware limit and we have the
-receipts: a pin-verified 24% CPU overclock changed it by 0% (PlayStation here is memory-bound, not
-clock-bound), and disabling the audio protection made underruns 25x worse. Lighter systems are
-unaffected.
+receipts: a pin-verified 24% CPU overclock changed it by 0%, so more clock cannot buy it, and
+disabling the audio protection made underruns 25x worse. (We can say the bottleneck is not CPU
+clock; we have not isolated which of memory, driver, audio daemon or I/O it actually is.) Lighter
+systems are unaffected.
 
 **Why there's no deep sleep here.** This is a hardware limit, not a missing feature. The Miyoo's
 vendor kernel is built without suspend support at all — `/sys/power/state` is empty on the device,

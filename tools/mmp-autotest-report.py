@@ -7,10 +7,12 @@ Framebuffers: MMP fbdev is 640x480 ARGB8888 with the panel mounted inverted, so 
 converted BGRA->RGB and rotated 180.
 
 Bench CSVs (telemetry.c): per-window p50/p95/p99/max work-us, over-budget count, clock, temp.
-The OC question is answered by p95_work vs the frame budget at the pinned ceiling:
-  needed_clock = ceil_khz * p95 / budget.
-If that lands within a plausible MPLL overclock (~1500-1600 MHz), OC could close the gap;
-if it is far beyond, OC cannot save the title and the cap stands.
+
+This deliberately does NOT infer a "required clock" from p95. It used to print
+  needed_clock = ceil_khz * p95 / budget
+which assumes frame work scales inversely with clock. On MMP PS1 that inference said ~1.5GHz was
+needed; a pin-verified 1200-vs-1488 A/B then moved p95 by 0%. The inference was wrong, and printing
+it invites re-deriving a debunked receipt. Judge a clock question with a matched clock A/B.
 """
 import csv, os, sys
 
@@ -70,11 +72,7 @@ def analyze_csv(path, budget=BUDGET_DEFAULT):
         print(f"    clock: min {min(khz) // 1000} / max {max(khz) // 1000} MHz"
               + (f"   temp max {max(temps)}C" if temps else ""))
     print(f"    p95 work: typical {p95_typ}us, heavy {p95_hot}us (budget {budget}us)")
-    if khz and max(khz) > 0:
-        ceil = max(khz)
-        need_typ = ceil * p95_typ / budget / 1000.0
-        need_hot = ceil * p95_hot / budget / 1000.0
-        print(f"    clock needed to hold rate: typical ~{need_typ:.0f} MHz, heavy scenes ~{need_hot:.0f} MHz")
+    # No "clock needed" line by design — see the module docstring.
 
 def main():
     art = sys.argv[1] if len(sys.argv) > 1 else '.'

@@ -76,9 +76,12 @@ sat unlaunchable with their cores already shipping (caught 2026-07-27). The rule
   overclock"). The discipline that replaces the ban:
   - *Root-cause first.* An overclock is never the first fix. The Brick BR2 saga is the template:
     a 46% deficit that looked clock-shaped was a serialization bug (D48), fixed at stock.
-  - *OC must be earned by measurement*, never vibes: a telemetry receipt showing target rate is
-    unreachable at the verified-stock ceiling (e.g. MMP PS1, 2026-07-27 autotest: p95 needs
-    ~1.5 GHz vs the 1200 stock top; the ~25% gap is closeable, so OC is the honest tool there).
+  - *OC must be earned by measurement*, never vibes: a receipt showing the target rate is genuinely
+    unreachable at the verified-stock ceiling. The receipt must be a MATCHED CLOCK A/B (run the
+    workload at both clocks and compare), never a clock inferred by scaling a work metric — MMP PS1
+    was briefly cited here as the worked example on exactly that inference ("p95 needs ~1.5 GHz")
+    and a pin-verified 1200-vs-1488 A/B then moved it 0%. There is currently NO earned OC anywhere
+    in this fork; treat any p95-derived "needs N MHz" as a hypothesis, not a receipt.
   - *Stock stays the default* wherever stock holds rate. OC ships per-system (pak-scoped),
     documented at the point of use, after an on-device thermal/stability soak.
   - The governor's cap still defaults to the highest *verified-stock* OPP; on tg5040 do not use

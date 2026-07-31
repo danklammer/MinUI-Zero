@@ -1216,7 +1216,7 @@ static struct SND_Context {
 	_Atomic long underruns;
 	_Atomic long overruns;
 	_Atomic long wait_ms;
-	_Atomic long wait_us; // same waits at us precision — see SND_Stats in api.h
+	_Atomic uint32_t wait_us; // same waits, us precision, WRAP-SAFE — see SND_Stats in api.h
 
 	int resample_diff;
 	SND_Frame resample_prev;
@@ -1555,7 +1555,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		if (wait_t0) {
 			uint32_t waited = SDL_GetTicks() - wait_t0;
 			atomic_fetch_add_explicit(&snd.wait_ms, waited ? waited : 1, memory_order_relaxed);
-			atomic_fetch_add_explicit(&snd.wait_us, (long)(getMicroseconds() - wait_t0_us), memory_order_relaxed);
+			atomic_fetch_add_explicit(&snd.wait_us, (uint32_t)(getMicroseconds() - wait_t0_us), memory_order_relaxed);
 		}
 		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
 		// frames and return so emulation never blocks on audio during fast-forward.

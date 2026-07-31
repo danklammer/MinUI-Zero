@@ -11,7 +11,8 @@ CPU clock that still holds its target frame rate**, so the device stays cool and
 This is *not* a feature fork — it's the opposite. NextUI is the feature-rich/GL fork; this
 one is the distilled, runs-cold one.
 
-## Scope — **tg5040 only** (TrimUI Brick + TrimUI Smart Pro)
+## Scope — **`tg5040` is the fork**; `miyoomini` is an experimental alpha
+(See CLAUDE.md for the authoritative version of this section and the parity rules.)
 This is a single-platform fork. The whole thesis is A133P-specific (cpufreq/OPP/thermal/PMIC),
 and we only test on the Brick, so we **support `tg5040` exclusively**. Like NextUI, the other
 MinUI platforms are frozen under `workspace/_unmaintained/` — present for history/upstream
@@ -31,7 +32,8 @@ Don't re-add other devices without doing that device's full bring-up (recon + pe
   resistance. User-facing features are still weight — no box art, WiFi/NTP, Pak Store,
   RetroAchievements, ambient-LED, overlays. Authoritative direction + roadmap:
   **`docs/project-direction.md`** (it supersedes this file where they differ).
-- **Never overclock, never fabricate device values.** Real OPP steps / thermal-zone paths come
+- **Never fabricate device values.** (The blanket never-overclock rule was amended
+  2026-07-28 — see CLAUDE.md; OC needs a matched-clock-A/B receipt, and none exists today.) Real OPP steps / thermal-zone paths come
   from the hardware (`tools/brick-recon.sh`); query the OPP table at runtime. **Never use
   2.0 GHz** unless on-device evidence proves it's a stock (non-OC) operating point — default
   the cap to the highest *verified-stock* OPP. Until measured, use the **clearly-labeled

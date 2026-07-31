@@ -220,14 +220,19 @@ void SND_pause(void);  // close the audio device during sleep (thread fully stop
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
 void SND_quit(void);
 // audio-health telemetry (benchmark): cumulative counters + current ring fill.
-// wait_us: microsecond-precision total of audio-backpressure blocking (the ring-full waits in
-// SND_batchSamples). wait_ms survives for existing consumers, but per-frame DELTAS of a
+// wait_us: microsecond total of audio-backpressure blocking (the ring-full waits in
+// SND_batchSamples), as a WRAP-SAFE uint32. It is deliberately not `long`: on armv7 (miyoomini)
+// long is 32-bit, so a signed microsecond accumulator saturates after ~2147s of CUMULATIVE
+// blocking — reachable in a couple of hours on PS1, where ~83%% of frames block — and the
+// subtraction across that point yields garbage. Unsigned wraparound subtraction is exact for any
+// true delta below 2^32us (~71min), which a per-frame delta never approaches.
+// wait_ms survives for existing consumers, but per-frame DELTAS of a
 // ms-rounded counter cannot be safely subtracted from a us work window: when rounding pushed
 // the delta past the raw window the subtraction skipped, and a fully-paced frame recorded its
 // whole ~20ms as "work" — which read as 1-in-6 frames over budget on PS1 games that were
 // actually running at full speed (MMP, 2026-07-28: six A/B knobs including a pin-verified
 // +24%% clock all "failed" to move a number that was never work).
-typedef struct SND_Stats { long underruns; long overruns; long wait_ms; long wait_us; int queue_frames; int frame_count; } SND_Stats;
+typedef struct SND_Stats { long underruns; long overruns; long wait_ms; uint32_t wait_us; int queue_frames; int frame_count; } SND_Stats;
 void SND_getStats(SND_Stats* out);
 int SND_isActive(void); // audio device open and pacing (present-skip is only legal while true)
 

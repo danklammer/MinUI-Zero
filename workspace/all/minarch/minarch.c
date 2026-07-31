@@ -7158,11 +7158,12 @@ int main(int argc , char* argv[]) {
 				// generating at full rate, and the phantom sent an evening chasing clock/dither/
 				// thread/readahead fixes that all "failed" to move a number that was never work
 				// (2026-07-28; the pin-verified +24% clock A/B is what exposed it).
-				static long prev_wait_us = 0;
+				static uint32_t prev_wait_us = 0;
 				SND_Stats as; SND_getStats(&as);
-				long pace_us = as.wait_us - prev_wait_us; prev_wait_us = as.wait_us;
+				// UNSIGNED subtraction: exact across the uint32 wrap (see SND_Stats in api.h).
+				uint32_t pace_us = as.wait_us - prev_wait_us; prev_wait_us = as.wait_us;
 				uint32_t raw_us  = GFX_getFrameWorkUs();
-				uint32_t work_us = (pace_us > 0) ? (((uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : 0) : raw_us;
+				uint32_t work_us = (pace_us < raw_us) ? raw_us - pace_us : 0;
 				tlm_frame(work_us);
 				tlm_audio(as.queue_frames, as.underruns, as.overruns);
 			}
