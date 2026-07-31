@@ -143,7 +143,7 @@ features they have. Treat it as a preview, back up your card, and expect rough e
 |---|---|---|
 | Closed-loop governor | Yes | Yes |
 | Emulator cores | 11 | 11 (same pinned versions) |
-| Systems with a ready folder | 6 (+8 dormant) | 6 (+5 dormant) |
+| Systems with a ready folder | 6 (+10 dormant) | 6 (+10 dormant) |
 | **Deep sleep** | **Yes** | **Not possible** — see below |
 | **Optimize CPU (undervolt)** | **Yes** | **No** |
 | Charging screen | Yes | Yes |
@@ -156,6 +156,14 @@ battery-life numbers transfer. They probably do not.
 
 Its PlayStation support leans on a 128 MB swapfile because the device has ~100 MB of usable RAM;
 expect SD-backed swapping, not the TrimUI PS1 experience.
+
+**Known limitation: heavy PlayStation titles stutter.** Games run at full speed (Bloody Roar II and
+Tony Hawk's both generate a measured 60 fps), but on the heaviest scenes the device cannot both
+present every frame and keep the audio buffer fed, so the frontend drops presents to protect sound.
+You see occasional stutter instead of hearing crackle. This is a hardware limit and we have the
+receipts: a pin-verified 24% CPU overclock changed it by 0% (PlayStation here is memory-bound, not
+clock-bound), disabling the audio protection made underruns 25x worse, and larger audio buffers
+were worse still. Lighter systems are unaffected.
 
 **Why there's no deep sleep here.** This is a hardware limit, not a missing feature. The Miyoo's
 vendor kernel is built without suspend support at all — `/sys/power/state` is empty on the device,
