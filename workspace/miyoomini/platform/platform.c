@@ -1453,25 +1453,24 @@ void PLAT_setCPUMaxFreq(int khz) {
 // panel — anything drawn directly into the framebuffer instead would come out upside-down.
 #define DBG_KEY 0xF81F
 static struct { uint16_t *top, *bottom; int w, h, stride; } dbg = {0};
-// Where the strips were last painted in the render surface, so the OFF transition can scrub them.
-// Needed because the strips are drawn into vid.screen, and the game only rewrites its own inner
-// rect each frame: the slice of a strip overlapping the letterbox/pillarbox bands (painted once,
-// never per-frame) would otherwise stay on screen forever after the HUD is toggled off — reported
-// on-device as "half the HUD left under the game" (2026-07-28).
-static struct { int y_top, y_bot, h; int drawn; } dbg_last = {0};
+static int dbg_was_on = 0; // for the OFF-transition repaint below
 
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
-	// OFF transition: scrub the bands the strips last occupied. Full-width rows, black — the only
-	// pixels outside the game's per-frame rect are the black borders, so black is always correct
-	// there, and the in-rect part is repainted by the very next game frame anyway.
-	if (!top && dbg_last.drawn && vid.screen && vid.screen->pixels) {
-		uint8_t* px = (uint8_t*)vid.screen->pixels;
-		for (int y = 0; y < dbg_last.h; y++) {
-			if (dbg_last.y_top + y < vid.height) memset(px + (dbg_last.y_top + y) * vid.pitch, 0, vid.pitch);
-			if (dbg_last.y_bot + y < vid.height) memset(px + (dbg_last.y_bot + y) * vid.pitch, 0, vid.pitch);
-		}
-		dbg_last.drawn = 0;
-	}
+	// HUD OFF transition: repaint everything, via the same primitive geometry changes use.
+	//
+	// The residue is NOT in the render surface (the game rewrites its own rect there every frame).
+	// It is in the FRAMEBUFFER's letterbox/pillarbox bands — see PLAT_clearAll's own comment: "the
+	// present blit only covers the game rect, so whatever sits in the letterbox/pillarbox region
+	// persists". The HUD strips span the full width, so the part overhanging the game rect lands in
+	// those bands and nothing ever overwrites it.
+	//
+	// PLAT_clearAll is the right hammer because it zeroes the WHOLE fb mmap (every page, not just
+	// the one about to be flipped) plus the backbuffer. A previous attempt scrubbed only the render
+	// surface, only once, and only on the frame the toggle happened: wrong surface, and a present
+	// that gets skipped or a page that is not the current one both defeat it. Reported twice
+	// on-device before this landed (2026-07-28, 2026-07-31).
+	if (!top && dbg_was_on) PLAT_clearAll();
+	dbg_was_on = (top != NULL);
 	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
 }
 
@@ -1543,11 +1542,6 @@ static void drawDebugOverlay(void) {
 	if (dst_h * 2 + margin * 2 > vid.height) return;      // no room; skip rather than overlap
 	dbgBlitStrip(dbg.top, margin, dst_w, dst_h);
 	dbgBlitStrip(dbg.bottom, vid.height - dst_h - margin, dst_w, dst_h);
-	// record for the OFF-transition scrub in PLAT_setDebugOverlay
-	dbg_last.y_top = margin;
-	dbg_last.y_bot = vid.height - dst_h - margin;
-	dbg_last.h = dst_h;
-	dbg_last.drawn = 1;
 }
 
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
