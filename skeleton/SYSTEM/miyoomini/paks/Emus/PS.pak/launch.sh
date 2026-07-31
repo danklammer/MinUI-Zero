@@ -35,8 +35,18 @@ export MINARCH_FMAX=1200000
 # rounding pushed the estimate past the raw window. Fixed in minarch (us-precision, clamped);
 # generation rate is the ground truth that exposed it.
 #
-# Real residue, the only one: BR2's heaviest scenes log ~0.4 underruns/sec (light crackle).
-# A future receipt could tune MINARCH_SND_RING_MS for this pak; nothing else here needs saving.
+# BR2 chop is REAL and is a device limit, not a missing tweak. Everything obvious is refuted
+# (all MMP/BR2, 4 min or 2 min runs, generation pinned at 60.00 fps in every single arm):
+#   CPU clock      pin-verified 1488MHz MPLL ................ 0% change (memory-bound, not clock)
+#   presentation-drop OFF ..................... 64 -> 1581 underruns (it is PROTECTING; keep it)
+#   audio ring 150ms / 250ms ...... 58 / 28 underruns-per-min vs 15.9 at the default (both worse,
+#                                   matching the tg5040 receipt that a bigger ring is a net loss)
+#   tg5040's 480i minimal-prescale fix ......... does not apply (that feeds the Crisp render-target
+#                                   path; MMP locks sharpness and PLAT_setSharpness is a no-op)
+# What is left: the device cannot both present every frame AND keep BR2's audio ring fed, so the
+# drop mechanism trades visible stutter for audible crackle — correctly. Locating the remaining
+# cost needs flip-wait in the telemetry CSV (not yet instrumented); until then this is an honest
+# alpha limitation, not a TODO anyone should re-chase with the knobs above.
 # The MINARCH_OC_KHZ mechanism remains available (platform.c) for any pak WITH a real receipt.
 
 # Runs at nice 0 (no `nice`), matching tg5040. See docs/DECISIONS.md D61.

@@ -6520,6 +6520,12 @@ int main(int argc , char* argv[]) {
 	// as a matter of course would drop presents continuously — visible chop, for audio the daemon
 	// was already buffering. ZERO_NO_PRESENT_DROP (presence-only, project convention) opts a pak out
 	// so the trade can be judged per platform instead of assumed.
+	//
+	// MEASURED on MMP/BR2, 4 min each (2026-07-31): drop ON = 64 audio underruns; drop OFF = 1581,
+	// with generation pinned at 60.00 fps either way. So the drop is EARNING its keep there and must
+	// stay on — the visible chop is a symptom (the device cannot both present every frame and keep
+	// BR2's audio ring fed), not evidence the mechanism is misfiring. Do not disable it to chase
+	// smoothness; that trades a stutter you notice for crackle you notice more.
 	presentation_drop_supported = exactMatch((char*)core.tag, "PS") && getenv("ZERO_NO_PRESENT_DROP")==NULL;
 	// The Lenient-vsync DRC revival can wind up against the 200ms audio ring and
 	// drive a healthy low-end core below realtime. Keep it diagnostic-only until
