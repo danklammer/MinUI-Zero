@@ -38,6 +38,20 @@ export BIOS_PATH="$SDCARD_PATH/Bios"
 export SAVES_PATH="$SDCARD_PATH/Saves"
 export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
 export CORES_PATH="$SYSTEM_PATH/cores"
+
+# This panel's TRUE refresh, MEASURED 2026-07-31: 5400 flips in 91s = 59.341Hz, counted from the
+# platform's own flip counter under Strict (where the panner is the clock, so flips/sec IS the
+# panel). It is NOT 60, and it is not the ~59.67 implied by the FBIOPAN_DISPLAY block comment.
+#
+# minarch derives a per-core correction from this, because the same panel needs a different one for
+# every system: NES 60.0988 -> -12625ppm, GBC 59.7275 -> -6470ppm, PS1 60.0 -> -10982ppm. Declaring
+# a single ppm here instead would be wrong for all but one system.
+#
+# Paired with Strict present (system.cfg). Strict stops frames being dropped; this stops the
+# resulting throttle from starving audio. MEASURED on Contra: Lenient = 1.4% frames dropped / 0
+# underruns; Strict alone = 0% dropped / 147 underruns per min; both together = 0% / 0.
+# Re-measure with tools/../panel-hz.sh if the panel or driver ever changes.
+export MINARCH_PANEL_FPS=59.341
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"
