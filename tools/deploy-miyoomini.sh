@@ -37,8 +37,11 @@ DST=/mnt/SDCARD/.system/miyoomini
 
 # Refuse to deploy a build older than the working tree. A deploy that silently ships yesterday's
 # binaries is worse than no deploy: the device test then certifies the wrong code.
-NEWER=$(find workspace skeleton -newer ./build/latest.txt \
-	\( -name '*.c' -o -name '*.h' -o -name 'launch.sh' \) -print -quit 2>/dev/null || true)
+# Watch EVERY input that can change the payload, not just sources: cfgs, makefiles, core patches and
+# shipped assets all alter what gets built, and an earlier version of this gate watched only
+# .c/.h/launch.sh so a changed default.cfg could deploy from a stale build.
+NEWER=$(find workspace skeleton -newer ./build/latest.txt -type f \
+	! -path '*/cores/src/*' ! -name '*.o' ! -name '*.d' -print -quit 2>/dev/null || true)
 [ -z "$NEWER" ] || {
 	echo "STALE BUILD: $NEWER is newer than build/latest.txt"
 	echo "rebuild first: make PLATFORMS=miyoomini miyoomini"
@@ -90,6 +93,22 @@ while IFS= read -r f; do
 	# ETXTBSY. mv within one filesystem is atomic, so a yanked battery leaves old or new, never half.
 	$SSH "$TARGET" "mkdir -p '$DST/$(dirname "$f")' && cat > '$DST/$f.new' && chmod 755 '$DST/$f.new' && mv -f '$DST/$f.new' '$DST/$f'" < "$SRC/$f"
 done < "$CHANGED"
+
+# Remove remote files the build no longer produces. Without this the "sync" is upload-only, so a
+# deleted pak or renamed core lingers on the card and quietly contaminates the next device test
+# (exactly the stale-pairing class that cost an evening on the MINARCH_PRELOAD audio break).
+# Scoped strictly to $DST, which is OUR payload directory — user data lives elsewhere on the card.
+cut -d' ' -f3- "$WORK/local.txt" | sed 's/^ *//' | sort > "$WORK/local-paths.txt"
+cut -d' ' -f3- "$WORK/remote.txt" 2>/dev/null | sed 's/^ *//' | sort > "$WORK/remote-paths.txt"
+STALE=$(comm -13 "$WORK/local-paths.txt" "$WORK/remote-paths.txt")
+if [ -n "$STALE" ]; then
+	echo "--- removing stale ---"
+	echo "$STALE" | while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		echo "  xx $f"
+		$SSH "$TARGET" "rm -f '$DST/$f'"
+	done
+fi
 
 # Flush to the card before anything can power-cycle it. FAT32 + a yanked battery loses the write.
 $SSH "$TARGET" "sync"
