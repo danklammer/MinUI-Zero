@@ -7,6 +7,17 @@
 #include <string.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <time.h>
+
+// The gap we care about is wall time the thread did NOT run, which includes any interval the whole
+// system spent suspended — CLOCK_MONOTONIC excludes suspend, CLOCK_BOOTTIME does not. Fall back
+// where the kernel headers predate it; on this SoC deep sleep is impossible anyway, so the
+// difference only matters if that ever changes.
+#ifdef CLOCK_BOOTTIME
+#define ZERO_GAP_CLOCK CLOCK_BOOTTIME
+#else
+#define ZERO_GAP_CLOCK CLOCK_MONOTONIC
+#endif
 #include <linux/input.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
@@ -227,14 +238,28 @@ static int getInt(const char* path) {
     }
 	return i;
 }
+// Publish via temp-file-plus-rename, and pass a mode.
+//
+// Two real defects here. O_CREAT with NO mode argument takes the permission bits from whatever
+// happens to sit in the varargs slot — undefined, and this creates /tmp/battery on a tmpfs that is
+// empty at every boot, so it is the common path rather than a corner. And O_TRUNC published a
+// ZERO-LENGTH file for the duration of the write: a reader landing in that window parses nothing
+// and keeps its zero, which downstream means exactly PWR_LOW_CHARGE. rename(2) is atomic, so a
+// reader now sees either the whole previous value or the whole new one, never a half-written file.
 static void putInt(const char* path, int i) {
-	int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC);
+	char tmp[128];
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return;
+
+	int fd = open(tmp, O_CREAT | O_WRONLY | O_TRUNC, 0644);
 	if (fd<0) return;
-	
+
 	char buffer[16];
 	int len = snprintf(buffer, sizeof(buffer), "%d", i);
-	if (len>0) write(fd, buffer, len);
+	int ok = (len>0 && write(fd, buffer, len)==len);
 	close(fd);
+
+	if (ok) { if (rename(tmp, path)!=0) unlink(tmp); }
+	else unlink(tmp);
 }
 static int isCharging(void) {
 	if (has_axp) {
@@ -255,17 +280,46 @@ static void initADC(void) {
 	sar_fd = open("/dev/sar", O_WRONLY);
 	ioctl(sar_fd, IOCTL_SAR_INIT, NULL);
 }
-static void checkADC(void) {
-	int was_charging = is_charging;
-	is_charging = isCharging();
+// Missed ticks, not a big delta, are what justifies abandoning the ease. Three periods of the 5s
+// cadence: long enough that ordinary scheduling jitter never trips it.
+#define ADC_GAP_SECONDS 15
 
+static void checkADC(void) {
 	int current_charge = getADCValue();
 	// Unknown (-1) is not a level. Leave /tmp/battery holding whatever was last known rather than
 	// publishing a guess; the eased value is only ever moved by a real reading.
+	//
+	// This returns BEFORE is_charging is updated, deliberately. Updating it first meant a failed
+	// read landing on the same tick as an unplug consumed the transition: is_charging went to 0,
+	// we returned, and the next call compared 0 against 0 with the edge already gone.
 	if (current_charge < 0) return;
 
+	int was_charging = is_charging;
+	is_charging = isCharging();
+
+	// The ease filters READING noise — mostly for the base Mini, where getADCValue converts a raw
+	// SAR voltage that sags under load; the Plus reads an AXP fuel gauge already filtered in
+	// hardware. What it cannot do is close a real GAP: it moves +/-1 per call at a 5s cadence, so
+	// 12 points a minute. That tracks genuine charge or discharge and is hopeless at anything more.
+	//
+	// So snap when this thread actually MISSED TICKS, which is the thing that opens a gap — not
+	// when the delta merely looks large. An earlier version of this fix snapped on any jump of 5+
+	// points, and that was wrong: the display quantises to 100/80/60/40/20/10, and a 5-point swing
+	// straddles EVERY one of those boundaries (59/64 flips the icon between the 60 and 80 buckets).
+	// Being under the bucket width buys nothing when the readings sit near a boundary, so on the
+	// base Mini's noisy path that would have traded a slow indicator for a flickering one.
+	// Detecting the discontinuity directly costs the same and cannot flicker: with ticks arriving
+	// on time we never snap at all, and the noise filter is left exactly as it was.
+	struct timespec ts;
+	static time_t last_tick = 0;
+	int missed_ticks = 0;
+	if (clock_gettime(ZERO_GAP_CLOCK, &ts) == 0) {
+		if (last_tick && ts.tv_sec - last_tick >= ADC_GAP_SECONDS) missed_ticks = 1;
+		last_tick = ts.tv_sec;
+	}
+
 	static int first_run = 1;
-	if (first_run || (was_charging && !is_charging)) {
+	if (first_run || missed_ticks || (was_charging && !is_charging)) {
 		first_run = 0;
 		eased_charge = current_charge;
 	}

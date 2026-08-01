@@ -2250,15 +2250,26 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	
 	static int was_charging = -1;
 	if (was_charging==-1) was_charging = pwr.is_charging;
+	// The drawn LEVEL, tracked separately from the charging flag. PWR_monitorBattery refreshes
+	// pwr.charge on its own thread every 5s, but nothing here ever noticed: only a change of the
+	// charging flag marked the UI dirty, so a level that moved while the menu sat idle was updated
+	// in memory and never repainted. Reported on-device (2026-08-01): charged to 100%, indicator
+	// kept showing low until something unrelated forced a redraw.
+	static int was_charge = -1;
+	if (was_charge==-1) was_charge = pwr.charge;
 
 	uint32_t now = SDL_GetTicks();
 	if (was_charging || PAD_anyPressed() || last_input_at==0) last_input_at = now;
-	
+
 	#define CHARGE_DELAY 1000
 	if (dirty || now-checked_charge_at>=CHARGE_DELAY) {
 		int is_charging = pwr.is_charging;
 		if (was_charging!=is_charging) {
 			was_charging = is_charging;
+			dirty = 1;
+		}
+		if (was_charge!=pwr.charge) {
+			was_charge = pwr.charge;
 			dirty = 1;
 		}
 		checked_charge_at = now;
