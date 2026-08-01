@@ -1372,9 +1372,19 @@ static void SND_selectResampler(void) { // plat_sound_select_resampler
 	}
 }
 static void SND_updateAdjustedRate(void) {
-	int64_t adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
-	if (atomic_load(&snd_ff_nonblock))
-		adjusted = adjusted * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	int64_t adjusted;
+	if (atomic_load(&snd_ff_nonblock)) {
+		// Fast-forward: the MEASURED multiplier REPLACES the static ratio, it does not compound
+		// with it. FFAudioRate_measure is fed the UNADJUSTED snd.sample_rate_in, so rate_q16 is
+		// actual-production / nominal and already embodies any static slowdown. Multiplying by
+		// (1 + ppm) again oversupplied the DAC by the ratio — ~1.28%, about 613 surplus frames/sec
+		// at 48kHz — filling the ring until snd_ff_nonblock discarded chunks, which is exactly the
+		// arbitrary dropping the FF resampler exists to avoid. (Adversarial review, 2026-08-01.)
+		adjusted = (int64_t)snd.sample_rate_in * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	}
+	else {
+		adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
+	}
 	if (adjusted < 1) adjusted = 1;
 	snd.sample_rate_in_adj = (int)adjusted;
 	SND_selectResampler();

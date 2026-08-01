@@ -194,6 +194,7 @@ static volatile uint32_t core_work_n = 0;
 static volatile int core_pace_ppm = 0; // DRC rate adjustment, honored by the core pacer
 static int zero_static_rate_ppm = 0;   // non-zero when a static panel match owns the clocks
 
+
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
 static pthread_cond_t	core_rq; // not sure this is required
@@ -315,6 +316,95 @@ static struct Core {
 	
 	// retro_audio_buffer_status_callback_t audio_buffer_status;
 } core;
+
+// Parse an integer env var STRICTLY. Returns 0 and leaves *out untouched unless the whole string
+// is a valid number in range. atoi() was the previous form and is unusable here: it maps "banana"
+// to 0, which silently CANCELLED a good panel-derived correction, and its behaviour on out-of-range
+// input is undefined so a later clamp cannot be trusted (adversarial review, 2026-08-01).
+static int zero_envInt(const char* name, long lo, long hi, long* out) {
+	const char* v = getenv(name);
+	if (!v || !*v) return 0;
+	errno = 0;
+	char* end = NULL;
+	long n = strtol(v, &end, 10);
+	if (errno == ERANGE || end == v || (end && *end)) {
+		LOG_info("%s: ignoring malformed value \"%s\"\n", name, v);
+		return 0;
+	}
+	if (n < lo || n > hi) {
+		LOG_info("%s: ignoring out-of-range value %ld (allowed %ld..%ld)\n", name, n, lo, hi);
+		return 0;
+	}
+	*out = n;
+	return 1;
+}
+
+// Apply (or clear) the static panel rate match for the CURRENT core.fps.
+//
+// Idempotent and re-entrant by design: cores change timing at runtime (SET_SYSTEM_AV_INFO on a
+// region switch), and a correction derived for 60.0988fps is badly wrong for 50fps content. The
+// previous version computed once at startup and never revisited, so an NTSC->PAL switch kept
+// -12609ppm (running PAL at ~49.4fps) and PAL->NTSC left no correction at all under Strict.
+//
+// MAIN THREAD ONLY. Under threading v2 the environment callback runs on CORE; call this from the
+// ordered-command drain on MAIN instead, after every timing field has been published.
+static void Zero_applyRateMatch(void) {
+	int ppm = 0;
+
+	// Automatic path: declare the PANEL rate, derive the per-core correction. The same panel needs
+	// a different correction for every system (NES 60.0988 vs GBC 59.7275 differ by ~6000ppm), so a
+	// single shared ppm would be wrong for all but one.
+	const char* hz = getenv("MINARCH_PANEL_FPS");
+	if (hz && *hz && core.fps > 1.0) {
+		double panel = atof(hz);
+		// GATE BOTH SIDES. This corrects a ~60Hz core down to a slightly slower ~60Hz panel and
+		// must never touch anything else:
+		//  * PAL/50Hz content would compute +186000ppm and run 5%% FAST. Reachable in cores we ship
+		//    (fceumm, picodrive, snes9x2005_plus, pcsx_rearmed all report PAL timing).
+		//  * panel >= core.fps means there is no surplus frame, so there is nothing to correct.
+		//  * an absurd panel value must not be "corrected" into a clamp. MINARCH_PANEL_FPS=30 with
+		//    a 60fps core used to clamp to -50000ppm and target 57fps while the panel actually
+		//    delivered 30 — the resampler compensated 5%% against a 50%% shortfall and underran
+		//    continuously. Requiring the panel within 5%% of the core makes the clamp unreachable
+		//    from this path.
+		int core_ok  = (core.fps >= 58.0 && core.fps <= 61.0);
+		int panel_ok = (panel > 1.0 && panel < core.fps && panel >= core.fps * 0.95);
+		if (core_ok && panel_ok)
+			ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
+		else if (panel > 1.0)
+			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below it)\n",
+			         core.fps, panel);
+	}
+
+	// Explicit override for deliberate experiments. Deliberately NOT fps-gated — but it IS
+	// validated, which is what makes it safe: the hazard was never that a developer could ask for
+	// something unwise, it was that a typo silently became 0 and cancelled a good correction.
+	long explicit_ppm = 0;
+	if (zero_envInt("MINARCH_RATE_PPM", -50000, 50000, &explicit_ppm)) {
+		ppm = (int)explicit_ppm;
+		if (core.fps < 58.0 || core.fps > 61.0)
+			LOG_warn("MINARCH_RATE_PPM applied to %.4f fps content — outside the 58-61 window this feature is designed for\n",
+			         core.fps);
+	}
+
+	if (ppm == zero_static_rate_ppm) return; // nothing changed; do not disturb the clocks
+
+	zero_static_rate_ppm = ppm; // publish BEFORE writing clocks: DRC reads this to stand down
+	if (ppm) {
+		double target_fps = core.fps * (1.0 + ppm / 1000000.0);
+		SND_setRateAdjustPPM(ppm);
+		core_pace_ppm = ppm;
+		GFX_setPacePeriodUs((uint32_t)(1000000.0 / target_fps));
+		LOG_info("rate match: %+dppm -> %.3f fps target (core %.4f)\n", ppm, target_fps, core.fps);
+	}
+	else { // correction no longer applies (e.g. switched to PAL) — hand the clocks back to stock
+		SND_setRateAdjustPPM(0);
+		core_pace_ppm = 0;
+		GFX_setPacePeriodUs(0);
+		LOG_info("rate match: cleared (core %.4f fps)\n", core.fps);
+	}
+}
+
 
 static void Core_flushMemory(void);
 static void Core_setController(unsigned device);
@@ -3105,6 +3195,10 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 			core.sample_rate = info->timing.sample_rate;
 			core.aspect_ratio = a;
 			renderer.dst_p = 0; // force selectScaler() on the next frame (see :2837)
+			// Timing moved, so the rate match derived from the OLD fps is now wrong (a region
+			// switch is the real case). Serial path only — under threading v2 this callback runs
+			// on CORE, and the drain below re-applies it on MAIN after the barrier instead.
+			Zero_applyRateMatch();
 		}
 		break;
 	}
@@ -6246,8 +6340,13 @@ static void limitFF(void) {
 	static uint64_t ff_frame_time = 0;
 	static uint64_t last_time = 0;
 	static int last_max_speed = -1;
-	if (last_max_speed!=max_ff_speed) {
+	// Recompute on a core.fps change too, not only on a cap change. The cached period is derived
+	// from core.fps, so a runtime NTSC<->PAL switch made a 4x cap deliver 4.81x (or 3.33x the other
+	// way) until the user happened to change the cap.
+	static double last_fps = 0.0;
+	if (last_max_speed!=max_ff_speed || last_fps!=core.fps) {
 		last_max_speed = max_ff_speed;
+		last_fps = core.fps;
 		// Fractional speeds (D60): budget from the multiplier table, not index+1. Index 0
 		// ("None" = uncapped) never paces — guard the divide (the use below is also gated
 		// on max_ff_speed, but a stale inf/0 budget must never be computed).
@@ -6445,7 +6544,10 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 		float v; memcpy(&v, &bits, 4);
 			switch (op) {
 				case ZERO_CMD_ASPECT: core.aspect_ratio = v; renderer.dst_p = 0; break;
-				case ZERO_CMD_FPS:    core.fps = v;          renderer.dst_p = 0; break;
+				// Re-apply after the fps field lands. This drain runs on MAIN and fr_drain()
+				// invokes it before publishing barrier_applied, so CORE cannot resume producing
+				// under the new timing until the clocks and DRC ownership are settled.
+				case ZERO_CMD_FPS:    core.fps = v; renderer.dst_p = 0; Zero_applyRateMatch(); break;
 				case ZERO_CMD_SRATE:  core.sample_rate = v;  break;
 				case ZERO_CMD_RUMBLE: VIB_setStrength((int)v); break;
 			}
@@ -6708,56 +6810,7 @@ int main(int argc , char* argv[]) {
 		SND_init(core.sample_rate, core.fps);
 	}
 
-	// MINARCH_RATE_PPM: rate-match the core to a panel whose true refresh is below the core's fps.
-	//
-	// Needed by the MMP's Strict present path. Strict makes the PANNER the clock: the producer waits
-	// for FBIOPAN_DISPLAY (~16.76ms, i.e. ~59.67Hz measured), which eliminates dropped frames but
-	// throttles the core below a 60.0988fps core's native rate. The core then produces audio slower
-	// than the DAC consumes it and underruns regardless of ring size (measured: 147/min at the
-	// default ring, still 127/min at 300ms — buffering cannot fix a production DEFICIT).
-	// A negative ppm lowers the resampler's assumed input rate, so each throttled frame yields
-	// proportionally more output samples and the DAC stays fed.
-	//
-	// Sets all three clocks the way DRC does — resampler, core pacer, present pacer. Setting only
-	// the resampler is a no-op on generation, because the core is paced, not audio-driven.
-	{
-		// Preferred form: declare the PANEL's true refresh once and derive the correction per core.
-		// A fixed ppm is wrong shared across systems — each core has its own native fps, so the same
-		// panel needs a different correction for each (NES 60.0988 vs GBC 59.7275 differ by ~6000ppm).
-		int ppm = 0;
-		const char* hz = getenv("MINARCH_PANEL_FPS");
-		if (hz && *hz && core.fps > 1.0) {
-			double panel = atof(hz);
-			// GATE HARD. The automatic path corrects a ~60Hz core down to a slightly slower ~60Hz
-			// panel; it must never touch anything else.
-			//  * PAL/50Hz content would otherwise compute +186000ppm (clamped to +50000) and run
-			//    5% FAST. This is reachable in cores we ship — fceumm, picodrive, snes9x2005_plus
-			//    and pcsx_rearmed all report PAL timing for PAL content.
-			//  * panel >= core.fps means there is no surplus frame to remove, so there is nothing
-			//    to correct and speeding the core up is never what this feature is for.
-			// MINARCH_RATE_PPM below stays unrestricted for deliberate experiments.
-			if (panel > 1.0 && core.fps >= 58.0 && core.fps <= 61.0 && panel < core.fps)
-				ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
-			else if (panel > 1.0)
-				LOG_info("rate match: skipped (core %.4f fps outside the 58-61 window, or panel %.3f not slower)\n",
-				         core.fps, panel);
-		}
-		const char* rp = getenv("MINARCH_RATE_PPM"); // explicit override; wins if both are set
-		if (rp && *rp) ppm = atoi(rp);
-		{
-			if (ppm < -50000) ppm = -50000; // >5% is a misconfiguration, not a panel
-			if (ppm >  50000) ppm =  50000;
-			if (ppm) {
-				double target_fps = core.fps * (1.0 + ppm / 1000000.0);
-				SND_setRateAdjustPPM(ppm);
-				core_pace_ppm = ppm;
-				GFX_setPacePeriodUs((uint32_t)(1000000.0 / target_fps));
-				zero_static_rate_ppm = ppm; // locks DRC out; see drc_supported
-				LOG_info("rate match: %+dppm -> %.3f fps target (core %.4f)\n",
-				         ppm, target_fps, core.fps);
-			}
-		}
-	}
+	Zero_applyRateMatch(); // static panel rate match; re-applied whenever core.fps changes
 
 	InitSettings(); // after we initialize audio
 	Menu_init();
@@ -7047,7 +7100,13 @@ int main(int argc , char* argv[]) {
 					// Max FF Speed index 0 = "None" (uncapped): there is no finite target, so
 					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
-					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
+					// The governor must budget against the rate we actually TARGET. With a static
+					// panel match the core intentionally settles below core.fps, and budgeting from
+					// the native rate makes the predictive sink reject a sink that would genuinely
+					// fit — holding an OPP higher than necessary and persisting it via gov-memory,
+					// which is precisely backwards for this fork.
+					double gov_native_fps = core.fps * (1.0 + zero_static_rate_ppm / 1000000.0);
+					double gov_target_fps = gov_native_fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
 					double gov_gen = cpu_double;
 #ifdef ZERO_FRONTEND_THREADING_V2
 					if (zero_ftv2_depth2) gov_gen = fps_double;
@@ -7276,7 +7335,10 @@ int main(int argc , char* argv[]) {
 			drc_was_fast_forward = fast_forward;
 			if (!drc_supported) drc_restore_ppm = -1;
 			if (!drc_eligible) {
-				if (drc_ppm) { // revert cleanly while ineligible; FF restores it below
+				// ...but never write over a static panel match. If a timing change installs one
+				// while DRC happens to own a non-zero ppm, this cleanup would zero all three
+				// clocks and silently erase the correction that was just applied.
+				if (drc_ppm && !zero_static_rate_ppm) { // revert cleanly while ineligible
 					drc_ppm = 0;
 					if (!drc_threaded) {
 						SND_setRateAdjustPPM(0);
