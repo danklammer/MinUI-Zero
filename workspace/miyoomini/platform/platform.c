@@ -524,6 +524,9 @@ static int mmp_reclaimMMA(void) {
 static void mmpFlipStart(void); // async flip thread; defined with the flip machinery below
 static void mmpFlipStop(void);
 
+static pthread_mutex_t flip_mx  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  flip_req = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  flip_ack = PTHREAD_COND_INITIALIZER;
 // PAGE OWNERSHIP. Every page is in exactly one of these states, and the producer may only draw
 // into a page owned by NONE of them.
 //
@@ -547,6 +550,29 @@ static unsigned flip_dropped = 0; // frames COALESCED AWAY: a newer frame replac
                                   // not assumed — dropped frames are invisible to an fps counter.
 static int flip_active  = -1;  // page currently being panned, -1 = none
 static int flip_run     = 0;
+static int flip_scrub   = 0;   // pages still owed a zero (see fb_scrubPages)
+
+// Zero the framebuffer WITHOUT writing into the page the panel is scanning.
+//
+// PLAT_clearAll used to memset the whole mmap unconditionally. That is the SAME defect the ownership
+// state machine above exists to prevent, arriving through a different door: it blacked out the front
+// page mid-scan, could erase a pending frame so a black one got presented, and could race a pan in
+// flight. It is not a rare path either — GFX_clearAll has five callers in shared minarch code
+// (geometry change, menu open, HUD toggle-off), so it fires mid-game on every system.
+//
+// A mutex cannot fix it, because the panel keeps scanning the front page regardless of what any
+// thread holds. So: clear the pages nobody owns right now, and DEFER the rest to PLAT_flip, which
+// zeroes each page it has exclusively reserved until the debt is paid. Every page becomes
+// producer-owned within a few frames, so the clear completes without ever touching live scanout.
+// Caller holds flip_mx, or has stopped the panner.
+static void fb_scrubPages(void) {
+	if (!vid.fbmmap || vid.fbmmap == MAP_FAILED) return;
+	for (int i = 0; i < vid.pages; i++) {
+		if (i == flip_front || i == flip_active || i == flip_pending) continue;
+		memset((uint8_t*)vid.fbmmap + (size_t)i * vid.page_bytes, 0, vid.page_bytes);
+	}
+	flip_scrub = vid.pages; // each page still gets zeroed once it is safely ours
+}
 
 SDL_Surface* PLAT_initVideo(void) {
 	is_plus = exists("/customer/app/axp_test");
@@ -772,7 +798,12 @@ void PLAT_clearAll(void) {
 	// game rect, so whatever sits in the letterbox/pillarbox region persists across a geometry
 	// change (previous system's frame, or anything else that wrote to fb0). initVideo zeroes the
 	// fb once at startup; this keeps it clean when the geometry changes mid-session.
-	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.fbsize);
+	if (flip_run) {
+		pthread_mutex_lock(&flip_mx);
+		fb_scrubPages();
+		pthread_mutex_unlock(&flip_mx);
+	}
+	else fb_scrubPages();
 
 	PLAT_clearVideo(vid.screen); // clear backbuffer
 	vid.cleared = 1; // defer clearing frontbuffer until offscreen
@@ -817,7 +848,7 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int pitch) {
 	// Geometry change => the region the present blit covers changes too. Anything outside the new
 	// game rect (letterbox/pillarbox) would otherwise keep showing the PREVIOUS content, which is
 	// the glitchy band. Clear BOTH framebuffer pages here; per-frame clearing would be wasteful.
-	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.fbsize);
+	fb_scrubPages(); // panner is joined above, but the PANEL is still scanning flip_front
 
 	vid.direct = 0; // see PLAT_initVideo: the frontend always gets the RGB565 surface
 	vid.width = w;
@@ -955,9 +986,6 @@ static void drawDebugOverlay(void); // defined with the rest of the HUD code bel
 // The pending slot is 1-deep and COALESCING — a newer frame replaces an unpanned older one rather
 // than queueing, so we never build latency.
 static pthread_t       flip_pt;
-static pthread_mutex_t flip_mx  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  flip_req = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t  flip_ack = PTHREAD_COND_INITIALIZER;
 
 static void* flip_thread(void* arg) {
 	(void)arg;
@@ -1023,6 +1051,9 @@ static void mmpFlipStop(void) {
 	pthread_mutex_lock(&flip_mx);
 	flip_run = 0;
 	pthread_cond_broadcast(&flip_req);
+	pthread_cond_broadcast(&flip_ack); // also release a producer blocked waiting for a free page:
+	                                   // unreachable today (every caller runs on the producer's own
+	                                   // thread) but free insurance if that ever stops being true
 	pthread_mutex_unlock(&flip_mx);
 	pthread_join(flip_pt, NULL);        // join, don't cancel: a cancelled thread can die holding
 	flip_pending = flip_active = -1;    // flip_mx and every later lock would deadlock
@@ -1038,6 +1069,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	drawDebugOverlay();
 
 	int back = (vid.pages > 1) ? (vid.page + 1) % vid.pages : 0;
+	int scrub = 0;
 
 	if (flip_run) {
 		// RESERVE A PAGE BEFORE DRAWING. Everything about ownership has to be decided here: once
@@ -1073,8 +1105,15 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 			pthread_cond_wait(&flip_ack, &flip_mx);
 		}
 		flip_rendering = back; // owned by us until the blit completes
+		if (flip_scrub > 0) { flip_scrub--; scrub = 1; }
 		pthread_mutex_unlock(&flip_mx);
 	}
+	else if (flip_scrub > 0) { flip_scrub--; scrub = 1; } // 2-page fallback: we own `back` too
+
+	// Deferred clear from fb_scrubPages, paid on a page we exclusively own. The present blit only
+	// covers the game rect, so without this the letterbox/pillarbox bands keep the previous
+	// content — which is the glitchy band, and the HUD strip residue.
+	if (scrub) memset((uint8_t*)vid.fbmmap + (size_t)back * vid.page_bytes, 0, vid.page_bytes);
 
 	fb_bindPage(back);
 	GFX_BlitSurfaceExec(vid.screen, NULL, vid.video, NULL, 2,0,0); // rotate=2 (180, panel is mounted inverted), nowait=0
@@ -1088,11 +1127,19 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 		if ((flip_frames % 600) == 0)
 			LOG_info("fb: flip %u handed, %u coalesced away (%.1f%%)\n", flip_frames, flip_dropped,
 				100.0 * flip_dropped / flip_frames);
+		// Lenient may have taken a FREE page while an older pending frame was still queued; that
+		// older frame is replaced here and never scanned out, so it must be counted. Dropping this
+		// made the coalescing figure read low exactly when it mattered. Strict never trips it: it
+		// requires flip_pending < 0 before reserving, and there is only one producer.
+		if (flip_pending >= 0) flip_dropped++;
 		flip_pending = back;              // coalescing: a newer frame replaces an unpanned one
 		pthread_cond_signal(&flip_req);
 		pthread_mutex_unlock(&flip_mx);
 	}
-	else fb_pan(back);                    // 2-page fallback: pan inline as before
+	// 2-page fallback: pan inline. On FAILURE the panel is still scanning the old page, so leaving
+	// vid.page alone is what keeps the next frame off it — advancing regardless made the next
+	// `(vid.page + 1) % 2` land on the real front page and blit into live scanout.
+	else if (fb_pan(back) != 0) back = vid.page;
 
 	vid.page = back;
 
