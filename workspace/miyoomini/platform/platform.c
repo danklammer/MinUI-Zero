@@ -461,12 +461,15 @@ static void fb_bindPage(int page) {
 	vid.video->pixels   = (uint8_t*)vid.fbmmap + (size_t)page * vid.page_bytes;
 	surf_setPa(vid.video, vid.finfo.smem_start + (size_t)page * vid.page_bytes);
 }
-static void fb_pan(int page) {
+// Returns 0 on success. The status MATTERS: page ownership may only advance on a pan that actually
+// happened. Promoting active->front after a failed ioctl would hand the producer a page the panel
+// is still scanning.
+static int fb_pan(int page) {
 	vid.vinfo.yoffset = vid.vinfo.yres * page;
 	// activate is REQUIRED: without it some fbdev drivers accept the ioctl but never latch the
 	// new yoffset, so the panel keeps scanning the old page while memory updates invisibly.
 	vid.vinfo.activate = FB_ACTIVATE_VBL;
-	ioctl(vid.fdfb, FBIOPAN_DISPLAY, &vid.vinfo);
+	return ioctl(vid.fdfb, FBIOPAN_DISPLAY, &vid.vinfo);
 }
 
 #define MODES_PATH "/sys/class/graphics/fb0/modes"
@@ -520,6 +523,30 @@ static int mmp_reclaimMMA(void) {
 
 static void mmpFlipStart(void); // async flip thread; defined with the flip machinery below
 static void mmpFlipStop(void);
+
+// PAGE OWNERSHIP. Every page is in exactly one of these states, and the producer may only draw
+// into a page owned by NONE of them.
+//
+// The bug this replaces: only `pending` and `active` existed, so the page being SCANNED OUT was
+// tracked by nothing. With front=0/active=1/pending=2 the producer computed back=(2+1)%3=0, the
+// guard tested only active and pending, and MI_GFX blitted a whole frame into the page on screen.
+// Reproducible tearing, invisible to every counter (nothing was dropped). The old comment on the
+// guard even claimed "never draw into the page that is on screen" — it could not, because no
+// variable held that page.
+//
+// Why three pages still suffice: front + active + pending may legitimately own all three, and the
+// correct response is for the producer to BLOCK before binding a page, not to find a fourth. The
+// panner can always make progress without the producer, so this cannot deadlock.
+static int flip_front   = 0;   // page currently scanned out by the panel — NEVER writable
+static int flip_rendering = -1; // page reserved by the producer for an in-flight MI_GFX blit
+static int flip_pending = -1;  // page awaiting pan, -1 = none
+static unsigned flip_frames  = 0; // frames handed to the flip thread
+static unsigned flip_dropped = 0; // frames COALESCED AWAY: a newer frame replaced an unpanned
+                                  // one, so the older frame was never scanned out. This is the
+                                  // cost of not blocking the producer, and it must be measured,
+                                  // not assumed — dropped frames are invisible to an fps counter.
+static int flip_active  = -1;  // page currently being panned, -1 = none
+static int flip_run     = 0;
 
 SDL_Surface* PLAT_initVideo(void) {
 	is_plus = exists("/customer/app/axp_test");
@@ -650,7 +677,14 @@ SDL_Surface* PLAT_initVideo(void) {
 		return NULL;
 	}
 
-	vid.page = 1;
+	// Front page comes from what the DRIVER reports, never from an assumption. This was `vid.page
+	// = 1` while the hardware reported yoffset 0, i.e. the code disagreed with the panel about
+	// which page was on screen before a single frame was drawn.
+	vid.page = 0;
+	flip_front = (vid.vinfo.yres && vid.vinfo.yoffset % vid.vinfo.yres == 0)
+		? (int)(vid.vinfo.yoffset / vid.vinfo.yres) : 0;
+	if (flip_front < 0 || flip_front >= vid.pages) flip_front = 0;
+	flip_active = flip_pending = flip_rendering = -1;
 	// The frontend renders RGB565 (FIXED_DEPTH) everywhere. Upstream could return vid.video
 	// because SDL 1.2's SDL_SetVideoMode produced a 16bpp surface and the custom SDL converted
 	// on flip. Our vid.video now wraps the RAW 32bpp framebuffer, so returning it is a depth
@@ -924,14 +958,6 @@ static pthread_t       flip_pt;
 static pthread_mutex_t flip_mx  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  flip_req = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t  flip_ack = PTHREAD_COND_INITIALIZER;
-static int flip_pending = -1;  // page awaiting pan, -1 = none
-static unsigned flip_frames  = 0; // frames handed to the flip thread
-static unsigned flip_dropped = 0; // frames COALESCED AWAY: a newer frame replaced an unpanned
-                                  // one, so the older frame was never scanned out. This is the
-                                  // cost of not blocking the producer, and it must be measured,
-                                  // not assumed — dropped frames are invisible to an fps counter.
-static int flip_active  = -1;  // page currently being panned, -1 = none
-static int flip_run     = 0;
 
 static void* flip_thread(void* arg) {
 	(void)arg;
@@ -944,14 +970,39 @@ static void* flip_thread(void* arg) {
 		pthread_cond_broadcast(&flip_ack); // the pending slot is free now — release a STRICT producer
 		pthread_mutex_unlock(&flip_mx);
 
-		fb_pan(flip_active);            // the ~16.76ms block, off the render thread
+		int rc = fb_pan(flip_active);   // the ~16.76ms block, off the render thread
 
 		pthread_mutex_lock(&flip_mx);
+		// RETIREMENT. On success the panned page becomes the front and the OLD front is released;
+		// this is the transition that was missing. On failure nothing moves: the panel is still
+		// scanning the old front, so releasing it would be exactly the bug we are fixing.
+		//
+		// NOTE (unproven, deliberately isolated here): this treats "pan returned" as the retirement
+		// point. Evidence is strong — FB_ACTIVATE_VBL requests vblank activation, the pan blocks one
+		// measured refresh period (16.76ms), and a tight pan loop runs at exactly panel rate — but
+		// SigmaStar documents no completion contract, so it is not proven. The conservative
+		// alternative (an FBIO_WAITFORVSYNC after each pan) costs a SECOND refresh period per frame
+		// and would halve presentation to ~29.8Hz, which is the failure this thread exists to avoid.
+		// Confining the assumption to this one place makes it replaceable if a probe disproves it.
+		if (rc == 0) flip_front = flip_active;
+		else LOG_info("fb: pan failed for page %d — page ownership unchanged\n", flip_active);
 		flip_active = -1;
-		pthread_cond_broadcast(&flip_ack); // a producer may be waiting for this page to free
+		pthread_cond_broadcast(&flip_ack); // a producer may be waiting for a page to free
 	}
 	pthread_mutex_unlock(&flip_mx);
 	return NULL;
+}
+
+// Pick a page owned by nobody. Caller must hold flip_mx. Returns -1 if all pages are owned.
+// The hint only affects fairness; the ownership predicate is what is authoritative. Selecting by
+// `(vid.page + 1) % pages` was the original sin — it walks into the front page by construction.
+static int flip_freePage(int hint) {
+	for (int i = 0; i < vid.pages; i++) {
+		int p = (hint + i) % vid.pages;
+		if (p != flip_front && p != flip_active && p != flip_pending && p != flip_rendering)
+			return p;
+	}
+	return -1;
 }
 
 static void mmpFlipStart(void) {
@@ -989,11 +1040,39 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 	int back = (vid.pages > 1) ? (vid.page + 1) % vid.pages : 0;
 
 	if (flip_run) {
-		// Never draw into the page that is on screen or about to be. With 3 pages one is always
-		// free, so this normally does not wait at all.
+		// RESERVE A PAGE BEFORE DRAWING. Everything about ownership has to be decided here: once
+		// MI_GFX starts writing, waiting is too late to protect the destination. The old code
+		// checked only active/pending (never the front), then did the Strict wait AFTER the blit.
 		pthread_mutex_lock(&flip_mx);
-		while (flip_run && (back == flip_active || back == flip_pending))
+		for (;;) {
+			if (!flip_run) break;
+			if (flip_block) {
+				// STRICT: never lose a frame. Require the pending slot empty, then take any page
+				// nobody owns. If front+active+pending hold all three, block — that is correct
+				// backpressure, and the panner can always drain without us.
+				if (flip_pending < 0) {
+					int p = flip_freePage(back);
+					if (p >= 0) { back = p; break; }
+				}
+			}
+			else {
+				// LENIENT: newest frame wins. Prefer a free page; if there is none, atomically
+				// STEAL the pending one under the mutex. Stealing must happen here, not after the
+				// blit: the panner either took it first (making it active, so freePage skips it)
+				// or we withdrew it cleanly. Replacing flip_pending after drawing recreates the
+				// original race.
+				int p = flip_freePage(back);
+				if (p >= 0) { back = p; break; }
+				if (flip_pending >= 0) {
+					back = flip_pending;
+					flip_pending = -1;
+					flip_dropped++; // this frame will never be scanned out
+					break;
+				}
+			}
 			pthread_cond_wait(&flip_ack, &flip_mx);
+		}
+		flip_rendering = back; // owned by us until the blit completes
 		pthread_mutex_unlock(&flip_mx);
 	}
 
@@ -1002,12 +1081,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int sync) {
 
 	if (flip_run) {
 		pthread_mutex_lock(&flip_mx);
-		// STRICT: wait until the panner has taken the previous frame, so nothing is ever
-		// coalesced away. This reintroduces the vsync stall by design — that is what the user
-		// asked for by choosing it.
-		while (flip_block && flip_run && flip_pending >= 0)
-			pthread_cond_wait(&flip_ack, &flip_mx);
-		if (flip_pending >= 0) flip_dropped++; // overwriting an unpanned frame = that frame is lost
+		flip_rendering = -1; // blit fenced (nowait=0), page is now a complete frame
 		flip_frames++;
 		// Report periodically rather than at teardown: a SIGTERM/crash exit never reaches
 		// PLAT_quitVideo, which is exactly when we most want this number.
