@@ -39,30 +39,28 @@ export SAVES_PATH="$SDCARD_PATH/Saves"
 export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
 export CORES_PATH="$SYSTEM_PATH/cores"
 
-# This panel's TRUE refresh: 59.6720 Hz. MEASURED DIRECTLY 2026-08-01 with tools/panelprobe.c —
-# page-flip in a tight loop, no emulator/audio/scaler, timed in-process with CLOCK_MONOTONIC.
-# FBIOPAN_DISPLAY blocks until the pan latches, so the loop rate IS the panel. Three runs agreed to
-# four decimals (16.7583 / 16.7584 / 16.7583 ms), jitter 16.61-16.90ms.
+# DISABLED pending a real measurement. READ THIS BEFORE RE-ENABLING.
 #
-# Two earlier attempts to measure this THROUGH A RUNNING GAME were both wrong, in different ways,
-# and the history is worth keeping so nobody repeats it:
-#   * 59.341 — read the platform's flip counter over SSH. That counter only logs every 600 flips, so
-#     endpoints quantise and network latency lands in the wall-clock term. 5400 flips over "90s" is
-#     60.000Hz and over "91s" is 59.341Hz: the method could not tell those apart.
-#   * 60.382 / 58.058 — same counter, timed on-device (latency fixed), but under Strict the flip rate
-#     is min(core generation, panel rate), so heavy scenes measure the CORE. Two runs of the same
-#     thing disagreed by 4%.
-# Measuring the panel through a game is confounded by construction. Use the probe.
+# The 59.341 figure below is NOT established. It came from 5400 flips over a "91s" window, but the
+# platform logs that counter only every 600 flips, so both endpoints quantise to 600-flip
+# boundaries and the wall clock came from whole-second SSH round trips. 5400/90 = 60.000 and
+# 5400/91 = 59.341: the measurement cannot tell those apart. (Codex review, 2026-08-01.)
 #
-# Note the driver comment in platform.c said ~16.76ms all along, i.e. 59.67Hz. It was right.
+# The A/B results are still real — Strict removes the dropped frames, and this correction removed
+# the underruns Strict causes — but they do NOT validate the CONSTANT. Over-correcting is silent:
+# the audio never starves, every game just runs slightly slow forever. Under-correcting eventually
+# underruns. So this ships OFF until the panel is timed properly: a monotonic clock read ON DEVICE
+# alongside the counter, across several 600-flip milestones.
 #
 # minarch derives a per-core correction from this, because the same panel needs a different one for
-# every system: NES/SNES -7102ppm, GB/GBC/GBA -929, Genesis -4184, PS1 -4471.
+# every system: NES 60.0988 -> -12625ppm, GBC 59.7275 -> -6470ppm, PS1 60.0 -> -10982ppm. Declaring
+# a single ppm here instead would be wrong for all but one system.
 #
-# Paired with Strict present (system.cfg). Strict stops the surplus frame being dropped; this stops
-# the resulting throttle from starving audio. Re-measure with the probe if the panel or driver
-# changes.
-export MINARCH_PANEL_FPS=59.6720
+# Paired with Strict present (system.cfg). Strict stops frames being dropped; this stops the
+# resulting throttle from starving audio. MEASURED on Contra: Lenient = 1.4% frames dropped / 0
+# underruns; Strict alone = 0% dropped / 147 underruns per min; both together = 0% / 0.
+# Re-measure with tools/../panel-hz.sh if the panel or driver ever changes.
+# export MINARCH_PANEL_FPS=59.341   # re-enable only with a measured value
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"
