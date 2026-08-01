@@ -1297,7 +1297,17 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	}
 	else *is_charging = getInt("/sys/devices/gpiochip0/gpio/gpio59/value");
 
+	// /tmp/battery is keymon's noise-eased level. It lives on TMPFS, so between a boot and keymon's
+	// first valid ADC read the file simply does not exist — and getInt returns 0 for a file it
+	// cannot open, which lands in the bucket below as exactly 10: PWR_LOW_CHARGE. Absent data was
+	// therefore indistinguishable from a dying cell, right down to raising the low-battery warning.
+	// Fall back to the fuel gauge we already read accurately a few lines up rather than inventing a
+	// number; only claim 10% when something actually says 10%.
 	int i = getInt("/tmp/battery"); // 0-100?
+	if (i <= 0) {
+		int direct = PLAT_getChargePercent(); // AXP reg 0xB9, same source batmon uses
+		if (direct >= 0) i = direct;
+	}
 
 	// worry less about battery and more about the game you're playing
 	     if (i>80) *charge = 100;
