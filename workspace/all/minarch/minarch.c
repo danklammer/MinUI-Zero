@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #include <time.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <zlib.h>
@@ -191,6 +192,7 @@ static int should_run_core = 1; // used by threaded video
 static volatile uint32_t core_work_ring[CORE_WORK_RING];
 static volatile uint32_t core_work_n = 0;
 static volatile int core_pace_ppm = 0; // DRC rate adjustment, honored by the core pacer
+static int zero_static_rate_ppm = 0;   // non-zero when a static panel match owns the clocks
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
@@ -6726,7 +6728,19 @@ int main(int argc , char* argv[]) {
 		const char* hz = getenv("MINARCH_PANEL_FPS");
 		if (hz && *hz && core.fps > 1.0) {
 			double panel = atof(hz);
-			if (panel > 1.0) ppm = (int)((panel / core.fps - 1.0) * 1000000.0 + 0.5);
+			// GATE HARD. The automatic path corrects a ~60Hz core down to a slightly slower ~60Hz
+			// panel; it must never touch anything else.
+			//  * PAL/50Hz content would otherwise compute +186000ppm (clamped to +50000) and run
+			//    5% FAST. This is reachable in cores we ship — fceumm, picodrive, snes9x2005_plus
+			//    and pcsx_rearmed all report PAL timing for PAL content.
+			//  * panel >= core.fps means there is no surplus frame to remove, so there is nothing
+			//    to correct and speeding the core up is never what this feature is for.
+			// MINARCH_RATE_PPM below stays unrestricted for deliberate experiments.
+			if (panel > 1.0 && core.fps >= 58.0 && core.fps <= 61.0 && panel < core.fps)
+				ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
+			else if (panel > 1.0)
+				LOG_info("rate match: skipped (core %.4f fps outside the 58-61 window, or panel %.3f not slower)\n",
+				         core.fps, panel);
 		}
 		const char* rp = getenv("MINARCH_RATE_PPM"); // explicit override; wins if both are set
 		if (rp && *rp) ppm = atoi(rp);
@@ -6738,6 +6752,7 @@ int main(int argc , char* argv[]) {
 				SND_setRateAdjustPPM(ppm);
 				core_pace_ppm = ppm;
 				GFX_setPacePeriodUs((uint32_t)(1000000.0 / target_fps));
+				zero_static_rate_ppm = ppm; // locks DRC out; see drc_supported
 				LOG_info("rate match: %+dppm -> %.3f fps target (core %.4f)\n",
 				         ppm, target_fps, core.fps);
 			}
@@ -7237,6 +7252,11 @@ int main(int argc , char* argv[]) {
 			}
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_supported = (!drc_disabled && drc_system_allowed
+				// A static panel match owns all three clocks. DRC only ever climbs (clamped >= 0)
+				// because it was built for a panel FASTER than the core, so it cannot express a
+				// slow-panel correction — and it would zero the baseline the moment it went
+				// ineligible or fast-forwarded. Mutually exclusive by construction.
+				&& !zero_static_rate_ppm
 				&& core.fps >= 58.0 && core.fps <= 61.0
 				// Lenient still presents through the same vsynced SDL renderer on tg5040;
 				// only explicit VSYNC_OFF removes the panel clock DRC synchronizes to.
