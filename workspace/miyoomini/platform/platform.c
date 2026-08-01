@@ -841,8 +841,32 @@ void PLAT_setEffect(int effect) {
 	next_effect = effect;
 }
 
+// FBIO_WAITFORVSYNC is not in every libc's linux/fb.h, but the driver implements it (probed on
+// device 2026-08-01: SUPPORTED, 120 waits = 59.6873Hz). Define it if the header did not.
+#ifndef FBIO_WAITFORVSYNC
+#define FBIO_WAITFORVSYNC _IOW('F', 0x20, __u32)
+#endif
+
 void PLAT_vsync(int remaining) {
-	if (remaining>0) SDL_Delay(remaining);
+	if (remaining > 0) {
+		SDL_Delay(remaining);
+		return;
+	}
+	// Out of budget. This used to RETURN IMMEDIATELY, which means a late frame was presented with
+	// no raster synchronisation at all — the one moment sync matters most. MyMinUI, on this exact
+	// panel, blocks on the vsync interrupt here instead, and this driver supports it.
+	//
+	// It matters more than it looks: the closer the producer runs to the panel's own rate, the more
+	// often "already late" happens, so pacing the core toward the panel makes a no-op vsync fire
+	// constantly rather than rarely. (Suspected cause of the tearing reported 2026-08-01 when the
+	// rate match was enabled; the rate match itself is currently off.)
+	//
+	// Bounded by construction: the ioctl returns at the next vblank, ~16.76ms worst case. If the
+	// driver ever refuses it, fall through rather than spin.
+	if (vid.fdfb >= 0) {
+		__u32 arg = 0;
+		ioctl(vid.fdfb, FBIO_WAITFORVSYNC, &arg);
+	}
 }
 
 scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
