@@ -18,13 +18,6 @@ PS.pak:minarch_gamepad_type
 # effects carry the look), so the menu entry would be a no-op choice. tg5040 keeps it unlocked.
 system:minarch_screen_sharpness
 
-# Present policy follows the PANEL, and the panels differ. The MMP's is 59.6720Hz (measured with
-# tools/panelprobe.c), below a 60fps core, so Lenient there silently drops the surplus frame (1.4%
-# of Contra's, seen as scroll judder); Strict + MINARCH_PANEL_FPS + the FBIO_WAITFORVSYNC PLAT_vsync
-# eliminate it. tg5040 presents through SDL2 PRESENTVSYNC, which has no coalescing path and lets the
-# driver own sync, so it has neither the bug nor a reason to change.
-system:minarch_prevent_tearing
-
 # supafaust affinity masks name CPUs 2-3, which do not exist on the dual-A7 MMP.
 SUPA.pak:supafaust_thread_affinity_emu
 SUPA.pak:supafaust_thread_affinity_ppu
