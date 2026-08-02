@@ -46,9 +46,10 @@ make_card() {
 make_zip() {
 	ROOT="$1"; PLAT="$2"
 	B="$ROOT/.build"; rm -rf "$B"
-	mkdir -p "$B/.system/$PLAT/paks/MinUI.pak"
+	mkdir -p "$B/.system/$PLAT/paks/MinUI.pak" "$B/.tmp_update"
 	echo "NEW-LAUNCHER-$PLAT" > "$B/.system/$PLAT/paks/MinUI.pak/launch.sh"
-	( cd "$B" && zip -qr "$ROOT/MinUI.zip" .system )
+	echo "NEW-BOOTSTRAP" > "$B/.tmp_update/$PLAT.sh"
+	( cd "$B" && zip -qr "$ROOT/MinUI.zip" .system .tmp_update )
 	rm -rf "$B"
 }
 
@@ -61,6 +62,11 @@ run_install "$T/c1"
 [ ! -f "$T/c1/MinUI.zip" ] && ok "archive consumed on success" || bad "archive should be gone after a good install"
 grep -q "NEW-LAUNCHER-tg5040" "$T/c1/.system/tg5040/paks/MinUI.pak/launch.sh" 2>/dev/null \
 	&& ok "new system installed" || bad "new launcher was not installed"
+# The bootstrap is a DOTFILE. A glob of "$STAGE"/* does not match it, so it was silently skipped:
+# the install reported success, ate the archive, and left the old updater in place forever.
+grep -q "NEW-BOOTSTRAP" "$T/c1/.tmp_update/tg5040.sh" 2>/dev/null \
+	&& ok ".tmp_update installed too (bootstrap can self-update)" \
+	|| bad ".tmp_update was NOT installed — updater self-update silently broken"
 
 echo "=== case 2: valid archive for the WRONG DEVICE — must change nothing ==="
 make_card "$T/c2"; make_zip "$T/c2" miyoomini
@@ -114,19 +120,29 @@ grep -q "LIVE-LAUNCHER" "$T/c4/.system/tg5040/paks/MinUI.pak/launch.sh" 2>/dev/n
 [ -f "$T/c4/MinUI.zip" ] || [ -f "$T/c4/MinUI.zip.failed" ] \
 	&& ok "archive retained for diagnosis or retry" || bad "archive lost after a failed extract"
 
-echo "=== case 5: no launcher and no archive — must hand back to stock, not a black screen ==="
-# Reaching the end of boot.sh with nothing installed used to just exit. The wrapper has already
-# exec'd this script, so there is no caller to return to and the user sees a black screen on every
-# boot — recoverable only by removing the card, which nobody knows to try.
-grep -q "runtrimui-original.sh" "$SRC" \
-	&& ok "falls back to the stock launcher when MinUI cannot run" \
-	|| bad "no stock fallback — a failed install leaves a black screen"
+echo "=== case 5: the stock fallback is real code, not a comment ==="
+# This used to assert with a bare grep over the source, which a comment mentioning the name would
+# satisfy. Check for the executable statement instead.
+grep -qE '^[[:space:]]*exec /usr/trimui/bin/runtrimui-original\.sh' "$SRC" \
+	&& ok "execs the stock launcher when MinUI cannot run" \
+	|| bad "no executable stock fallback — a failed install leaves a black screen"
 LAUNCH_LN=$(grep -n "^LAUNCH_PATH=" "$SRC" | head -1 | cut -d: -f1)
-FALLBACK_LN=$(grep -n "runtrimui-original.sh" "$SRC" | tail -1 | cut -d: -f1)
+FALLBACK_LN=$(grep -nE '^[[:space:]]*exec /usr/trimui/bin/runtrimui-original\.sh' "$SRC" | tail -1 | cut -d: -f1)
 if [ -n "$LAUNCH_LN" ] && [ -n "$FALLBACK_LN" ] && [ "$FALLBACK_LN" -gt "$LAUNCH_LN" ]; then
 	ok "fallback comes after the launcher attempt, not instead of it"
 else
 	bad "fallback ordering wrong — it could pre-empt a working MinUI"
+fi
+
+echo "=== case 6: recovery copies must not be dropped before the merge is durable ==="
+# The card is remounted async, so deleting the stage and the archive can hit the disk before the
+# merged data. The sync must come first.
+SYNC_LN=$(grep -nE '^[[:space:]]+sync$' "$SRC" | head -1 | cut -d: -f1)
+RMSTAGE_LN=$(grep -nE '^[[:space:]]+rm -rf "\$STAGE"$' "$SRC" | sed -n 2p | cut -d: -f1)
+if [ -n "$SYNC_LN" ] && [ -n "$RMSTAGE_LN" ] && [ "$SYNC_LN" -lt "$RMSTAGE_LN" ]; then
+	ok "merge is synced before the staging tree is removed"
+else
+	bad "stage removed before the merge was made durable"
 fi
 
 echo ""

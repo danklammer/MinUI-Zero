@@ -109,11 +109,23 @@ if [ -f "$UPDATE_PATH" ]; then
 		sync
 	elif ./unzip -o "$UPDATE_PATH" -d "$STAGE" && [ -f "$STAGE/.system/$PLATFORM/paks/MinUI.pak/launch.sh" ]; then
 		# Payload is complete on disk. Only now merge it into the live tree.
+		#
+		# `.tmp_update` MUST be copied explicitly. A glob of "$STAGE"/* does not match dotfiles, so
+		# an earlier version of this silently skipped it — the install reported success, consumed
+		# the archive, and left the OLD tg5040.sh and updater in place. Nothing visibly failed,
+		# which is what made it dangerous: the safety-critical bootstrap could never self-update.
 		cp -rf "$STAGE/.system" "$SDCARD_PATH/" && COPY_OK=1
-		for extra in "$STAGE"/*; do
-			case "$(basename "$extra")" in .system) continue;; esac
+		[ -d "$STAGE/.tmp_update" ] && { cp -rf "$STAGE/.tmp_update" "$SDCARD_PATH/" || COPY_OK=0; }
+		for extra in "$STAGE"/* "$STAGE"/.[!.]*; do
+			case "$(basename "$extra")" in .system|.tmp_update|"*"|".[!.]*") continue;; esac
 			[ -e "$extra" ] && cp -rf "$extra" "$SDCARD_PATH/" 2>/dev/null
 		done
+
+		# COMMIT BEFORE DISCARDING THE WAY BACK. The card is remounted `async` at the top of this
+		# script, so deleting the staging tree and the archive can reach the disk before the merged
+		# file data does. A power cut in that window left a partial .system with no stage and no
+		# archive — no dishonest card required. Make the merge durable first.
+		sync
 		rm -rf "$STAGE"
 		if [ "${COPY_OK:-0}" = "1" ]; then
 			rm -f "$UPDATE_PATH"

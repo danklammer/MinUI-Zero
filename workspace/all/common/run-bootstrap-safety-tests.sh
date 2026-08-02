@@ -115,6 +115,37 @@ HOOK=$(grep -n '^# smart pro/brick$' "$TRIMUI" | head -1 | cut -d: -f1)
 	|| bad "boot hook is installed before the payload exists"
 rm -rf "$T3"
 
+echo "=== MIYOO: a FAILED promote must keep the entry point and restore the old payload ==="
+T4=$(mktemp -d) || exit 1
+make_card "$T4" miyoo354 miyoomini
+mkdir -p "$T4/.tmp_update" && echo "PREVIOUS" > "$T4/.tmp_update/updater"
+make_stubs "$T4/bin" ""
+# Fail ONLY the promote — the rename whose SOURCE is the staging directory. Keying off the
+# destination instead would also break the recovery rename that puts the previous bootstrap back,
+# which is the very thing this case is checking, and would make the assertion unsatisfiable by
+# construction rather than by a defect.
+cat > "$T4/bin/mv" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+	case "$a" in *".tmp_update.new") exit 1 ;; esac
+done
+exec /bin/mv "$@"
+STUB
+chmod +x "$T4/bin/mv"
+sed -n '/^REQUIRED=/,/^rm -rf "\$MIYOO_PATH"$/p' "$MIYOO" > "$T4/stanza.sh"
+(
+	cd "$T4/miyoo354/app" \
+	&& PATH="$T4/bin:$PATH" SDCARD_PATH="$T4" MIYOO_PATH="$T4/miyoo354" IS_PLUS=true \
+	   sh "$T4/stanza.sh"
+) >/dev/null 2>&1
+[ -d "$T4/miyoo354" ] \
+	&& ok "entry point kept when the promote fails" \
+	|| bad "entry point deleted after a FAILED promote — payload stranded under an inert name"
+grep -q "PREVIOUS" "$T4/.tmp_update/updater" 2>/dev/null \
+	&& ok "previous bootstrap restored" \
+	|| bad "previous bootstrap lost after a failed promote"
+rm -rf "$T4"
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

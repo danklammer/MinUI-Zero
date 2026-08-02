@@ -89,7 +89,18 @@ fi
 # cut mid-promote, and the entry point below still has not been touched.
 rm -rf "$SDCARD_PATH/.tmp_update.old"
 [ -d "$SDCARD_PATH/.tmp_update" ] && mv "$SDCARD_PATH/.tmp_update" "$SDCARD_PATH/.tmp_update.old"
-mv "$STAGE" "$SDCARD_PATH/.tmp_update"
+# CHECK THE RENAME. An earlier version of this let a failed mv fall through to the two deletions
+# below — which threw away the rollback AND the entry point while the only complete payload sat
+# under .tmp_update.new, a name nothing boots from. Put the previous bootstrap back and leave the
+# entry point alone so the next boot simply retries.
+if ! mv "$STAGE" "$SDCARD_PATH/.tmp_update"; then
+	[ -d "$SDCARD_PATH/.tmp_update.old" ] && mv "$SDCARD_PATH/.tmp_update.old" "$SDCARD_PATH/.tmp_update"
+	rm -rf "$STAGE"
+	echo "$(date '+%F %T') Could not install the MinUI bootstrap (the card may be full or failing). Nothing was removed - free some space and try again." > "$SDCARD_PATH/MinUI-install-failed.txt"
+	sync
+	if [ "$IS_PLUS" = "true" ]; then poweroff; else reboot; fi
+	exit 1
+fi
 sync                      # commit the bootstrap BEFORE deleting our way back to it
 rm -rf "$SDCARD_PATH/.tmp_update.old"
 rm -rf "$MIYOO_PATH"

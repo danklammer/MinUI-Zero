@@ -45,7 +45,18 @@ fi
 
 rm -rf "$SDCARD_PATH/.tmp_update.old"
 [ -d "$SDCARD_PATH/.tmp_update" ] && mv "$SDCARD_PATH/.tmp_update" "$SDCARD_PATH/.tmp_update.old"
-mv "$STAGE" "$SDCARD_PATH/.tmp_update"
+# CHECK THE RENAME — see the matching comment in miyoomini.sh. A failed mv used to fall through to
+# the deletions below, discarding the rollback and the entry point while the complete payload sat
+# under an inert name. Restore and bail; the boot hook has not been installed yet at this point, so
+# the stock path still runs on the next boot.
+if ! mv "$STAGE" "$SDCARD_PATH/.tmp_update"; then
+	[ -d "$SDCARD_PATH/.tmp_update.old" ] && mv "$SDCARD_PATH/.tmp_update.old" "$SDCARD_PATH/.tmp_update"
+	rm -rf "$STAGE"
+	echo "$(date '+%F %T') Could not install the MinUI bootstrap (the card may be full or failing). Nothing was removed - free some space and try again." > "$SDCARD_PATH/MinUI-install-failed.txt"
+	sync
+	poweroff
+	exit 1
+fi
 sync
 rm -rf "$SDCARD_PATH/.tmp_update.old"
 
