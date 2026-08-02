@@ -32,6 +32,24 @@ else
 fi
 export IS_PLUS
 
+# IS_PLUS IS NOT "IS THE MINI PLUS". The Mini FLIP also ships /customer/app/axp_test — Allium routes
+# the Flip and the Plus to the SAME AXP battery implementation (Miyoo285 | Miyoo354 =>
+# Miyoo354Battery), and that implementation shells out to axp_test, so the file must be present on a
+# Flip. IS_PLUS therefore means "has the AXP PMIC", which is what the battery code wants and is NOT
+# a model identity.
+#
+# Anything keyed to the PLUS SPECIFICALLY must exclude the Flip, and the hall sensor is the test:
+# it is the clamshell lid, present only on the Flip, and five independent sources agree on the path
+# (ours, upstream MinUI, MyMinUI, spruceOS's MiyooMini.sh, Allium's evdev.rs).
+#
+# MY_MODEL would be the obvious discriminator but is not resolved until much later in this file.
+if [ -e /sys/devices/soc0/soc/soc:hall-mh248/hallvalue ]; then
+	IS_FLIP=true
+else
+	IS_FLIP=false
+fi
+export IS_FLIP
+
 export PLATFORM="miyoomini"
 export SDCARD_PATH="/mnt/SDCARD"
 export BIOS_PATH="$SDCARD_PATH/Bios"
@@ -57,7 +75,10 @@ export CORES_PATH="$SYSTEM_PATH/cores"
 # Leaving it unset costs those models nothing they had before — no rate match is exactly the
 # pre-v1.5.4 behaviour. To add a model, run tools/panelprobe.c ON IT and put the result here; do not
 # copy the Plus's figure across on the assumption that one SSD202D panel is another.
-if [ "$IS_PLUS" = "true" ]; then
+# Gated on the PLUS specifically, not merely on having an AXP: the Flip sets IS_PLUS too (see the
+# note where IS_FLIP is derived), and handing a Flip the Plus's measured figure is exactly the
+# invented-number hazard this gate exists to prevent. Its panel has never been measured.
+if [ "$IS_PLUS" = "true" ] && [ "$IS_FLIP" != "true" ]; then
 	export MINARCH_PANEL_FPS=59.6720
 fi
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
