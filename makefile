@@ -59,8 +59,13 @@ test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-shellquote:
 	sh ./workspace/all/common/run-shellquote-tests.sh
+# All three install-safety harnesses, not just the Miyoo one. The tg5040 installer and BOTH outer
+# bootstraps are equally able to strand a device, and a harness that has to be remembered by hand
+# is one that stops being run.
 test-install-safety:
 	sh ./workspace/all/common/run-install-safety-tests.sh
+	sh ./workspace/all/common/run-install-safety-tests-tg5040.sh
+	sh ./workspace/all/common/run-bootstrap-safety-tests.sh
 test-cfg-migrate:
 	sh ./workspace/all/common/run-cfg-migrate-tests.sh
 check-parity:
