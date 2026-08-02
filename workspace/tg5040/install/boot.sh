@@ -76,6 +76,9 @@ if [ -f "$UPDATE_PATH" ]; then
 	# kept for diagnosis but unable to install-loop; a power-cut mid-extract leaves the
 	# package in place so the next boot retries.
 	UPDATED=
+	COPY_OK=0
+	STAGE="$SDCARD_PATH/.minui-staging"   # inert name: nothing boots from it
+	rm -rf "$STAGE"
 	if ! ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
 		mv -f "$UPDATE_PATH" "$UPDATE_PATH.bad"
 	# ...and that it is a payload for THIS platform. A release archive for another device is
@@ -93,10 +96,34 @@ if [ -f "$UPDATE_PATH" ]; then
 	elif ! ./unzip -l "$UPDATE_PATH" 2>/dev/null | grep -q "$PLATFORM/paks/MinUI.pak/launch.sh"; then
 		echo "$(date '+%F %T') This MinUI.zip is a valid archive but does not contain a $PLATFORM system - it is probably the download for a different device. Nothing was changed and the file was kept; replace it with the $PLATFORM release and reboot." > "$SDCARD_PATH/MinUI-update-failed.txt"
 		sync
-	elif ./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH"; then # &> /mnt/SDCARD/unzip.txt
-		rm -f "$UPDATE_PATH"
-		UPDATED=yes
+	# STAGE THE EXTRACT. This used to run `unzip -o ... -d "$SDCARD_PATH"`, straight over the live
+	# tree. A CRC-valid archive can still fail to extract — the card fills, or the power goes — and
+	# that left .system as a mix of old and new binaries while the archive was renamed aside, so
+	# there was nothing left to retry from. Nothing touches the installed system until the whole
+	# payload is on disk and has been checked.
+	#
+	# This is the pattern the Miyoo installer has used since its own audit; tg5040 never got it.
+	# Same drift as the platform check above.
+	elif ! mkdir -p "$STAGE"; then
+		echo "$(date '+%F %T') Could not create a staging folder on the card - it may be full or write-protected. Nothing was changed." > "$SDCARD_PATH/MinUI-update-failed.txt"
+		sync
+	elif ./unzip -o "$UPDATE_PATH" -d "$STAGE" && [ -f "$STAGE/.system/$PLATFORM/paks/MinUI.pak/launch.sh" ]; then
+		# Payload is complete on disk. Only now merge it into the live tree.
+		cp -rf "$STAGE/.system" "$SDCARD_PATH/" && COPY_OK=1
+		for extra in "$STAGE"/*; do
+			case "$(basename "$extra")" in .system) continue;; esac
+			[ -e "$extra" ] && cp -rf "$extra" "$SDCARD_PATH/" 2>/dev/null
+		done
+		rm -rf "$STAGE"
+		if [ "${COPY_OK:-0}" = "1" ]; then
+			rm -f "$UPDATE_PATH"
+			UPDATED=yes
+		else
+			echo "$(date '+%F %T') Update failed while installing (the card may be full). MinUI.zip was kept - free some space and reboot to retry." > "$SDCARD_PATH/MinUI-update-failed.txt"
+		fi
 	else
+		# Extract failed or the payload was not what it claimed. The live system was never touched.
+		rm -rf "$STAGE"
 		mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
 	fi
 	sync
