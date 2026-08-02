@@ -147,6 +147,7 @@ features they have. Treat it as a preview, back up your card, and expect rough e
 | **Deep sleep** | **Yes** | **Not possible** — see below |
 | **Optimize CPU (undervolt)** | **Yes** | **No** |
 | Charging screen | Yes | Yes |
+| Tear-free, panel-accurate presentation | Yes | Yes (new in v1.5.4) |
 | Measured battery/thermal figures | Yes, see above | **None yet** |
 
 Apart from the PlayStation limitation described below, none of the measured results in this README
@@ -158,14 +159,24 @@ battery-life numbers transfer. They probably do not.
 Its PlayStation support leans on a 128 MB swapfile because the device has ~100 MB of usable RAM;
 expect SD-backed swapping, not the TrimUI PS1 experience.
 
-**Known limitation: heavy PlayStation titles stutter.** Games run at full speed (Bloody Roar II and
-Tony Hawk's both generate a measured 60 fps), but on the heaviest scenes the device cannot both
-present every frame and keep the audio buffer fed, so the frontend drops presents to protect sound.
-You see occasional stutter instead of hearing crackle. This is a hardware limit and we have the
-receipts: a pin-verified 24% CPU overclock changed it by 0%, so more clock cannot buy it, and
-disabling the audio protection made underruns 25x worse. (We can say the bottleneck is not CPU
-clock; we have not isolated which of memory, driver, audio daemon or I/O it actually is.) Lighter
-systems are unaffected.
+**Frame pacing, rebuilt in v1.5.4.** The panel does not run at 60 Hz. It runs at **59.6720 Hz**,
+measured directly with a purpose-built probe rather than assumed, and every emulator core targets
+its own near-60 rate instead. Two things went wrong in that gap. The surplus frame a 60 fps core
+produced was quietly coalesced away, and — the real culprit — the frontend tracked which page was
+queued and which was being panned, but nothing tracked the page the panel was actively *scanning*,
+so the hardware blitter could draw a whole frame into the picture on screen. That is visible
+tearing, and no counter recorded it, because nothing was being dropped. Presentation now waits for
+the panel instead of discarding frames, derives a per-core rate correction from the measured panel
+rate, and tracks page ownership explicitly. NES and PlayStation sessions on-device report **0
+frames dropped and 0 audio underruns**.
+
+**Known limitation: heavy PlayStation scenes.** Games run at full speed (Bloody Roar II and Tony
+Hawk's both generate a measured 60 fps), but the heaviest scenes push this device to its limit and
+you may hear or see it. We have receipts for what it is *not*: a pin-verified 24% CPU overclock
+changed it by 0%, so more clock cannot buy it. We have not isolated which of memory, driver, audio
+daemon or I/O it actually is. Note that the frame-pacing rework above landed after those
+measurements and heavy PS1 scenes have not been re-characterised under it — so treat this as
+unverified rather than as either fixed or unchanged. Lighter systems are unaffected.
 
 **Why there's no deep sleep here.** This is a hardware limit, not a missing feature. The Miyoo's
 vendor kernel is built without suspend support at all — `/sys/power/state` is empty on the device,
