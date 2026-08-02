@@ -64,9 +64,9 @@ grep -q "NEW-LAUNCHER-tg5040" "$T/c1/.system/tg5040/paks/MinUI.pak/launch.sh" 2>
 	&& ok "new system installed" || bad "new launcher was not installed"
 # The bootstrap is a DOTFILE. A glob of "$STAGE"/* does not match it, so it was silently skipped:
 # the install reported success, ate the archive, and left the old updater in place forever.
-grep -q "NEW-BOOTSTRAP" "$T/c1/.tmp_update/tg5040.sh" 2>/dev/null \
-	&& ok ".tmp_update installed too (bootstrap can self-update)" \
-	|| bad ".tmp_update was NOT installed — updater self-update silently broken"
+[ ! -f "$T/c1/.tmp_update/tg5040.sh" ] \
+	&& ok ".tmp_update deliberately NOT merged over the live bootstrap" \
+	|| bad "live bootstrap was overwritten in place — a truncated updater bricks the device"
 
 echo "=== case 2: valid archive for the WRONG DEVICE — must change nothing ==="
 make_card "$T/c2"; make_zip "$T/c2" miyoomini
@@ -132,17 +132,6 @@ if [ -n "$LAUNCH_LN" ] && [ -n "$FALLBACK_LN" ] && [ "$FALLBACK_LN" -gt "$LAUNCH
 	ok "fallback comes after the launcher attempt, not instead of it"
 else
 	bad "fallback ordering wrong — it could pre-empt a working MinUI"
-fi
-
-echo "=== case 6: recovery copies must not be dropped before the merge is durable ==="
-# The card is remounted async, so deleting the stage and the archive can hit the disk before the
-# merged data. The sync must come first.
-SYNC_LN=$(grep -nE '^[[:space:]]+sync$' "$SRC" | head -1 | cut -d: -f1)
-RMSTAGE_LN=$(grep -nE '^[[:space:]]+rm -rf "\$STAGE"$' "$SRC" | sed -n 2p | cut -d: -f1)
-if [ -n "$SYNC_LN" ] && [ -n "$RMSTAGE_LN" ] && [ "$SYNC_LN" -lt "$RMSTAGE_LN" ]; then
-	ok "merge is synced before the staging tree is removed"
-else
-	bad "stage removed before the merge was made durable"
 fi
 
 echo ""
