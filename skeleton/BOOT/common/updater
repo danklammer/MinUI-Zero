@@ -4,6 +4,9 @@
 
 INFO=`cat /proc/cpuinfo 2> /dev/null`
 case $INFO in
+*"SStar"*)
+	PLATFORM="miyoomini" # Miyoo Mini Plus (SigmaStar SSD202D) — /proc/cpuinfo reports "SStar Soc"
+	;;
 *"TG5040"*|*"TG3040"*)
 	PLATFORM="tg5040" # Trimui Smart Pro or Brick — the only platforms MinUI Zero supports
 	;;

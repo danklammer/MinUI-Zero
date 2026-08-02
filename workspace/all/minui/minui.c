@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <msettings.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -951,40 +952,43 @@ static void queueNext(char* cmd) {
 	quit = 1;
 }
 
-// based on https://stackoverflow.com/a/31775567/145965
-static int replaceString(char *line, const char *search, const char *replace) {
-   char *sp; // start of pattern
-   if ((sp = strstr(line, search)) == NULL) {
-      return 0;
-   }
-   int count = 1;
-   int sLen = strlen(search);
-   int rLen = strlen(replace);
-   if (sLen > rLen) {
-      // move from right to left
-      char *src = sp + sLen;
-      char *dst = sp + rLen;
-      while((*dst = *src) != '\0') { dst++; src++; }
-   } else if (sLen < rLen) {
-      // move from left to right
-      int tLen = strlen(sp) - sLen;
-      char *stop = sp + rLen;
-      char *src = sp + sLen + tLen;
-      char *dst = sp + rLen + tLen;
-      while(dst >= stop) { *dst = *src; dst--; src--; }
-   }
-   memcpy(sp, replace, rLen);
-   count += replaceString(sp + rLen, search, replace);
-   return count;
+// Wrap a string in single quotes for /bin/sh, rewriting each embedded apostrophe as '\''.
+// Writes to a SEPARATE destination and returns 0 rather than overrunning it.
+//
+// This replaces an in-place expansion that could corrupt the stack. The old escapeSingleQuotes()
+// grew the string where it sat — one apostrophe became four characters, shifting the tail RIGHT —
+// inside a fixed char[256] path buffer that knew nothing about the growth. The result was then
+// sprintf'd as "'%s' '%s'" into ANOTHER char[256], so two long paths overflowed it on their own,
+// apostrophes or not. Both are reachable from ordinary ROM names: a deep folder plus something
+// like "Tony Hawk's Pro Skater (USA).bin" is a long path that also contains apostrophes.
+//
+// Callers MUST check the return value. Refusing to launch is the correct failure here — the
+// alternative is a corrupted command string, or smashed stack, at the moment we hand control off.
+static int shellQuote(const char* in, char* out, size_t out_sz) {
+	size_t o = 0;
+	if (out_sz < 3) return 0;
+	out[o++] = '\'';
+	for (const char* p = in; *p; p++) {
+		if (*p == '\'') {
+			// close quote, escaped literal apostrophe, reopen quote
+			if (o + 4 + 1 > out_sz) return 0;
+			out[o++] = '\''; out[o++] = '\\'; out[o++] = '\''; out[o++] = '\'';
+		}
+		else {
+			if (o + 1 + 1 > out_sz) return 0;
+			out[o++] = *p;
+		}
+	}
+	if (o + 1 + 1 > out_sz) return 0;
+	out[o++] = '\'';
+	out[o] = '\0';
+	return 1;
 }
-static char* escapeSingleQuotes(char* str) {
-	// why not call replaceString directly?
-	// call points require the modified string be returned
-	// but replaceString is recursive and depends on its
-	// own return value (but does it need to?)
-	replaceString(str, "'", "'\\''");
-	return str;
-}
+
+// Worst case: every character of a 255-char path is an apostrophe (4x) plus the two wrapping
+// quotes. Sized so shellQuote never fails on any path that fits the char[256] buffers used here.
+#define QUOTED_MAX (255 * 4 + 3)
+#define CMD_MAX    (QUOTED_MAX * 2 + 2)
 
 ///////////////////////////////////////
 
@@ -1058,23 +1062,33 @@ static int autoResume(void) {
 	
 	// putFile(LAST_PATH, FAUX_RECENT_PATH); // saveLast() will crash here because top is NULL
 	
-	char cmd[256];
-	sprintf(cmd, "'%s' '%s'", escapeSingleQuotes(emu_path), escapeSingleQuotes(sd_path));
+	char q_emu[QUOTED_MAX], q_rom[QUOTED_MAX];
+	if (!shellQuote(emu_path, q_emu, sizeof(q_emu)) || !shellQuote(sd_path, q_rom, sizeof(q_rom))) {
+		LOG_info("autoResume: path too long to quote, refusing to launch: %s\n", sd_path);
+		return 0;
+	}
+	char cmd[CMD_MAX];
+	snprintf(cmd, sizeof(cmd), "%s %s", q_emu, q_rom);
 	putInt(RESUME_SLOT_PATH, AUTO_RESUME_SLOT);
 	queueNext(cmd);
 	return 1;
 }
 
 static void openPak(char* path) {
-	// NOTE: escapeSingleQuotes() modifies the passed string 
-	// so we need to save the path before we call that
 	if (prefixMatch(ROMS_PATH, path)) {
 		addRecent(path, NULL);
 	}
 	saveLast(path);
-	
-	char cmd[256];
-	sprintf(cmd, "'%s/launch.sh'", escapeSingleQuotes(path));
+
+	// Quote the FULL launcher path, not the directory with "/launch.sh" appended outside the
+	// quotes — otherwise the suffix sits outside the escaping the rest of the path relies on.
+	char full[512];
+	snprintf(full, sizeof(full), "%s/launch.sh", path);
+	char cmd[QUOTED_MAX];
+	if (!shellQuote(full, cmd, sizeof(cmd))) {
+		LOG_info("openPak: path too long to quote, refusing to launch: %s\n", path);
+		return;
+	}
 	queueNext(cmd);
 }
 static void openRom(char* path, char* last) {
@@ -1128,13 +1142,16 @@ static void openRom(char* path, char* last) {
 	char emu_path[256];
 	getEmuPath(emu_name, emu_path);
 	
-	// NOTE: escapeSingleQuotes() modifies the passed string 
-	// so we need to save the path before we call that
 	addRecent(recent_path, recent_alias); // yiiikes
 	saveLast(last==NULL ? sd_path : last);
-	
-	char cmd[256];
-	sprintf(cmd, "'%s' '%s'", escapeSingleQuotes(emu_path), escapeSingleQuotes(sd_path));
+
+	char q_emu[QUOTED_MAX], q_rom[QUOTED_MAX];
+	if (!shellQuote(emu_path, q_emu, sizeof(q_emu)) || !shellQuote(sd_path, q_rom, sizeof(q_rom))) {
+		LOG_info("openRom: path too long to quote, refusing to launch: %s\n", sd_path);
+		return;
+	}
+	char cmd[CMD_MAX];
+	snprintf(cmd, sizeof(cmd), "%s %s", q_emu, q_rom);
 	queueNext(cmd);
 }
 static void openDirectory(char* path, int auto_launch) {
@@ -1321,6 +1338,19 @@ static void ChargingScreen(SDL_Surface* screen) {
 	uint32_t entered_at = SDL_GetTicks();
 	while (PWR_isCharging()) {
 		PAD_poll();
+		// NOTE: this loop CONSUMES the button down-edge. PWR_update's manual-sleep test requires
+		// having seen POWER go down, so leaving through here used to swallow it and the user had to
+		// press POWER twice to sleep. Hand the press back by re-arming the sleep request.
+		//
+		// On the RELEASE, though, never the press. PLAT_shouldWake wakes on POWER key-UP
+		// (api.c, SDL_KEYUP/SDL_JOYBUTTONUP), so requesting sleep while the button is still held
+		// means PWR_sleep starts, and the release of that very same press wakes it straight back
+		// up. PWR_update's own manual-sleep test keys on `power_released` for exactly this reason.
+		// So: swallow the POWER press, then act on its release.
+		if (PAD_justReleased(BTN_POWER)) { PWR_requestSleep(); break; }
+		// Held: wait for the release above. Delay explicitly — the loop's own SDL_Delay is at the
+		// BOTTOM, so a bare `continue` would spin hot for as long as the button is down.
+		if (PAD_isPressed(BTN_POWER)) { SDL_Delay(100); continue; }
 		if (PAD_anyJustPressed()) break;
 		uint32_t now = SDL_GetTicks();
 		// after 5 minutes of showing the charge state, hand the device to sleep: charging
@@ -1328,18 +1358,10 @@ static void ChargingScreen(SDL_Surface* screen) {
 		// button wakes back to the menu, and idling there returns here.
 		if (now-entered_at >= 300000) { PWR_requestSleep(); break; }
 		if (!rendered_at || now-rendered_at>=60000) {
-			int pct = -1;
-			FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");
-			if (bf) { if (fscanf(bf, "%d", &pct)!=1) pct = -1; fclose(bf); }
-			// honest 100%: the gauge rounds up before the charger actually terminates
-			// (the LED stays red through the final taper). Hold at 99% until the kernel
-			// reports Full — the same moment the LED turns green.
-			if (pct >= 100) {
-				char st[16] = "";
-				FILE* sf = fopen("/sys/class/power_supply/axp2202-battery/status", "r");
-				if (sf) { if (!fgets(st, sizeof(st), sf)) st[0] = 0; fclose(sf); }
-				if (strncmp(st, "Full", 4) != 0) pct = 99;
-			}
+			// The platform answers this. This function used to read axp2202 sysfs paths DIRECTLY
+			// — tg5040 hardware detail sitting in shared menu code — so it was correct on the
+			// Brick and rendered "..." on every other device. -1 means "no reading available".
+			int pct = PLAT_getChargePercent();
 			GFX_clear(screen);
 			char msg[16];
 			if (pct>=0) snprintf(msg, sizeof(msg), "%d%%", pct);
@@ -1379,9 +1401,14 @@ static void ChargingScreen(SDL_Surface* screen) {
 }
 
 int main (int argc, char *argv[]) {
-	// LOG_info("time from launch to:\n");
-	// unsigned long main_begin = SDL_GetTicks();
-	// unsigned long first_draw = 0;
+	// OPT-IN boot timing (ZERO_BOOT_TIMING=1). These probes are shared with tg5040 and stdout is
+	// redirected to a file on the SD card by MinUI.pak/launch.sh, so shipping them enabled would
+	// add SD writes to every launch on the primary platform. Left available, not on.
+	const char* bt_env = getenv("ZERO_BOOT_TIMING");
+	int boot_timing = (bt_env && bt_env[0] && bt_env[0] != '0');
+	if (boot_timing) LOG_info("time from launch to:\n");
+	unsigned long main_begin = SDL_GetTicks();
+	unsigned long first_draw = 0;
 	
 	if (autoResume()) return 0; // nothing to do
 	
@@ -1391,19 +1418,19 @@ int main (int argc, char *argv[]) {
 	InitSettings();
 	
 	SDL_Surface* screen = GFX_init(MODE_MAIN);
-	// LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PAD_init();
-	// LOG_info("- input init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- input init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PWR_init();
 	if (!HAS_POWER_BUTTON && !simple_mode) PWR_disableSleep();
-	// LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	SDL_Surface* version = NULL;
 	
 	Menu_init();
-	// LOG_info("- menu init: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- menu init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	// now that (most of) the heavy lifting is done, take a load off
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
@@ -1415,7 +1442,7 @@ int main (int argc, char *argv[]) {
 	int show_setting = 0; // 1=brightness,2=volume
 	int was_online = PLAT_isOnline();
 	
-	// LOG_info("- loop start: %lu\n", SDL_GetTicks() - main_begin);
+	if (boot_timing) LOG_info("- loop start: %lu\n", SDL_GetTicks() - main_begin);
 	while (!quit) {
 		GFX_startFrame();
 		unsigned long now = SDL_GetTicks();
@@ -1430,7 +1457,19 @@ int main (int argc, char *argv[]) {
 		// charging screen: 30s of no input while on the charger
 		{
 			static uint32_t charge_idle_at = 0;
+			static uint32_t charge_last_tick = 0;
 			uint32_t charge_now = SDL_GetTicks();
+			// Restart the idle countdown across a sleep/resume. PWR_update above can sleep for
+			// minutes or hours, and SDL_GetTicks advances by the WHOLE sleep — so on wake the idle
+			// timer reads as long expired and the charge screen re-opens before the menu is ever
+			// drawn. The user then has to press a SECOND time to reach the menu, which is the
+			// opposite of this block's contract ("any button wakes back to the menu, and idling
+			// there returns here"). Reported on-device 2026-07-31 while charging.
+			// The wake press cannot serve as the reset: PAD_anyPressed is level-triggered and wake
+			// fires on key-UP, so by the time we get here nothing is held. A gap this large is only
+			// ever sleep — a normal menu iteration is tens of milliseconds.
+			if (charge_last_tick && charge_now - charge_last_tick > 5000) charge_idle_at = charge_now;
+			charge_last_tick = charge_now;
 			if (PAD_anyPressed() || !charge_idle_at) charge_idle_at = charge_now;
 			if (PWR_isCharging() && charge_now-charge_idle_at>=30000) {
 				ChargingScreen(screen);
@@ -1612,14 +1651,22 @@ int main (int argc, char *argv[]) {
 				tmp[0] = '\0';
 				
 				sprintf(res_path, "%s/.res/%s.png", res_root, res_name);
-				LOG_info("res_path: %s\n", res_path);
+				// NO logging here: this runs on every menu redraw (i.e. every button press), and
+				// stdout is redirected to a file ON THE SD CARD by MinUI.pak/launch.sh — so a
+				// debug line here is an SD write per keypress, for a path that usually does not
+				// even exist. Card wear and I/O for nothing.
 				if (exists(res_path)) {
-					had_thumb = 1;
+					// IMG_Load returns NULL on a corrupt/unsupported file, and the old code
+					// dereferenced it immediately (thumb->w) — a guaranteed crash on any bad PNG.
 					SDL_Surface* thumb = IMG_Load(res_path);
-					ox = MAX(FIXED_WIDTH - FIXED_HEIGHT, (FIXED_WIDTH - thumb->w));
-					oy = (FIXED_HEIGHT - thumb->h) / 2;
-					SDL_BlitSurface(thumb, NULL, screen, &(SDL_Rect){ox,oy});
-					SDL_FreeSurface(thumb);
+					if (thumb) {
+						had_thumb = 1;
+						ox = MAX(FIXED_WIDTH - FIXED_HEIGHT, (FIXED_WIDTH - thumb->w));
+						oy = (FIXED_HEIGHT - thumb->h) / 2;
+						SDL_BlitSurface(thumb, NULL, screen, &(SDL_Rect){ox,oy});
+						SDL_FreeSurface(thumb);
+					}
+					else LOG_info("thumbnail: IMG_Load failed for %s: %s\n", res_path, IMG_GetError());
 				}
 			}
 			
@@ -1788,10 +1835,10 @@ int main (int argc, char *argv[]) {
 		}
 		else GFX_sync();
 		
-		// if (!first_draw) {
-		// 	first_draw = SDL_GetTicks();
-		// 	LOG_info("- first draw: %lu\n", first_draw - main_begin);
-		// }
+		if (!first_draw) {
+			first_draw = SDL_GetTicks();
+			if (boot_timing) LOG_info("- first draw: %lu\n", first_draw - main_begin);
+		}
 		
 		// handle HDMI change
 		static int had_hdmi = -1;

@@ -1,0 +1,47 @@
+diff --git forkSrcPrefix/platform/libretro/Makefile forkDstPrefix/platform/libretro/Makefile
+index 1033395..cdd44d2 100644
+--- forkSrcPrefix/platform/libretro/Makefile
++++ forkDstPrefix/platform/libretro/Makefile
+@@ -115,7 +115,7 @@ else ifeq ($(platform), vita)
+    CXXFLAGS += -Wl,-q -Wall -O3
+ 	STATIC_LINKING = 1
+ else ifeq ($(platform), miyoomini)
+-   TARGET := $(TARGET_NAME)_libretro_miyoomini.so
++   TARGET := $(TARGET_NAME)_libretro.so
+    CC = arm-linux-gnueabihf-gcc
+    CXX = arm-linux-gnueabihf-g++
+    AR = arm-linux-gnueabihf-ar
+@@ -123,7 +123,6 @@ else ifeq ($(platform), miyoomini)
+    CXXFLAGS += -marm -mtune=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -march=armv7ve -D_NEED_FULL_PATH_
+    fpic := -fPIC
+    SHARED := -shared -Wl,--version-script=link.T
+-
+ else ifeq ($(platform), gcw0)
+    TARGET := $(TARGET_NAME)_libretro_gcw0.so
+    CC = /opt/gcw0-toolchain/usr/bin/mipsel-linux-gcc
+@@ -162,6 +161,13 @@ else
+    CXXFLAGS += -O2
+ endif
+ 
++# MinUI Zero: miyoomini gets -O3 (overriding the default -O2 above, which is appended after the
++# platform block) to match the fork's -O3 core standard; +fomit-frame-pointer for the Lua VM.
++ifeq ($(platform), miyoomini)
++   CFLAGS += -O3 -fomit-frame-pointer
++   CXXFLAGS += -O3 -fomit-frame-pointer
++endif
++
+ include Makefile.common
+ 
+ CC = $(CXX)
+diff --git forkSrcPrefix/platform/libretro/libretro.cpp forkDstPrefix/platform/libretro/libretro.cpp
+index 589d4f2..792fd89 100644
+--- forkSrcPrefix/platform/libretro/libretro.cpp
++++ forkDstPrefix/platform/libretro/libretro.cpp
+@@ -765,6 +765,7 @@ EXPORT bool retro_load_game(struct retro_game_info const *info)
+     else {
+         _vm->QueueCartChange(info->path);
+     }
++	_vm->Step();
+ 
+     return true;
+ }

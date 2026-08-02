@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdarg.h>
 #include <signal.h>
 #include <msettings.h>
@@ -9,6 +10,7 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #include <time.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <zlib.h>
@@ -190,6 +192,8 @@ static int should_run_core = 1; // used by threaded video
 static volatile uint32_t core_work_ring[CORE_WORK_RING];
 static volatile uint32_t core_work_n = 0;
 static volatile int core_pace_ppm = 0; // DRC rate adjustment, honored by the core pacer
+static int zero_static_rate_ppm = 0;   // non-zero when a static panel match owns the clocks
+
 
 static pthread_t		core_pt;
 static pthread_mutex_t	core_mx;
@@ -312,6 +316,95 @@ static struct Core {
 	
 	// retro_audio_buffer_status_callback_t audio_buffer_status;
 } core;
+
+// Parse an integer env var STRICTLY. Returns 0 and leaves *out untouched unless the whole string
+// is a valid number in range. atoi() was the previous form and is unusable here: it maps "banana"
+// to 0, which silently CANCELLED a good panel-derived correction, and its behaviour on out-of-range
+// input is undefined so a later clamp cannot be trusted (adversarial review, 2026-08-01).
+static int zero_envInt(const char* name, long lo, long hi, long* out) {
+	const char* v = getenv(name);
+	if (!v || !*v) return 0;
+	errno = 0;
+	char* end = NULL;
+	long n = strtol(v, &end, 10);
+	if (errno == ERANGE || end == v || (end && *end)) {
+		LOG_info("%s: ignoring malformed value \"%s\"\n", name, v);
+		return 0;
+	}
+	if (n < lo || n > hi) {
+		LOG_info("%s: ignoring out-of-range value %ld (allowed %ld..%ld)\n", name, n, lo, hi);
+		return 0;
+	}
+	*out = n;
+	return 1;
+}
+
+// Apply (or clear) the static panel rate match for the CURRENT core.fps.
+//
+// Idempotent and re-entrant by design: cores change timing at runtime (SET_SYSTEM_AV_INFO on a
+// region switch), and a correction derived for 60.0988fps is badly wrong for 50fps content. The
+// previous version computed once at startup and never revisited, so an NTSC->PAL switch kept
+// -12609ppm (running PAL at ~49.4fps) and PAL->NTSC left no correction at all under Strict.
+//
+// MAIN THREAD ONLY. Under threading v2 the environment callback runs on CORE; call this from the
+// ordered-command drain on MAIN instead, after every timing field has been published.
+static void Zero_applyRateMatch(void) {
+	int ppm = 0;
+
+	// Automatic path: declare the PANEL rate, derive the per-core correction. The same panel needs
+	// a different correction for every system (NES 60.0988 vs GBC 59.7275 differ by ~6000ppm), so a
+	// single shared ppm would be wrong for all but one.
+	const char* hz = getenv("MINARCH_PANEL_FPS");
+	if (hz && *hz && core.fps > 1.0) {
+		double panel = atof(hz);
+		// GATE BOTH SIDES. This corrects a ~60Hz core down to a slightly slower ~60Hz panel and
+		// must never touch anything else:
+		//  * PAL/50Hz content would compute +186000ppm and run 5%% FAST. Reachable in cores we ship
+		//    (fceumm, picodrive, snes9x2005_plus, pcsx_rearmed all report PAL timing).
+		//  * panel >= core.fps means there is no surplus frame, so there is nothing to correct.
+		//  * an absurd panel value must not be "corrected" into a clamp. MINARCH_PANEL_FPS=30 with
+		//    a 60fps core used to clamp to -50000ppm and target 57fps while the panel actually
+		//    delivered 30 — the resampler compensated 5%% against a 50%% shortfall and underran
+		//    continuously. Requiring the panel within 5%% of the core makes the clamp unreachable
+		//    from this path.
+		int core_ok  = (core.fps >= 58.0 && core.fps <= 61.0);
+		int panel_ok = (panel > 1.0 && panel < core.fps && panel >= core.fps * 0.95);
+		if (core_ok && panel_ok)
+			ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
+		else if (panel > 1.0)
+			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below it)\n",
+			         core.fps, panel);
+	}
+
+	// Explicit override for deliberate experiments. Deliberately NOT fps-gated — but it IS
+	// validated, which is what makes it safe: the hazard was never that a developer could ask for
+	// something unwise, it was that a typo silently became 0 and cancelled a good correction.
+	long explicit_ppm = 0;
+	if (zero_envInt("MINARCH_RATE_PPM", -50000, 50000, &explicit_ppm)) {
+		ppm = (int)explicit_ppm;
+		if (core.fps < 58.0 || core.fps > 61.0)
+			LOG_warn("MINARCH_RATE_PPM applied to %.4f fps content — outside the 58-61 window this feature is designed for\n",
+			         core.fps);
+	}
+
+	if (ppm == zero_static_rate_ppm) return; // nothing changed; do not disturb the clocks
+
+	zero_static_rate_ppm = ppm; // publish BEFORE writing clocks: DRC reads this to stand down
+	if (ppm) {
+		double target_fps = core.fps * (1.0 + ppm / 1000000.0);
+		SND_setRateAdjustPPM(ppm);
+		core_pace_ppm = ppm;
+		GFX_setPacePeriodUs((uint32_t)(1000000.0 / target_fps));
+		LOG_info("rate match: %+dppm -> %.3f fps target (core %.4f)\n", ppm, target_fps, core.fps);
+	}
+	else { // correction no longer applies (e.g. switched to PAL) — hand the clocks back to stock
+		SND_setRateAdjustPPM(0);
+		core_pace_ppm = 0;
+		GFX_setPacePeriodUs(0);
+		LOG_info("rate match: cleared (core %.4f fps)\n", core.fps);
+	}
+}
+
 
 static void Core_flushMemory(void);
 static void Core_setController(unsigned device);
@@ -803,9 +896,24 @@ static int Crash_writeAll(int fd, const void* data, size_t size) {
 	return 0;
 }
 
+// Async-signal-safe teardown for an orderly kill: release the audio device, restore the clock,
+// then die with the default disposition so the exit status still reads as signalled.
+static void Term_handler(int sig) {
+	signal(SIGTERM, SIG_DFL); signal(SIGINT, SIG_DFL); // no recursion
+	PLAT_resetAudio();
+	PLAT_emergencyRestoreCPUVolt();
+	raise(sig);
+}
+
 static void Crash_handler(int sig) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
 	signal(SIGFPE, SIG_DFL); signal(SIGABRT, SIG_DFL); // no recursion
+	// Release the audio device FIRST. On SigmaStar, MI_AO_SetPubAttr cannot reconfigure a codec
+	// that is still enabled, and libmi_ao tracks enablement PER PROCESS — so a process that dies
+	// without disabling leaves the device wedged with NO userspace way back. Every game launched
+	// afterwards is silent until reboot (MEASURED across a reboot, 5 systems). Dying is the one
+	// moment we must not skip this.
+	PLAT_resetAudio();
 #ifdef ZERO_FRONTEND_THREADING_V2
 	// Codex #4: only the thread that OWNS core execution may emergency-save. At depth-2 a
 	// MAIN-side fault (present path) can fire while CORE is mid-mutation of emulated memory —
@@ -865,6 +973,11 @@ static void Crash_install(void) { // call after core.load_game + SRAM_read (poin
 	signal(SIGILL,  Crash_handler);
 	signal(SIGFPE,  Crash_handler);
 	signal(SIGABRT, Crash_handler);
+	// SIGTERM/SIGINT previously had NO handler: a force-quit killed us outright, SND_quit never
+	// ran, and the audio device stayed enabled — poisoning audio for every later game until
+	// reboot. Same reasoning as the crash path above.
+	signal(SIGTERM, Term_handler);
+	signal(SIGINT,  Term_handler);
 }
 static void Crash_uninstall(void) {
 	signal(SIGSEGV, SIG_DFL); signal(SIGBUS, SIG_DFL); signal(SIGILL, SIG_DFL);
@@ -1674,15 +1787,128 @@ static void Config_quit(void) {
 		free(core_button_mapping[i].name);
 	}
 }
-static void Config_readOptionsString(char* cfg) {
+// is_user: this is the player's SAVED cfg, not something we ship.
+//
+// A saved cfg must not silently override a value we LOCKED. Load order is
+// system.cfg -> pak default.cfg -> saved cfg, and last-write-wins on value, so a stale save pinned
+// settings forever: a disabled NES turbo survived the pak default that re-enabled it, and per D48 a
+// stale `gpu_thread_rendering` survived the default that turned it off.
+//
+// A locked option is one the player cannot reach in the menu, so a differing saved value can only
+// be an artifact of an older build — never a deliberate choice. Shipped files still override each
+// other in order (a pak may specialise system.cfg); only the saved cfg is held back.
+//
+// The lock gate above is inert for options we ship UNLOCKED, and that left a real hole: a saved cfg
+// carries EVERY option, because Config_write dumps the whole list on any change. Touch one setting
+// and scaling is frozen at whatever it happened to be, forever — so cards written before the pak
+// default became `Native` kept `minarch_screen_scaling = Aspect` and kept shimmering on fractional
+// scale, even though nobody ever chose it.
+//
+// Locking scaling would fix it and cost the menu entry. Instead: version the saved cfg. A save
+// written before CFG_VERSION predates the defaults we have since changed, so the keys in
+// cfg_stale_keys are dropped from it exactly once and the shipped default wins. The next
+// Config_write stamps the version, and from then on a deliberate choice sticks like any other.
+//
+// An entry names the value it migrates TO, and the version that introduced it. Both fields are
+// load-bearing:
+//
+//   `to`      A stale value is dropped ONLY where the shipped chain actually resolves to `to`.
+//             Merely "some shipped file mentions this key" is not enough, and getting this wrong
+//             regresses the Brick: tg5040's system.cfg sets `minarch_screen_scaling = Aspect`
+//             GLOBALLY, so a "was it shipped at all" test fires on every Brick launch for every
+//             core and resets any deliberate Native/Fullscreen/Cropped choice to Aspect. Only the
+//             MMP GB/GBC/FC paks actually moved to Native, and those are the only places this
+//             should fire. (Not hypothetical — caught in review against the real config tree.)
+//
+//   `version` Per-entry, NOT a single global `user_version < CFG_VERSION`. Otherwise adding a v2
+//             key would re-drop every v1 key on a valid v1 save, destroying a choice the player
+//             made deliberately after the v1 migration already ran.
+//
+// Add an entry when a shipped default changes in a way a stale save would defeat, and bump
+// CFG_VERSION to match. Keep the list SHORT — every entry discards a player's setting once.
+#define CFG_VERSION 1
+#define CFG_VERSION_KEY "minarch_cfg_version"
+#define CFG_STALE_MAX 8
+typedef struct CfgStaleKey {
+	const char* key;
+	const char* to;   // drop the saved value only if the shipped chain resolves to exactly this
+	int version;      // drop only if the save predates this version
+} CfgStaleKey;
+static const CfgStaleKey cfg_stale_keys[] = {
+	// v1: the MMP GB/GBC/FC pak defaults moved to Native; saves predating that pinned Aspect and
+	// shimmered on fractional scale. tg5040 ships Aspect and is deliberately NOT affected.
+	{ "minarch_screen_scaling", "Native", 1 },
+	{ NULL, NULL, 0 },
+};
+static int Config_staleIndex(const char* key) {
+	for (int i=0; cfg_stale_keys[i].key; i++) if (!strcmp(key, cfg_stale_keys[i].key)) return i;
+	return -1;
+}
+static int Config_isStaleKey(const char* key) { return Config_staleIndex(key) >= 0; }
+
+// What the SHIPPED chain (system.cfg -> pak default.cfg) last said for each stale key this launch;
+// empty means it said nothing. Load order is preserved because the shipped passes run in order, so
+// this ends up holding the value the shipped chain actually resolves to. Reset by
+// Config_readOptions.
+static char cfg_stale_shipped[CFG_STALE_MAX][64];
+
+// Strict: the value must be ALL digits, non-empty, and in range. A bare strtol() reads "1garbage"
+// as 1 — i.e. a corrupted stamp would claim to be current and the migration would never run, which
+// is the silent-failure direction. Anything we cannot fully parse is treated as version 0
+// (unstamped), so the worst case is that the migration re-evaluates rather than being skipped.
+static int Config_parseVersion(const char* value) {
+	if (!value || !*value) return 0;
+	long v = 0;
+	for (const char* p = value; *p; p++) {
+		if (*p < '0' || *p > '9') return 0;
+		v = v * 10 + (*p - '0');
+		if (v > 100000) return 0; // absurd; treat as corrupt rather than wrapping an int
+	}
+	return (int)v;
+}
+
+// The whole drop decision, in one place so the frontend and core loops cannot drift.
+static int Config_shouldDropStale(int stale_i, int user_version) {
+	if (stale_i < 0 || stale_i >= CFG_STALE_MAX) return 0;
+	const CfgStaleKey* e = &cfg_stale_keys[stale_i];
+	if (user_version >= e->version) return 0;       // save is current for THIS entry
+	if (!cfg_stale_shipped[stale_i][0]) return 0;   // nothing shipped to replace it with
+	return !strcmp(cfg_stale_shipped[stale_i], e->to);
+}
+
+// user_version: the CFG_VERSION stamped in this saved cfg (0 = unstamped/pre-migration). Ignored
+// unless is_user, since shipped files are always current by definition.
+static void Config_readOptionsString(char* cfg, int is_user, int user_version) {
 	if (!cfg) return;
+	if (!is_user) user_version = CFG_VERSION; // shipped files are current by definition
 
 	LOG_info("Config_readOptions\n");
 	char key[256];
 	char value[256];
 	for (int i=0; config.frontend.options[i].key; i++) {
 		Option* option = &config.frontend.options[i];
+		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		int stale_i = Config_staleIndex(option->key);
+		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
+			// Record what the SHIPPED chain says; later shipped files override earlier ones, which
+			// is exactly the resolution order we need to compare against.
+			if (!is_user) snprintf(cfg_stale_shipped[stale_i], sizeof(cfg_stale_shipped[stale_i]), "%s", value);
+			else if (Config_shouldDropStale(stale_i, user_version)) {
+				// Say so — same reason as the locked case below. A dropped line that IS in the
+				// file otherwise sends anyone debugging chasing a setting that looks applied and
+				// is not.
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s (shipped says %s)\n",
+					user_version, CFG_VERSION, option->key, value, cfg_stale_shipped[stale_i]);
+				continue;
+			}
+		}
+		if (is_user && was_locked) {
+			// Say so. Silently discarding a line that IS in the file on the card sends anyone
+			// debugging (us included) chasing a setting that looks applied and is not.
+			LOG_info("ignoring locked frontend option from saved cfg: %s = %s\n", option->key, value);
+			continue;
+		}
 		OptionList_setOptionValue(&config.frontend, option->key, value);
 		Config_syncFrontend(option->key, option->value);
 	}
@@ -1695,7 +1921,23 @@ static void Config_readOptionsString(char* cfg) {
 	
 	for (int i=0; config.core.options[i].key; i++) {
 		Option* option = &config.core.options[i];
+		int was_locked = option->lock;
 		if (!Config_getValue(cfg, option->key, value, &option->lock)) continue;
+		// Core options migrate too — cfg_stale_keys is not frontend-only. D48's stale
+		// `gpu_thread_rendering` is exactly this shape, and it is a CORE key.
+		int stale_i = Config_staleIndex(option->key);
+		if (stale_i >= 0 && stale_i < CFG_STALE_MAX) {
+			if (!is_user) snprintf(cfg_stale_shipped[stale_i], sizeof(cfg_stale_shipped[stale_i]), "%s", value);
+			else if (Config_shouldDropStale(stale_i, user_version)) {
+				LOG_info("migrating saved cfg (v%d -> v%d): dropping %s = %s (shipped says %s)\n",
+					user_version, CFG_VERSION, option->key, value, cfg_stale_shipped[stale_i]);
+				continue;
+			}
+		}
+		if (is_user && was_locked) {
+			LOG_info("ignoring locked core option from saved cfg: %s = %s\n", option->key, value);
+			continue;
+		}
 		OptionList_setOptionValue(&config.core, option->key, value);
 	}
 }
@@ -1832,9 +2074,21 @@ static void Config_free(void) {
 	config.system_cfg = config.default_cfg = config.user_cfg = NULL; // freed pointers must not look usable
 }
 static void Config_readOptions(void) {
-	Config_readOptionsString(config.system_cfg);
-	Config_readOptionsString(config.default_cfg);
-	Config_readOptionsString(config.user_cfg);
+	// Per-launch: the shipped chain is re-read every time, so its opinions must be too.
+	memset(cfg_stale_shipped, 0, sizeof(cfg_stale_shipped));
+
+	Config_readOptionsString(config.system_cfg, 0, CFG_VERSION);
+	Config_readOptionsString(config.default_cfg, 0, CFG_VERSION);
+
+	// An unstamped saved cfg is pre-migration, which is the whole point of the check — treat a
+	// missing key as version 0 rather than assuming current.
+	int user_version = 0;
+	if (config.user_cfg) {
+		char value[256];
+		if (Config_getValue(config.user_cfg, CFG_VERSION_KEY, value, NULL))
+			user_version = Config_parseVersion(value);
+	}
+	Config_readOptionsString(config.user_cfg, 1, user_version); // saved: no lock override, migrated
 
 	// screen_scaling = SCALE_NATIVE; // TODO: tmp
 }
@@ -1899,7 +2153,11 @@ static void Config_write(int override) {
 	else Config_getPath(path, CONFIG_WRITE_ALL);
 
 	ConfigBuffer contents = {};
-	
+
+	// Stamp FIRST, so a save that is truncated mid-write is never mistaken for a current one.
+	// This is what makes the migration one-shot: everything below is a deliberate choice now.
+	ConfigBuffer_append(&contents, "%s = %d\n", CFG_VERSION_KEY, CFG_VERSION);
+
 	for (int i=0; config.frontend.options[i].key; i++) {
 		Option* option = &config.frontend.options[i];
 		ConfigBuffer_append(&contents, "%s = %s\n", option->key, option->values[option->value]);
@@ -2937,6 +3195,10 @@ static bool environment_callback(unsigned cmd, void *data) { // copied from pico
 			core.sample_rate = info->timing.sample_rate;
 			core.aspect_ratio = a;
 			renderer.dst_p = 0; // force selectScaler() on the next frame (see :2837)
+			// Timing moved, so the rate match derived from the OLD fps is now wrong (a region
+			// switch is the real case). Serial path only — under threading v2 this callback runs
+			// on CORE, and the drain below re-applies it on MAIN after the barrier instead.
+			Zero_applyRateMatch();
 		}
 		break;
 	}
@@ -3678,6 +3940,17 @@ static void selectScaler(int src_w, int src_h, int src_p) {
 	// if (screen->w!=dst_w || screen->h!=dst_w || screen->pitch!=dst_p) {
 		screen = GFX_resize(dst_w,dst_h,dst_p);
 	// }
+
+	// A platform may hand back a SMALLER surface than requested (miyoomini clamps when the
+	// requested buffer would overflow its fixed MMA render page). The scalers take dst_h as a
+	// parameter and step the destination by dst_p — they never look at the surface's h — so
+	// without this the frontend would keep writing the full unclamped height straight past the
+	// end of the platform's buffer. Honour what we were actually given.
+	// No-op on platforms that never clamp (screen->h == dst_h there, so this is identity).
+	if (screen && screen->h > 0 && renderer.dst_h > screen->h) {
+		LOG_info("resize: platform clamped dst_h %d -> %d\n", renderer.dst_h, screen->h);
+		renderer.dst_h = screen->h;
+	}
 }
 static void present_frame(const void *data, unsigned width, unsigned height, size_t pitch, int do_flip) {
 	// return;
@@ -5587,6 +5860,13 @@ static void Menu_loop(void) {
 		screen = GFX_resize(DEVICE_WIDTH,DEVICE_HEIGHT,DEVICE_PITCH);
 	}
 	
+	// Drop the debug HUD for the duration of the menu. The overlay pointers are only refreshed
+	// from the video-refresh path, which does not run while the menu is up — so without this the
+	// LAST game frame's HUD strips stay live and every platform's flip keeps compositing them
+	// over the menu (both tg5040 and miyoomini call drawDebugOverlay() unconditionally in flip).
+	// The next rendered game frame re-arms it if the HUD is still enabled.
+	PLAT_setDebugOverlay(NULL, NULL, 0, 0, 0);
+
 	Core_flushMemory();
 	PWR_warn(0);
 	if (!HAS_POWER_BUTTON) PWR_enableSleep();
@@ -6026,8 +6306,24 @@ static void trackFPS(void) {
 				static long m_u0 = 0; static int m_d0 = 0;
 				int m_u = (int)(ss.underruns - m_u0); m_u0 = ss.underruns;
 				int m_d = mb_dups_total - m_d0;       m_d0 = mb_dups_total;
-				LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d\n",
-					m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+				// dac = frames queued to the DAC, and whether that count MOVED since the last
+				// sample. A ONE-WAY signal: dac=? or STALLED proves there is no audio, but
+				// "flowing" does NOT prove audibility — the known-silent build still reported
+				// flowing on every system (negative control, 2026-07-26). Treat it as a cheap
+				// way to catch dead audio, never as a green light.
+				int m_dac = PLAT_getAudioQueued();
+				static int m_dac0 = -1;
+				int m_dac_moved = (m_dac >= 0 && m_dac0 >= 0 && m_dac != m_dac0);
+				m_dac0 = m_dac;
+				if (m_dac < 0) {
+					LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d dac=?\n",
+						m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000);
+				}
+				else {
+					LOG_info("MEASURE d=%d fps=%.1f/%.1f cpu=%.1f use=%.0f under/s=%d dup/s=%d ceil=%d dac=%d %s\n",
+						m_depth, fps_double, core.fps, cpu_double, use_double, m_u, m_d, gov_state.ceil_khz/1000,
+						m_dac, m_dac_moved ? "flowing" : "STALLED");
+				}
 			}
 		}
 
@@ -6044,8 +6340,13 @@ static void limitFF(void) {
 	static uint64_t ff_frame_time = 0;
 	static uint64_t last_time = 0;
 	static int last_max_speed = -1;
-	if (last_max_speed!=max_ff_speed) {
+	// Recompute on a core.fps change too, not only on a cap change. The cached period is derived
+	// from core.fps, so a runtime NTSC<->PAL switch made a 4x cap deliver 4.81x (or 3.33x the other
+	// way) until the user happened to change the cap.
+	static double last_fps = 0.0;
+	if (last_max_speed!=max_ff_speed || last_fps!=core.fps) {
 		last_max_speed = max_ff_speed;
+		last_fps = core.fps;
 		// Fractional speeds (D60): budget from the multiplier table, not index+1. Index 0
 		// ("None" = uncapped) never paces — guard the divide (the use below is also gated
 		// on max_ff_speed, but a stale inf/0 budget must never be computed).
@@ -6243,7 +6544,10 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 		float v; memcpy(&v, &bits, 4);
 			switch (op) {
 				case ZERO_CMD_ASPECT: core.aspect_ratio = v; renderer.dst_p = 0; break;
-				case ZERO_CMD_FPS:    core.fps = v;          renderer.dst_p = 0; break;
+				// Re-apply after the fps field lands. This drain runs on MAIN and fr_drain()
+				// invokes it before publishing barrier_applied, so CORE cannot resume producing
+				// under the new timing until the clocks and DRC ownership are settled.
+				case ZERO_CMD_FPS:    core.fps = v; renderer.dst_p = 0; Zero_applyRateMatch(); break;
 				case ZERO_CMD_SRATE:  core.sample_rate = v;  break;
 				case ZERO_CMD_RUMBLE: VIB_setStrength((int)v); break;
 			}
@@ -6313,7 +6617,20 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
-	presentation_drop_supported = exactMatch((char*)core.tag, "PS");
+	// Presentation-drop protects PS1 audio by SKIPPING presents (up to 6 in a row) whenever the
+	// audio ring dips below 50%. That trade was measured on tg5040, whose audio path is direct SDL.
+	// It is NOT automatically right elsewhere: the MMP routes through the vendor audioserver daemon
+	// plus an OSS shim, so ring occupancy means something different there, and a ring that reads low
+	// as a matter of course would drop presents continuously — visible chop, for audio the daemon
+	// was already buffering. ZERO_NO_PRESENT_DROP (presence-only, project convention) opts a pak out
+	// so the trade can be judged per platform instead of assumed.
+	//
+	// MEASURED on MMP/BR2, 4 min each (2026-07-31): drop ON = 64 audio underruns; drop OFF = 1581,
+	// with generation pinned at 60.00 fps either way. So the drop is EARNING its keep there and must
+	// stay on — the visible chop is a symptom (the device cannot both present every frame and keep
+	// BR2's audio ring fed), not evidence the mechanism is misfiring. Do not disable it to chase
+	// smoothness; that trades a stutter you notice for crackle you notice more.
+	presentation_drop_supported = exactMatch((char*)core.tag, "PS") && getenv("ZERO_NO_PRESENT_DROP")==NULL;
 	// The Lenient-vsync DRC revival can wind up against the 200ms audio ring and
 	// drive a healthy low-end core below realtime. Keep it diagnostic-only until
 	// its controller has an anti-windup contract and a cross-system device gauntlet.
@@ -6492,6 +6809,9 @@ int main(int argc , char* argv[]) {
 	} else {
 		SND_init(core.sample_rate, core.fps);
 	}
+
+	Zero_applyRateMatch(); // static panel rate match; re-applied whenever core.fps changes
+
 	InitSettings(); // after we initialize audio
 	Menu_init();
 	if (use_ftv2) {
@@ -6780,7 +7100,13 @@ int main(int argc , char* argv[]) {
 					// Max FF Speed index 0 = "None" (uncapped): there is no finite target, so
 					// treat uncapped FF as a permanent slip -> the ceiling climbs to profile max
 					// (Codex finding #3: fps*1 held the settled floor = clock-starved FF again)
-					double gov_target_fps = core.fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
+					// The governor must budget against the rate we actually TARGET. With a static
+					// panel match the core intentionally settles below core.fps, and budgeting from
+					// the native rate makes the predictive sink reject a sink that would genuinely
+					// fit — holding an OPP higher than necessary and persisting it via gov-memory,
+					// which is precisely backwards for this fork.
+					double gov_native_fps = core.fps * (1.0 + zero_static_rate_ppm / 1000000.0);
+					double gov_target_fps = gov_native_fps * (fast_forward ? (max_ff_speed > 0 ? max_ff_mults[max_ff_speed] : 1000) : 1);
 					double gov_gen = cpu_double;
 #ifdef ZERO_FRONTEND_THREADING_V2
 					if (zero_ftv2_depth2) gov_gen = fps_double;
@@ -6938,11 +7264,19 @@ int main(int argc , char* argv[]) {
 			 && !zero_ftv2_depth2
 #endif
 			) { // depth-2 telemetry is recorded once per RUN_DONE in the drain
-				static long prev_wait_ms = 0;
+				// us-precision pace subtraction, CLAMPED rather than skipped. The old form used
+				// ms-rounded wait deltas and fell back to the RAW window whenever rounding pushed
+				// the delta past it — so a fully audio-paced frame recorded its whole ~20ms as
+				// "work". On MMP PS1 that painted 1-in-6 frames as over-budget on games
+				// generating at full rate, and the phantom sent an evening chasing clock/dither/
+				// thread/readahead fixes that all "failed" to move a number that was never work
+				// (2026-07-28; the pin-verified +24% clock A/B is what exposed it).
+				static uint32_t prev_wait_us = 0;
 				SND_Stats as; SND_getStats(&as);
-				long pace_us = (as.wait_ms - prev_wait_ms) * 1000; prev_wait_ms = as.wait_ms;
+				// UNSIGNED subtraction: exact across the uint32 wrap (see SND_Stats in api.h).
+				uint32_t pace_us = as.wait_us - prev_wait_us; prev_wait_us = as.wait_us;
 				uint32_t raw_us  = GFX_getFrameWorkUs();
-				uint32_t work_us = (pace_us > 0 && (uint32_t)pace_us < raw_us) ? raw_us - (uint32_t)pace_us : raw_us;
+				uint32_t work_us = (pace_us < raw_us) ? raw_us - pace_us : 0;
 				tlm_frame(work_us);
 				tlm_audio(as.queue_frames, as.underruns, as.overruns);
 			}
@@ -6977,6 +7311,11 @@ int main(int argc , char* argv[]) {
 			}
 			if (drc_disabled == -1) drc_disabled = (getenv("ZERO_NO_DRC") != NULL);
 			int drc_supported = (!drc_disabled && drc_system_allowed
+				// A static panel match owns all three clocks. DRC only ever climbs (clamped >= 0)
+				// because it was built for a panel FASTER than the core, so it cannot express a
+				// slow-panel correction — and it would zero the baseline the moment it went
+				// ineligible or fast-forwarded. Mutually exclusive by construction.
+				&& !zero_static_rate_ppm
 				&& core.fps >= 58.0 && core.fps <= 61.0
 				// Lenient still presents through the same vsynced SDL renderer on tg5040;
 				// only explicit VSYNC_OFF removes the panel clock DRC synchronizes to.
@@ -6996,7 +7335,10 @@ int main(int argc , char* argv[]) {
 			drc_was_fast_forward = fast_forward;
 			if (!drc_supported) drc_restore_ppm = -1;
 			if (!drc_eligible) {
-				if (drc_ppm) { // revert cleanly while ineligible; FF restores it below
+				// ...but never write over a static panel match. If a timing change installs one
+				// while DRC happens to own a non-zero ppm, this cleanup would zero all three
+				// clocks and silently erase the correction that was just applied.
+				if (drc_ppm && !zero_static_rate_ppm) { // revert cleanly while ineligible
 					drc_ppm = 0;
 					if (!drc_threaded) {
 						SND_setRateAdjustPPM(0);

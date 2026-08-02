@@ -1,0 +1,36 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 1842538..c70f4af 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -386,6 +386,20 @@ else ifeq ($(platform), gcw0)
+    CFLAGS += -fomit-frame-pointer -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float
+    CXXFLAGS += $(CFLAGS)
+ 
++# MIYOO MINI PLUS (SSD202D, Cortex-A7)
++else ifeq ($(platform), miyoomini)
++	LDFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++	TARGET := $(TARGET_NAME)_libretro.so
++	CC = $(CROSS_COMPILE)gcc
++	CXX = $(CROSS_COMPILE)g++
++	AR = $(CROSS_COMPILE)ar
++	SHARED := -shared -Wl,--version-script=$(version_script)
++	LDFLAGS += -fPIC -flto
++	PLATFORM_DEFINES := -DCC_RESAMPLER -DCC_RESAMPLER_NO_HIGHPASS
++	CFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++	CFLAGS += -fomit-frame-pointer -ffast-math -fPIC -flto
++	CXXFLAGS += $(CFLAGS)
++
+ # RETROFW
+ else ifeq ($(platform), retrofw)
+    TARGET := $(TARGET_NAME)_libretro.so
+@@ -652,8 +666,8 @@ ifneq (,$(findstring msvc,$(platform)))
+    CFLAGS   += -MT
+    CXXFLAGS += -MT
+ endif
+-   CFLAGS   += -O2 -DNDEBUG
+-   CXXFLAGS += -O2 -DNDEBUG
++   CFLAGS   += -O3 -DNDEBUG
++   CXXFLAGS += -O3 -DNDEBUG
+ endif
+ 
+ ifeq (,$(findstring msvc,$(platform)))

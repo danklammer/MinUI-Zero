@@ -1,0 +1,44 @@
+diff --git a/Makefile b/Makefile
+index f34a015..1a7a08c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -88,6 +88,30 @@ else ifeq ($(platform), classic_armv8_a35)
+ 	ARCH = arm
+ 	CFLAGS += -march=armv8-a
+ 	LDFLAGS += -static-libgcc -static-libstdc++
++
++# MIYOO MINI PLUS (SSD202D, Cortex-A7)
++else ifeq ($(platform), miyoomini)
++	LDFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++   TARGET := $(TARGET_NAME)_libretro.so
++   CC = $(CROSS_COMPILE)gcc
++   CXX = $(CROSS_COMPILE)g++
++   AR = $(CROSS_COMPILE)ar
++   STRIP = $(CROSS_COMPILE)strip
++   NEED_BPP := 16
++   fpic := -fPIC
++   SHARED := -shared -Wl,--no-undefined -Wl,--version-script=link.T
++   CFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++   CFLAGS += -Ofast \
++   -flto=4 -fwhole-program -fuse-linker-plugin \
++   -fdata-sections -ffunction-sections -Wl,--gc-sections \
++   -fno-stack-protector -fno-ident -fomit-frame-pointer \
++   -falign-functions=1 -falign-jumps=1 -falign-loops=1 \
++   -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-unroll-loops \
++   -fmerge-all-constants -fno-math-errno
++   CXXFLAGS += $(CFLAGS)
++   HAVE_NEON = 1
++   ARCH = arm
++
+ #######################################
+ 
+ else ifeq ($(platform), osx)
+@@ -294,7 +318,7 @@ OBJECTS := $(SOURCES_CXX:.cpp=.o) $(SOURCES_C:.c=.o)
+ all: $(TARGET)
+ 
+ ifeq ($(DEBUG),0)
+-   FLAGS += -O2 -DNDEBUG
++   FLAGS += -O3 -DNDEBUG
+ else
+    FLAGS += -O0 -g -DDEBUG
+ endif

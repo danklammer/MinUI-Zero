@@ -220,7 +220,19 @@ void SND_pause(void);  // close the audio device during sleep (thread fully stop
 void SND_resume(void); // reopen after sleep at the rate negotiated in SND_init
 void SND_quit(void);
 // audio-health telemetry (benchmark): cumulative counters + current ring fill.
-typedef struct SND_Stats { long underruns; long overruns; long wait_ms; int queue_frames; int frame_count; } SND_Stats;
+// wait_us: microsecond total of audio-backpressure blocking (the ring-full waits in
+// SND_batchSamples), as a WRAP-SAFE uint32. It is deliberately not `long`: on armv7 (miyoomini)
+// long is 32-bit, so a signed microsecond accumulator saturates after ~2147s of CUMULATIVE
+// blocking — reachable in a couple of hours on PS1, where ~83%% of frames block — and the
+// subtraction across that point yields garbage. Unsigned wraparound subtraction is exact for any
+// true delta below 2^32us (~71min), which a per-frame delta never approaches.
+// wait_ms survives for existing consumers, but per-frame DELTAS of a
+// ms-rounded counter cannot be safely subtracted from a us work window: when rounding pushed
+// the delta past the raw window the subtraction skipped, and a fully-paced frame recorded its
+// whole ~20ms as "work" — which read as 1-in-6 frames over budget on PS1 games that were
+// actually running at full speed (MMP, 2026-07-28: six A/B knobs including a pin-verified
+// +24%% clock all "failed" to move a number that was never work).
+typedef struct SND_Stats { long underruns; long overruns; long wait_ms; uint32_t wait_us; int queue_frames; int frame_count; } SND_Stats;
 void SND_getStats(SND_Stats* out);
 int SND_isActive(void); // audio device open and pacing (present-skip is only legal while true)
 
@@ -345,8 +357,19 @@ void PLAT_flip(SDL_Surface* screen, int sync);
 // debug HUD strips (RGB565, native res, presented at DBG_OVERLAY_SCALE anchored to the
 // game's panel rect); NULL top disables. w = used columns (game width / scale), stride =
 // the buffer's allocated row width. 0xF81F = transparent.
+// Platform-overridable (define in platform.h): 3x reads well on 1024x768 but is oversized
+// relative to a 640x480 panel — miyoomini presents at 2x.
+#ifndef DBG_OVERLAY_SCALE
 #define DBG_OVERLAY_SCALE 3
+#endif
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride);
+// Frames currently queued to the audio DAC, or -1 if the platform cannot report it.
+// MUST be called from the process that opened the device: the SigmaStar MI_AO layer tracks
+// enablement per-process, so an out-of-process query always reports "not enabled".
+int PLAT_getAudioQueued(void);
+int PLAT_getChargePercent(void); // exact charge %, or -1 if unavailable (weak fallback: -1)
+int PLAT_audioIsShared(void); // 1 when another process owns the codec (weak fallback: 0)
+int PLAT_isToppingUp(void); // 1 while the cell is actually filling, -1 = cannot tell (weak fallback)
 // panel-coordinate rect of the most recently presented game frame (0s before first flip)
 void PLAT_getGameRect(int* x, int* y, int* w, int* h);
 int PLAT_supportsOverscan(void);
@@ -363,7 +386,18 @@ int PLAT_deepSleep(void); // write "mem" to /sys/power/state; returns 0 on a ful
 void PLAT_powerOff(void);
 	
 void PLAT_setCPUSpeed(int speed); // enum (now sets the scaling_max_freq cap under schedutil)
-void PLAT_setCPUMaxFreq(int khz); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
+void PLAT_setCPUMaxFreq(int khz);
+// Silence the DAC across audio open/close. Analog transients (the audible POP) happen when
+// the codec is enabled or torn down; platforms with a hardware mute implement this, all
+// others get the weak no-op in api.c.
+void PLAT_muteAudio(int mute);
+// Return 1 if the audio device must NOT be closed on teardown. On SigmaStar the SDL2 MMIYOO driver
+// calls MI_AO_Disable/DisableChn on close, and that power-down is an audible POP; leaving the codec
+// enabled for the next process avoids the transient entirely.
+int PLAT_keepAudioOpen(void);
+// Force the audio device back to a closed/disabled state. Called only when opening it FAILED, to
+// recover from a previous process that died without closing it. No-op where not applicable.
+void PLAT_resetAudio(void); // closed-loop governor: set the cpufreq ceiling (scaling_max_freq, kHz)
 int PLAT_supportsUndervolt(void); // 1 only if a confirmed runtime undervolt mechanism exists (tg5040: 0 for now)
 void PLAT_setUndervolt(int millivolts); // legacy spike API, superseded by the table-driven authority below
 void PLAT_setCPUVoltForCeil(int khz);   // apply the calibrated voltage covering any OPP <= (rounded-up) ceiling
