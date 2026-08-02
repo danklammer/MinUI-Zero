@@ -78,6 +78,42 @@ grep -q "LIVE-LAUNCHER" "$T/c3/.system/tg5040/paks/MinUI.pak/launch.sh" 2>/dev/n
 	&& ok "live system untouched by a corrupt archive" || bad "corrupt archive damaged the system"
 [ -f "$T/c3/MinUI.zip.bad" ] && ok "corrupt archive set aside, cannot install-loop" || bad "corrupt archive not set aside"
 
+echo "=== case 4: extraction fails PARTWAY — live system must be untouched ==="
+# The card fills (or power is cut) after unzip has written some entries. Miyoo extracts to an inert
+# staging directory precisely so a half-extract cannot touch the installed system; tg5040 extracted
+# straight over it with -o, so a failure left .system a mix of old and new binaries and the archive
+# was renamed aside, removing the only way to retry.
+make_card "$T/c4"; make_zip "$T/c4" tg5040
+mkdir -p "$T/c4/bin"
+cat > "$T/c4/bin/unzip" <<'STUB'
+#!/bin/sh
+# -tqq (the CRC preflight) and -l (the platform listing) must behave normally.
+case "$1" in
+	-tqq|-l) exec /usr/bin/unzip "$@" ;;
+esac
+# The real extract: write ONE entry into the destination, then fail as if the card filled.
+# The call under test is `unzip -o <zip> -d <dest>`, so the destination is the LAST argument.
+DEST=""
+for a in "$@"; do DEST="$a"; done
+if [ -n "$DEST" ] && [ -d "$DEST" ]; then
+	mkdir -p "$DEST/.system/tg5040/paks/MinUI.pak"
+	echo "HALF-WRITTEN" > "$DEST/.system/tg5040/paks/MinUI.pak/launch.sh"
+fi
+exit 1
+STUB
+chmod +x "$T/c4/bin/unzip"
+( cd "$T/c4" && PATH="$T/c4/bin:$PATH" sh -c '
+	ROOT="'"$T/c4"'"
+	sed -n "/^	UPDATED=\$/,/^	sync\$/p" "'"$SRC"'" | sed -e "s|\./unzip|unzip|g" -e "s|\./show\.elf [^ ]*|:|" > "$ROOT/stanza.sh"
+	cd "$ROOT" && PLATFORM=tg5040 SDCARD_PATH="$ROOT" UPDATE_PATH="$ROOT/MinUI.zip" \
+	SYSTEM_PATH="$ROOT/.system" sh "$ROOT/stanza.sh"
+' ) >/dev/null 2>&1
+grep -q "LIVE-LAUNCHER" "$T/c4/.system/tg5040/paks/MinUI.pak/launch.sh" 2>/dev/null \
+	&& ok "live system untouched by a half-extract" \
+	|| bad "half-extract overwrote the installed system"
+[ -f "$T/c4/MinUI.zip" ] || [ -f "$T/c4/MinUI.zip.failed" ] \
+	&& ok "archive retained for diagnosis or retry" || bad "archive lost after a failed extract"
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
