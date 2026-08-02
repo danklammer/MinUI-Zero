@@ -76,15 +76,28 @@ if [ -f "$UPDATE_PATH" ]; then
 	# kept for diagnosis but unable to install-loop; a power-cut mid-extract leaves the
 	# package in place so the next boot retries.
 	UPDATED=
-	if ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
-		if ./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH"; then # &> /mnt/SDCARD/unzip.txt
-			rm -f "$UPDATE_PATH"
-			UPDATED=yes
-		else
-			mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
-		fi
-	else
+	if ! ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
 		mv -f "$UPDATE_PATH" "$UPDATE_PATH.bad"
+	# ...and that it is a payload for THIS platform. A release archive for another device is
+	# perfectly VALID, so the CRC test above passes it, and extracting it wrote another device's
+	# .system over this one and then deleted the only copy of the archive: a working console
+	# turned into one that needs a PC. The README tells users to update by dropping MinUI.zip on
+	# the card, and the release page offers an archive per device, so picking the wrong one is an
+	# ordinary mistake rather than an exotic one.
+	#
+	# The Miyoo installer has always checked this (see its boot.sh, same grep); tg5040 never did.
+	# That was drift, not an earned divergence.
+	#
+	# Change NOTHING on rejection, matching the Miyoo behaviour: the installed system still boots,
+	# and the archive is KEPT so the user can simply replace it with the right one and reboot.
+	elif ! ./unzip -l "$UPDATE_PATH" 2>/dev/null | grep -q "$PLATFORM/paks/MinUI.pak/launch.sh"; then
+		echo "$(date '+%F %T') This MinUI.zip is a valid archive but does not contain a $PLATFORM system - it is probably the download for a different device. Nothing was changed and the file was kept; replace it with the $PLATFORM release and reboot." > "$SDCARD_PATH/MinUI-update-failed.txt"
+		sync
+	elif ./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH"; then # &> /mnt/SDCARD/unzip.txt
+		rm -f "$UPDATE_PATH"
+		UPDATED=yes
+	else
+		mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
 	fi
 	sync
 
