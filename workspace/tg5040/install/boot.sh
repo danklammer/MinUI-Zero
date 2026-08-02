@@ -115,7 +115,18 @@ if [ -f "$UPDATE_PATH" ]; then
 		# the archive, and left the OLD tg5040.sh and updater in place. Nothing visibly failed,
 		# which is what made it dangerous: the safety-critical bootstrap could never self-update.
 		cp -rf "$STAGE/.system" "$SDCARD_PATH/" && COPY_OK=1
-		[ -d "$STAGE/.tmp_update" ] && { cp -rf "$STAGE/.tmp_update" "$SDCARD_PATH/" || COPY_OK=0; }
+		# .tmp_update IS DELIBERATELY NOT INSTALLED HERE. Copying it merges over the LIVE bootstrap,
+		# including the tg5040.sh that is executing right now, and `cp` truncates before writing: a
+		# power cut mid-copy leaves a truncated `updater` that the firmware hook still finds by
+		# presence, `exec`s, and fails on — with its stock fallback unreachable. That needs a PC.
+		#
+		# The consequence of leaving it out is that the bootstrap cannot self-update: a new
+		# tg5040.sh ships in the archive but the installed one keeps running. That is a missing
+		# feature, not a brick, and it is the behaviour every released version has had.
+		#
+		# Doing this properly needs the inert-stage + checked-atomic-promote treatment the OUTER
+		# bootstrap now uses, applied to a directory whose contents are mid-execution. That is worth
+		# doing carefully rather than quickly — see the note in docs/qol-backlog.md.
 		for extra in "$STAGE"/* "$STAGE"/.[!.]*; do
 			case "$(basename "$extra")" in .system|.tmp_update|"*"|".[!.]*") continue;; esac
 			[ -e "$extra" ] && cp -rf "$extra" "$SDCARD_PATH/" 2>/dev/null
