@@ -5,18 +5,79 @@
 SDCARD_PATH=/mnt/SDCARD
 cd "$SDCARD_PATH/trimui/app"
 
-# smart pro/brick
-if [ -f /usr/trimui/bin/runtrimui.sh ] && [ ! -f /usr/trimui/bin/runtrimui-original.sh ]; then
-	mv /usr/trimui/bin/runtrimui.sh /usr/trimui/bin/runtrimui-original.sh
-	cp ./runtrimui.sh /usr/trimui/bin/
-# smart
-elif [ ! -f /etc/main.original ]; then
-	cp /etc/main /etc/main.original
-	cp ./main.sh /etc/main
+# PAYLOAD FIRST, BOOT HOOK SECOND, ENTRY POINT LAST.
+#
+# This used to replace the firmware's launcher at the TOP of the file, before the payload was
+# copied, and then delete the card entry point with no check of any kind. Two ways that stranded a
+# device, both reachable on a full card or a sudden power cut:
+#
+#   * The wrapper installed below dispatches to .tmp_update/updater on PRESENCE alone and `exec`s
+#     it — and a failed exec never returns, so the runtrimui-original.sh fallback in its `else`
+#     branch is unreachable. Publishing a partial .tmp_update therefore produced a device that
+#     dispatched into nothing on every boot, with the card entry point already deleted.
+#   * `mv runtrimui.sh runtrimui-original.sh` followed by a separate `cp` leaves an instant with NO
+#     runtrimui.sh at all. A power cut there costs the firmware its launcher — worse than a card
+#     problem, because the card no longer holds the only broken piece.
+#
+# So: stage and verify the payload, promote it, install the hook by writing a temporary and renaming
+# it over the live name (never absent), and only then delete the entry point.
+REQUIRED="updater tg5040.sh"
+STAGE="$SDCARD_PATH/.tmp_update.new"
+INSTALL_OK=1
+
+rm -rf "$STAGE"
+cp -rf .tmp_update "$STAGE" || INSTALL_OK=0
+sync
+
+for f in $REQUIRED; do
+	if [ ! -s "$STAGE/$f" ] || [ "$(wc -c < "$STAGE/$f" 2>/dev/null)" != "$(wc -c < ".tmp_update/$f" 2>/dev/null)" ]; then
+		INSTALL_OK=0
+	fi
+done
+
+if [ "$INSTALL_OK" != "1" ]; then
+	rm -rf "$STAGE"
+	echo "$(date '+%F %T') Could not copy the MinUI bootstrap to the SD card (full card, or a write error). Nothing was removed - free some space and try again." > "$SDCARD_PATH/MinUI-install-failed.txt"
+	sync
+	poweroff
+	exit 1
 fi
 
-# .tmp_update/updater does the actual installation (and later, updating)
-cp -rf .tmp_update $SDCARD_PATH/
+rm -rf "$SDCARD_PATH/.tmp_update.old"
+[ -d "$SDCARD_PATH/.tmp_update" ] && mv "$SDCARD_PATH/.tmp_update" "$SDCARD_PATH/.tmp_update.old"
+mv "$STAGE" "$SDCARD_PATH/.tmp_update"
+sync
+rm -rf "$SDCARD_PATH/.tmp_update.old"
+
+# Boot hook, now that a complete payload exists for it to dispatch to.
+# smart pro/brick
+if [ -f /usr/trimui/bin/runtrimui.sh ] && [ ! -f /usr/trimui/bin/runtrimui-original.sh ]; then
+	# Save the original by COPY (not move), so runtrimui.sh is never absent...
+	cp /usr/trimui/bin/runtrimui.sh /usr/trimui/bin/runtrimui-original.sh.new && \
+	mv /usr/trimui/bin/runtrimui-original.sh.new /usr/trimui/bin/runtrimui-original.sh || INSTALL_OK=0
+	# ...then swap ours in by rename, which replaces the live file atomically.
+	if [ "$INSTALL_OK" = "1" ]; then
+		cp ./runtrimui.sh /usr/trimui/bin/runtrimui.sh.new && \
+		mv /usr/trimui/bin/runtrimui.sh.new /usr/trimui/bin/runtrimui.sh || INSTALL_OK=0
+	fi
+# smart
+elif [ ! -f /etc/main.original ]; then
+	cp /etc/main /etc/main.original.new && mv /etc/main.original.new /etc/main.original || INSTALL_OK=0
+	if [ "$INSTALL_OK" = "1" ]; then
+		cp ./main.sh /etc/main.new && mv /etc/main.new /etc/main || INSTALL_OK=0
+	fi
+fi
+sync
+
+if [ "$INSTALL_OK" != "1" ]; then
+	# The payload is live and the firmware launcher is intact either way; leave the entry point so
+	# the next boot retries the hook.
+	echo "$(date '+%F %T') Could not install the MinUI boot hook. Nothing was removed - reboot to retry." > "$SDCARD_PATH/MinUI-install-failed.txt"
+	sync
+	poweroff
+	exit 1
+fi
+
 rm -rf "$SDCARD_PATH/trimui"
 sync
 $SDCARD_PATH/.tmp_update/updater
