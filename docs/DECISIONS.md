@@ -1109,3 +1109,15 @@ without retaining or invoking the supplied callbacks. The performance hint is no
 without fallthrough, the availability table is zero-initialized, and unsupported callback
 registration returns false so cores retain their synchronous fallback. These are correctness
 fixes, not threading policy.
+
+## D61 — Every Miyoo emulator ran at the LOWEST scheduler priority for the life of the port (2026-07-27)
+All eight `Emus/*.pak/launch.sh` invoked `nice -20 minarch.elf`, intending to raise priority. `nice
+-NUM` is the obsolescent INCREMENT form: it means +20, clamped to 19 — the lowest priority the
+scheduler offers. Verified on device: `nice -20` → 19, `nice -n -20` → −20, no nice → 0. So every
+game ran BELOW `audioserver` and `keymon` (both 0). Worst possible placement: the MMP has no
+schedutil, so the governor parks the clock near saturation, which is exactly when losing timeslices
+costs frames — a plausible contributor to jitter and audio crackle across every system.
+Inherited verbatim from upstream MinUI, and it survived a line-by-line firmware comparison that
+marked it "identical, already have" — compared, but never checked for semantics.
+Fix: no `nice` at all, matching tg5040 (which never used it). Verified on device: minarch nice = 0.
+Lesson: the bug was not in the clever code. It was in an inherited primitive nobody re-derived.

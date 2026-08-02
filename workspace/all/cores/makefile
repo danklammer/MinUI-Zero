@@ -20,7 +20,11 @@ endif
 # this logic was broken out from picoarch's all-in-one makefile
 
 PATCH = git apply --unidiff-zero
-PROCS = -j4
+# `?=` so a platform can dial this down before including this file. miyoomini does: its toolchain
+# image is amd64-only, so on an arm64 host it runs emulated, and at -j4 gcc 8.3 intermittently
+# SEGFAULTS mid-compile (seen on picodrive's tremor/mdct.c — the identical command succeeded
+# serially straight afterwards). A build that randomly dies is not reproducible.
+PROCS ?= -j4
 
 ###############################
 
@@ -31,6 +35,10 @@ define TEMPLATE
 $1_REPO ?= https://github.com/libretro/$(1)
 $1_MAKE ?= make $(and $($1_MAKEFILE),-f $($1_MAKEFILE)) platform=$(PLATFORM) $($(1)_FLAGS)
 $1_BUILD_PATH ?= $(1)
+# Per-core parallelism. Needed because a core can recurse into a sub-make that mishandles the
+# jobserver: picodrive's Cyclone M68K generator dies with "write jobserver: Bad file descriptor"
+# under any -jN, deterministically. Set <core>_PROCS = -j1 for those.
+$1_PROCS ?= $(PROCS)
 
 src/$(1):
 	mkdir -p src
@@ -51,7 +59,7 @@ verify-$(1): src/$(1)/.patched src/$(1)/.patched-all
 
 output/$(1)_libretro.so: src/$(1)/.patched src/$(1)/.patched-all | verify-$(1)
 	mkdir -p output
-	cd src/$$($1_BUILD_PATH) && $$($1_MAKE) $(PROCS)
+	cd src/$$($1_BUILD_PATH) && $$($1_MAKE) $$($1_PROCS)
 	mv src/$$($1_BUILD_PATH)/$(if $($(1)_CORE),$($(1)_CORE),$(1)_libretro.so) ./output
 
 clone-$(1): src/$(1)

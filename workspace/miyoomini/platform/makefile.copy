@@ -1,0 +1,23 @@
+$(PLATFORM):
+	# $@
+	cp ./workspace/$@/overclock/overclock.elf ./build/SYSTEM/$@/bin/
+	cp ./workspace/$@/blank/blank.elf ./build/SYSTEM/$@/bin/
+	cp ./workspace/$@/batmon/batmon.elf ./build/SYSTEM/$@/bin/
+	cp ./workspace/$@/lumon/lumon.elf ./build/SYSTEM/$@/bin/
+	cp ./workspace/$@/show/show.elf ./build/SYSTEM/$@/bin
+	cp ./workspace/$@/other/sdl/build/.libs/libSDL-1.2.so.0.11.5 ./build/SYSTEM/$@/lib/libSDL-1.2.so.0
+	# as_preload.so / audioserver.mod intentionally NOT copied. They belong to the SDL 1.2
+	# latency-reduction path and the NON-Plus audio daemon; this fork routes audio through the
+	# stock /customer/app/audioserver with SDL2's OSS backend and explicitly `unset LD_PRELOAD`
+	# outside the game process. Nothing we ship loads either, so they were dead weight in every
+	# artifact — and a preload sitting in lib/ invites someone to wire it back up.
+	# installer
+	cp ./workspace/$@/install/update.sh ./build/SYSTEM/$@/bin/install.sh
+	mkdir -p ./build/BOOT/common/$@/
+	cp ./workspace/$@/install/boot.sh ./build/BOOT/common/$@.sh
+	cp ./workspace/$@/install/*.png ./build/BOOT/common/$@/
+	cp ./workspace/$@/show/show.elf ./build/BOOT/common/$@/
+	# extras — this fork ships Clock and Input only (their .elf are copied by the top makefile's
+	# `system:` target). Upstream's Files.pak (DinguxCommander) and Bootlogo.pak are deliberately
+	# NOT shipped: a file manager and a boot-logo editor are user-facing weight this fork doesn't
+	# take on, and both are the kind of legacy extra the card was being cleaned of.

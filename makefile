@@ -18,14 +18,24 @@ endif
 
 ###########################################################
 
-BUILD_HASH:=$(shell git rev-parse --short HEAD)
-ZERO_VERSION=v1.5.3
+# Append -dirty when the tree has uncommitted changes. Without this an artifact built from WIP
+# stamps itself with the last clean SHA and claims to be a commit it is not — which makes every
+# "what exactly is on this card?" question unanswerable, and burned a review cycle.
+BUILD_HASH:=$(shell git rev-parse --short HEAD)$(shell test -n "$$(git status --porcelain)" && echo -dirty)
+ZERO_VERSION=v1.5.4
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
-RELEASE_BASE=MinUI-Zero-$(RELEASE_TIME)$(RELEASE_BETA)
+# Device family for the release name: tg5040 -> trimui, miyoomini -> miyoo. Per-family zips keep
+# the mature trimui build from being re-cut every time the new miyoo port churns.
+FAMILY_tg5040=trimui
+FAMILY_miyoomini=miyoo
+FAMILY=$(if $(FAMILY_$(firstword $(PLATFORMS))),$(FAMILY_$(firstword $(PLATFORMS))),$(firstword $(PLATFORMS)))
+# miyoo is experimental: mark its artifacts so nobody mistakes it for the shipped platform
+RELEASE_BETA_miyoo=-alpha
+RELEASE_BASE=MinUI-Zero-$(FAMILY)-$(RELEASE_TIME)$(RELEASE_BETA)$(RELEASE_BETA_$(FAMILY))
 # highest existing suffix + 1 — counting files breaks after any deletion (a stale count
 # can re-issue an existing name and zip -r would append into the shipped artifact)
-RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | sed -E 's/.*-([0-9]+)-base\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
+RELEASE_DOT:=$(shell find -E ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+\.zip" | sed -E 's/.*-([0-9]+)\.zip/\1/' | awk 'BEGIN{m=-1}{if($$1+0>m)m=$$1+0}END{print m+1}')
 RELEASE_NAME=$(RELEASE_BASE)-$(RELEASE_DOT)
 LICENSE_CORES=fceumm gambatte gpsp pcsx_rearmed picodrive snes9x2005_plus mednafen_pce_fast mednafen_vb mednafen_supafaust mgba fake-08
 
@@ -44,9 +54,17 @@ name:
 	@echo $(RELEASE_NAME)
 
 # host-side unit tests (no device, no toolchain)
-.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory test-dupskip test-snd-pacing check-threading-policy
+.PHONY: test-governor test-telemetry test-save-io test-ff-audio test-undervolt test-reproducibility test-wakeup test-gov-memory test-dupskip test-snd-pacing test-shellquote test-install-safety test-cfg-migrate check-parity check-threading-policy
 test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
+test-shellquote:
+	sh ./workspace/all/common/run-shellquote-tests.sh
+test-install-safety:
+	sh ./workspace/all/common/run-install-safety-tests.sh
+test-cfg-migrate:
+	sh ./workspace/all/common/run-cfg-migrate-tests.sh
+check-parity:
+	sh ./tools/check-parity.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
 test-save-io:
@@ -107,6 +125,45 @@ system:
 	cp ./workspace/all/confirm/build/$(PLATFORM)/confirm.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/clock/build/$(PLATFORM)/clock.elf ./build/EXTRAS/Tools/$(PLATFORM)/Clock.pak/
 	cp ./workspace/all/minput/build/$(PLATFORM)/minput.elf ./build/EXTRAS/Tools/$(PLATFORM)/Input.pak/
+	# The miyoomini libSDL2 is NOT stock: it carries SDL2's OSS backend so audio routes through the
+	# vendor audioserver, which is what keeps the codec powered and removes the game-boundary pops
+	# (see MinUI.pak/launch.sh). Losing it is SILENT on device -- audio still works, the pop just
+	# comes back -- so the artifact is checked rather than trusted. Rebuild with
+	# tools/build-miyoomini-sdl2.sh.
+	if [ "$(PLATFORM)" = "miyoomini" ]; then \
+		strings ./build/SYSTEM/miyoomini/lib/libSDL2-2.0.so.0 | grep -q "OSS /dev/dsp standard audio" || \
+			{ echo "ERROR: shipped libSDL2 has no OSS backend — the audio pop would return"; exit 1; }; \
+		echo "miyoomini libSDL2: OSS backend present"; \
+	fi
+	# Artifact hygiene, enforced by the build rather than by a comment. History: a STALE, gitignored
+	# overclock.elf sat in skeleton/SYSTEM/miyoomini/bin and `cp -R ./skeleton ./build` shipped it in
+	# every artifact, invisible to git (*.elf is ignored) — exactly how six foreign cores shipped
+	# before. Scoped to the platform being built.
+	#
+	# AMENDED 2026-07-28 with the overclock rule (CLAUDE.md: quality gameplay outranks it):
+	# miyoomini now ships overclock.elf DELIBERATELY — built from our pinned source by
+	# workspace/miyoomini/makefile, invoked only by PLAT_setCPUMaxFreq's MINARCH_OC_KHZ translation
+	# (PS1 receipt: p95 needs ~1.5GHz vs the 1200 stock top). The check therefore verifies the
+	# shipped binary IS our build (md5 against the workspace artifact) instead of banning it; a
+	# stale/foreign copy still fails. as_preload.so stays banned everywhere. tg5040 still ships no
+	# overclock binary at all.
+	@if [ "$(PLATFORM)" = "miyoomini" ]; then \
+		WANT=$$(md5 -q ./workspace/miyoomini/overclock/overclock.elf 2>/dev/null || md5sum ./workspace/miyoomini/overclock/overclock.elf | cut -d' ' -f1); \
+		GOT=$$(md5 -q ./build/SYSTEM/miyoomini/bin/overclock.elf 2>/dev/null || md5sum ./build/SYSTEM/miyoomini/bin/overclock.elf | cut -d' ' -f1); \
+		[ -n "$$WANT" ] && [ "$$WANT" = "$$GOT" ] || { echo "ERROR: shipped overclock.elf is not our build (want $$WANT got $$GOT)"; exit 1; }; \
+		echo "miyoomini overclock.elf: matches our build"; \
+	else \
+		if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' 2>/dev/null | grep -q .; then \
+			echo "ERROR: $(PLATFORM) artifact contains an overclock binary this platform does not ship:"; \
+			find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'overclock.elf' 2>/dev/null; \
+			exit 1; \
+		fi; \
+	fi
+	@if find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'as_preload.so' 2>/dev/null | grep -q .; then \
+		echo "ERROR: $(PLATFORM) artifact contains as_preload.so, which this fork never ships:"; \
+		find ./build/SYSTEM/$(PLATFORM) ./build/EXTRAS/Tools/$(PLATFORM) -name 'as_preload.so' 2>/dev/null; \
+		exit 1; \
+	fi
 	# Tune Voltage harness binaries -> the pak (tg5040 only)
 	if [ "$(PLATFORM)" = "tg5040" ]; then \
 		mkdir -p "./build/EXTRAS/Tools/tg5040/Optimize CPU.pak/bin"; \
@@ -117,6 +174,31 @@ system:
 	fi
 
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
+ifeq (miyoomini,$(PLATFORM))
+	# The core set matches tg5040 exactly, INCLUDING cores no Miyoo pak loads yet. Adding a system
+	# here then needs no core work, and it kills the failure mode where a pak names a core this
+	# platform never built (SFC.pak was moved to supafaust purely because snes9x2005_plus was
+	# missing, and kept a comment describing the core it had stopped loading).
+	cp ./workspace/miyoomini/cores/output/fceumm_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/gambatte_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/gpsp_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/picodrive_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/pcsx_rearmed_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/miyoomini/cores
+	# dormant on this device today — shipped so parity with tg5040 is a fact, not an intention
+	cp ./workspace/miyoomini/cores/output/snes9x2005_plus_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_pce_fast_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/mgba_libretro.so ./build/SYSTEM/miyoomini/cores
+	cp ./workspace/miyoomini/cores/output/fake08_libretro.so ./build/SYSTEM/miyoomini/cores
+	# Guard against silently shipping a foreign binary again: every core in the artifact must
+	# come from OUR toolchain. The six that shipped before this were Buildroot 2017.11 / gcc 7.2
+	# lifted off the stock card, and nothing in the build noticed.
+	@for f in ./build/SYSTEM/miyoomini/cores/*.so; do \
+		strings "$$f" | grep -q "GNU Toolchain for the A-profile" || \
+			{ echo "ERROR: $$f was not built by our toolchain — refusing to ship a foreign core"; exit 1; }; \
+	done; echo "miyoomini cores: all built by our toolchain"
+else
 	# stock cores
 	cp ./workspace/$(PLATFORM)/cores/output/fceumm_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
 	cp ./workspace/$(PLATFORM)/cores/output/gambatte_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
@@ -138,6 +220,7 @@ cores: # TODO: can't assume every platform will have the same stock cores (platf
 	cp ./workspace/$(PLATFORM)/cores/output/picodrive_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/SMS.pak
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/VB.pak
 	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak
+endif
 
 common: build system cores
 	
@@ -157,6 +240,17 @@ setup: name
 	# remove authoring detritus
 	cd ./build && find . -type f -name '.keep' -delete
 	cd ./build && find . -type f -name '*.meta' -delete
+
+	# Ship only the platform(s) actually being built. `cp -R ./skeleton ./build` brings EVERY
+	# platform along, so a Miyoo artifact carried .system/tg5040 and Tools/tg5040 — aarch64
+	# binaries a Miyoo can never execute, inflating install/update I/O and making "what is on this
+	# card?" unanswerable. `res` is shared assets and always stays.
+	@for d in ./build/SYSTEM/* ./build/EXTRAS/Tools/*; do \
+		[ -d "$$d" ] || continue; \
+		n=$$(basename "$$d"); \
+		[ "$$n" = "res" ] && continue; \
+		echo "$(PLATFORMS)" | grep -qw "$$n" || { echo "  pruned foreign payload: $$d"; rm -rf "$$d"; }; \
+	done
 	echo $(BUILD_HASH) > ./workspace/hash.txt
 	
 	# copy readmes to workspace so we can use Linux fmt instead of host's
@@ -167,11 +261,23 @@ setup: name
 done:
 	say "done" 2>/dev/null || true
 
+# card-root bootstrap folder per family (trimui/ for TrimUI, miyoo/ for Miyoo)
+BOOT_DIR_trimui=trimui
+BOOT_DIR_miyoo=miyoo
+BOOT_DIR=$(BOOT_DIR_$(FAMILY))
+
 special:
+ifeq (trimui,$(FAMILY))
 	# tg5040 (TrimUI Brick / Smart Pro): set up the trimui .tmp_update bootstrap only
 	mv ./build/BOOT/common ./build/BOOT/.tmp_update
 	mv ./build/BOOT/trimui ./build/BASE/
 	cp -R ./build/BOOT/.tmp_update ./build/BASE/trimui/app/
+else
+	# miyoo (Miyoo Mini Plus): the stock loader runs miyoo/app/<platform>.sh from the card root
+	mv ./build/BOOT/common ./build/BOOT/.tmp_update 2>/dev/null || true
+	mv ./build/BOOT/miyoo ./build/BASE/
+	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/ 2>/dev/null || true
+endif
 
 tidy:
 	# ----------------------------------------------------
@@ -219,11 +325,14 @@ package: tidy
 			done; \
 		done; \
 	done; true
-	mkdir -p ./build/BASE/LICENSES/unzip60
-	cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/
+	@if [ -f ./workspace/tg5040/other/unzip60/LICENSE ]; then \
+		mkdir -p ./build/BASE/LICENSES/unzip60 && \
+		cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/; \
+	fi
 	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
-	@if [ -e ./releases/$(RELEASE_NAME)-base.zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME)-base.zip already exists — refusing to overwrite a release"; exit 1; fi
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Tools LICENSES trimui MinUI.zip README.txt .metadata_never_index .fseventsd
+	@if [ -e ./releases/$(RELEASE_NAME).zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME).zip already exists — refusing to overwrite a release"; exit 1; fi
+	# BOOT_DIR is the per-family bootstrap folder that must sit at the card root
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools LICENSES $(BOOT_DIR) MinUI.zip README.txt .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################

@@ -28,7 +28,11 @@ SOURCE = $(TARGET).c ../common/scaler.c ../common/utils.c ../common/save_io.c ..
 
 CC = $(CROSS_COMPILE)gcc
 CFLAGS   = $(ARCH) -fomit-frame-pointer -DZERO_UV_ENGINE
-ifeq ($(PLATFORM),tg5040)
+# Frontend threading is OFF on both shipping platforms.
+# miyoomini: dual-core Cortex-A7 where minarch + core + the SDL audio thread already contend for
+# two cores, and PLAT_flip blocks ~16.76ms in FBIOPAN_DISPLAY plus MI_GFX fence waits. The auto-
+# threading trial was running there unvalidated.
+ifneq (,$(filter $(PLATFORM),tg5040 miyoomini))
 CFLAGS  += -DZERO_DISABLE_FRONTEND_THREADING
 endif
 CFLAGS  += $(INCDIR) -DPLATFORM=\"$(PLATFORM)\" -DUSE_$(SDL) -O3 -std=gnu99
@@ -50,6 +54,12 @@ CFLAGS += -DBUILD_DATE=\"${BUILD_DATE}\" -DBUILD_HASH=\"${BUILD_HASH}\"
 ifeq ($(PLATFORM),tg5040)
 ZERO_FRONTEND_THREADING_V2 ?= 1
 endif
+# miyoomini: deliberately NOT compiled in. Evaluated on-device 2026-07-31 (BR2, alternating 120s
+# runs) and MEASURED WORSE: depth-2 does eliminate the stutter (presentation-drop engaged 0 times vs
+# 43/13 serial) but only by not protecting audio — underruns went 29-50/min serial to 117-270/min.
+# That is the same trade as disabling presentation-drop outright, just less extreme, so it moves the
+# deficit from the eyes to the ears rather than removing it. Carrying an unqualified threading path
+# on a dual-core armv7 part would only invite someone to switch it on.
 ifeq ($(ZERO_FRONTEND_THREADING_V2),1)
 SOURCE += ../common/framering.c ../common/frontend_core.c
 CFLAGS += -DZERO_FRONTEND_THREADING_V2

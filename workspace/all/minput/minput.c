@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h> // EXIT_SUCCESS — pulled in transitively by the tg5040 toolchain
+#include <string.h> // strlen
 #include <time.h>
 #include <unistd.h>
 #include <msettings.h>

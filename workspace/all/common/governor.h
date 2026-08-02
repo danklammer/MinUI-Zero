@@ -19,7 +19,33 @@
 #define GOV_TICK_FRAMES 30
 
 // One real OPP step in kHz (MEASURED gaps 192-216MHz; shared with per-game governor memory)
+// tg5040 OPP spacing. Overridable per platform (-DGOV_STEP_KHZ=...): miyoomini/SSD202D steps
+// 400/600/800/1000 in 200 MHz, so a 216 MHz stride would skip real OPPs on the way down.
+#ifndef GOV_STEP_KHZ
 #define GOV_STEP_KHZ 216000
+#endif
+
+// Thermal thresholds are PER-SOC. These are die readings, and the two platforms simply do not
+// report in the same range.
+// NOTE: deliberately OUTSIDE the GOV_STEP_KHZ guard above — the miyoomini build passes
+// -DGOV_STEP_KHZ on the command line, so anything nested in that #ifndef silently vanishes there.
+#if defined(GOV_PLATFORM_MIYOOMINI)
+// SSD202D. MEASURED on device 2026-07-25: normal SNES gameplay sits at 71-75 C, and the panel/
+// charger add to it. With the tg5040 numbers below (ceil 72) the "always wins" thermal backstop
+// fired on virtually every tick, sinking the ceiling REGARDLESS of the slip signal — the log shows
+// sinks at temp=72 and the recovery climb at temp=71, i.e. the controller limit-cycled on the
+// threshold itself: 1200 -> sink -> game craters to 30-50fps -> BIGSLIP -> 1200 -> sink...
+// That was the SNES stutter; it was never the core and never the clock floor.
+// Headroom check: Cortex-A7 junction limits are far above this, and OnionOS ships 1900MHz
+// overclocks on this SoC with NO thermal management whatsoever — so 72 C is nowhere near a
+// hazard here. 85 keeps a real backstop while leaving normal play alone.
+#define GOV_T_TARGET_C 78      // start probing the clock down when at/below this
+#define GOV_T_CEIL_C   85      // hard back-off above this — always wins
+#else
+// tg5040 / A133P: runs far cooler (39-48 C under load, measured).
+#define GOV_T_TARGET_C 60      // start probing the clock down when at/below this
+#define GOV_T_CEIL_C   72      // hard back-off above this — always wins
+#endif
 
 // Ticks of slack before sinking (sink slow = no hunting; the gov-memory accelerated
 // ladder waives exactly this dwell, never the other gates)

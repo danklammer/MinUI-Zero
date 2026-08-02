@@ -11,13 +11,54 @@ CPU clock that still holds its target frame rate**, so the device stays cool and
 This is *not* a feature fork — it's the opposite. NextUI is the feature-rich/GL fork; this
 one is the distilled, runs-cold one.
 
-## Scope — **tg5040 only** (TrimUI Brick + TrimUI Smart Pro)
-This is a single-platform fork. The whole thesis is A133P-specific (cpufreq/OPP/thermal/PMIC),
-and we only test on the Brick, so we **support `tg5040` exclusively**. Like NextUI, the other
-MinUI platforms are frozen under `workspace/_unmaintained/` — present for history/upstream
-merges, but **not built or supported** (`make` defaults to `PLATFORMS = tg5040`). `workspace/
-macos/` stays as the zero-hardware dev/test platform (launcher build + harnesses), not a device.
-Don't re-add other devices without doing that device's full bring-up (recon + per-SoC wiring).
+## Scope — **`tg5040` is the fork** (TrimUI Brick + TrimUI Smart Pro); `miyoomini` is alpha
+The thesis is A133P-specific (cpufreq/OPP/thermal/PMIC), so `tg5040` is the only platform that
+carries it and the only one that ships as a real release. `make` still defaults to
+`PLATFORMS = tg5040`; a bare `make miyoomini` is rejected on purpose.
+
+**`miyoomini` (Miyoo Mini Plus, SigmaStar SSD202D) is a second, experimental platform** — built,
+running, and advertised in `README.md` as an **alpha**, but it is NOT a second first-class target.
+Build it explicitly: `make PLATFORMS=miyoomini miyoomini`. Its artifacts are stamped `-alpha`.
+MEASURED and worth knowing before spending effort there: **the efficiency thesis does not transfer**
+(~1% — on that SoC the CPU is not where the power goes), so MMP work is parity/polish, not thesis
+work. Deep sleep is proven impossible there. Anything that costs the Brick to serve the MMP loses.
+
+Every other MinUI platform is frozen under `workspace/_unmaintained/` — present for history and
+upstream merges, **not built or supported**. `workspace/macos/` stays as the zero-hardware dev/test
+platform (launcher build + harnesses), not a device. Don't re-add a device without doing that
+device's full bring-up (recon + per-SoC wiring) — the MMP port is what that costs.
+
+## Multi-platform parity — features/settings/paks stay in sync unless divergence is EARNED
+With more than one platform, drift is the default failure mode, and it happens silently: tg5040
+grew systems/settings over months while the MMP kept the pak set from its port date, so 7 systems
+sat unlaunchable with their cores already shipping (caught 2026-07-27). The rules:
+
+- **Parity is the default.** A feature, setting, default.cfg value, pak, or core added to one
+  platform gets added to the other in the same change — or gets an explicit written reason why not.
+  "Didn't think about the other platform" is drift, not a decision.
+- **Divergence must be earned by hardware and documented at the point of divergence** (comment in
+  the pak/cfg, plus a D-log entry when it's a real decision). Current earned divergences:
+  - *Scaling defaults* — MMP GB/GBC/FC ship `Native`, tg5040 ships `Aspect`: panel geometry
+    (640×480 makes NES-at-Aspect 2.5× horizontal → scroll shimmer; 1024×768 gives a clean 4.0×).
+  - *Audio architecture* — MMP uses the MI_AO daemon + `MINARCH_PRELOAD` shim; tg5040 does not.
+  - *Deep sleep* — Brick/SP only (proven impossible on the MMP SoC). *GPU-dark menu* — Brick-only
+    (SP panel scans the GLES layer). *Present-skip (`ZERO_DUP_SKIP`)* — qualified on the GLES path
+    only; not enabled on the MMP fbdev path until measured there.
+  - *Governor brackets* (`MINARCH_FMIN/FMAX`) — per-SoC receipts, never copied across platforms.
+    An unmeasured bracket is labelled unmeasured in the launch.sh.
+- **Sync by comparison, not memory.** `workspace/all/` is shared automatically — a change there
+  hits every platform (verify both; regressing the Brick is the worst outcome). Everything under
+  `skeleton/SYSTEM/<platform>/` and the per-platform makefile blocks/`cores/` is duplicated and
+  WILL drift. When touching one platform's copy, diff the other: pak sets, default.cfgs, makefile
+  core lists, core patches (equivalent modulo the platform block — hash pins must match).
+- **Changes that span files ship atomically per platform.** A producer/consumer pair (e.g.
+  MinUI.pak sets `MINARCH_PRELOAD`, all 8 emu paks consume it) deployed partially = a broken
+  device that looks healthy. `tools/deploy-miyoomini.sh` syncs the whole payload by md5 for
+  exactly this reason — never hand-pick files.
+- **Config-default changes need the saved-cfg migration** (minarch `cfg_stale_keys`): saved cfgs
+  carry every option, so a shipped-default change is silently defeated by old saves unless an
+  entry migrates it — see the table's comment for the rules (per-entry version, only where the
+  shipped chain resolves to the new value).
 
 ## North star / non-negotiables
 - **Cool + efficient is the whole point.** Every change should serve "lowest clock that holds
@@ -31,11 +72,24 @@ Don't re-add other devices without doing that device's full bring-up (recon + pe
   resistance. User-facing features are still weight — no box art, WiFi/NTP, Pak Store,
   RetroAchievements, ambient-LED, overlays. Authoritative direction + roadmap:
   **`docs/project-direction.md`** (it supersedes this file where they differ).
-- **Never overclock, never fabricate device values.** Real OPP steps / thermal-zone paths come
-  from the hardware (`tools/brick-recon.sh`); query the OPP table at runtime. **Never use
-  2.0 GHz** unless on-device evidence proves it's a stock (non-OC) operating point — default
-  the cap to the highest *verified-stock* OPP. Until measured, use the **clearly-labeled
-  assumptions** in `docs/thermal-governor-design.md` (safe by construction, not hidden guesses).
+- **Quality gameplay outranks the no-overclock rule** (amended 2026-07-28 by Dan; was "never
+  overclock"). The discipline that replaces the ban:
+  - *Root-cause first.* An overclock is never the first fix. The Brick BR2 saga is the template:
+    a 46% deficit that looked clock-shaped was a serialization bug (D48), fixed at stock.
+  - *OC must be earned by measurement*, never vibes: a receipt showing the target rate is genuinely
+    unreachable at the verified-stock ceiling. The receipt must be a MATCHED CLOCK A/B (run the
+    workload at both clocks and compare), never a clock inferred by scaling a work metric — MMP PS1
+    was briefly cited here as the worked example on exactly that inference ("p95 needs ~1.5 GHz")
+    and a pin-verified 1200-vs-1488 A/B then moved it 0%. There is currently NO earned OC anywhere
+    in this fork; treat any p95-derived "needs N MHz" as a hypothesis, not a receipt.
+  - *Stock stays the default* wherever stock holds rate. OC ships per-system (pak-scoped),
+    documented at the point of use, after an on-device thermal/stability soak.
+  - The governor's cap still defaults to the highest *verified-stock* OPP; on tg5040 do not use
+    2.0 GHz unless evidence proves it stock (nothing there needs it — see D48).
+- **Never fabricate device values.** Real OPP steps / thermal-zone paths come from the hardware
+  (`tools/brick-recon.sh`); query the OPP table at runtime. Until measured, use the
+  **clearly-labeled assumptions** in `docs/thermal-governor-design.md` (safe by construction,
+  not hidden guesses).
 
 ## Hardware (target platform = `tg5040`)
 - **SoC:** Allwinner A133P, quad-core Cortex-A53. MinUI's tg5040 code drives it via the
@@ -114,7 +168,8 @@ make shell PLATFORM=tg5040  # drop into the toolchain container
 `minarch.elf` / pak and relaunching — no reflashing per change.
 
 ## Direction & status — see `docs/project-direction.md` for the authoritative plan
-Five pillars: (1) thermals/battery, (2) perfect gameplay **without overclocking**, (3) frame
+Five pillars: (1) thermals/battery, (2) perfect gameplay **at the lowest clock that achieves it**
+(stock preferred; OC only with a receipt — see the amended rule above), (3) frame
 pacing / tear-free, (4) suspend/save reliability, (5) crash resistance. Staged roadmap +
 benchmark/acceptance gates live in `docs/project-direction.md`.
 

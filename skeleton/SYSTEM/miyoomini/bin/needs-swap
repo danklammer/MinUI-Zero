@@ -1,0 +1,78 @@
+#!/bin/sh
+# Enable the PS1 swapfile on this 128MB device, and FAIL LOUDLY if it cannot be enabled.
+#
+# Every step here used to be unchecked — dd, mkswap and swapon all ran blind and then
+# `touch /tmp/using-swap` happened UNCONDITIONALLY. So on a full card, or any time swapon failed,
+# PS1 launched anyway with no swap, OOMed, and looked like a broken emulator rather than a failed
+# swap. The launcher then also tried to `swapoff` a file that had never been on.
+#
+# PS1 is the one core we ship that cannot run without this, so a failure has to stop the launch
+# with something the user can actually read.
+SWAP_PATH=$USERDATA_PATH/swapfile
+SWAP_MB=128
+
+fail() {
+	echo "needs-swap: $1" >&2
+	# say.elf, NOT `say` — there is no such command on this device, only the binary. The whole
+	# "fail loudly" premise of this file was inoperative: every message went to a `not found` that
+	# 2>/dev/null then swallowed.
+	say.elf "Swap unavailable:
+$1" 2>/dev/null
+	sleep 2
+	exit 1
+}
+
+# An EXISTING file is not a VALID file. Power pulled during the first-run dd (or between dd and
+# mkswap) leaves a short/unsignatured swapfile; because swapon failure is fatal and PS.pak does
+# `needs-swap || exit 1`, that used to brick PS1 permanently with no self-repair — the file exists,
+# so it was never rebuilt, and swapon failed forever. Check the size and rebuild if it is wrong.
+if [ -f "$SWAP_PATH" ]; then
+	SZ=$(wc -c < "$SWAP_PATH" 2>/dev/null)
+	case "$SZ" in
+		''|*[!0-9]*) SZ=0 ;;
+	esac
+	if [ "$SZ" -lt $((SWAP_MB * 1024 * 1024)) ]; then
+		echo "needs-swap: swapfile is $SZ bytes, expected $((SWAP_MB * 1024 * 1024)) - rebuilding" >&2
+		swapoff "$SWAP_PATH" 2>/dev/null
+		rm -f "$SWAP_PATH"
+	fi
+fi
+
+if [ ! -f "$SWAP_PATH" ]; then
+	# Check the space BEFORE spending a minute writing 128MB onto a card that cannot hold it.
+	FREE_KB=$(df -k "$USERDATA_PATH" 2>/dev/null | awk 'NR==2{print $4}')
+	case "$FREE_KB" in
+		''|*[!0-9]*) fail "cannot read free space" ;;
+	esac
+	[ "$FREE_KB" -gt $((SWAP_MB * 1024 + 8192)) ] || fail "card is full"
+
+	say.elf "Creating swap file" 2>/dev/null  # see note in fail(): say.elf, not say
+	if ! dd if=/dev/zero of="$SWAP_PATH" bs=1M count=$SWAP_MB 2>/dev/null; then
+		rm -f "$SWAP_PATH"          # never leave a short file behind: mkswap would accept it
+		fail "could not write swapfile"
+	fi
+	chmod 600 "$SWAP_PATH"
+	if ! mkswap "$SWAP_PATH" >/dev/null 2>&1; then
+		rm -f "$SWAP_PATH"
+		fail "mkswap failed"
+	fi
+fi
+
+# Already on (a game that exited abnormally can leave it active) — that is success, not an error.
+if ! grep -q "^$SWAP_PATH " /proc/swaps 2>/dev/null; then
+	if ! swapon "$SWAP_PATH" 2>/dev/null; then
+		# One self-repair attempt: the file may be the right SIZE but have no/!corrupt signature
+		# (interrupted mkswap). Rebuilding is cheap next to leaving PS1 permanently unlaunchable.
+		echo "needs-swap: swapon failed, rebuilding the swapfile once" >&2
+		rm -f "$SWAP_PATH"
+		dd if=/dev/zero of="$SWAP_PATH" bs=1M count=$SWAP_MB 2>/dev/null || { rm -f "$SWAP_PATH"; fail "could not write swapfile"; }
+		chmod 600 "$SWAP_PATH"
+		mkswap "$SWAP_PATH" >/dev/null 2>&1 || { rm -f "$SWAP_PATH"; fail "mkswap failed"; }
+		swapon "$SWAP_PATH" 2>/dev/null || fail "swapon failed"
+	fi
+	# VERIFY, do not assume: swapon can return 0 without the swap actually being listed.
+	grep -q "^$SWAP_PATH " /proc/swaps 2>/dev/null || fail "swap did not activate"
+fi
+
+# Only NOW is the claim true. The launcher keys its swapoff on this file.
+touch "/tmp/using-swap"

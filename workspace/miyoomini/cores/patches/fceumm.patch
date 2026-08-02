@@ -1,0 +1,57 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 3be314b..9fe65a8 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -475,6 +475,24 @@ else ifeq ($(platform), miyoo)
+ 	PLATFORM_DEFINES += -fomit-frame-pointer -ffast-math -mcpu=arm926ej-s
+ 	EXTERNAL_ZLIB = 1
+ 
++# MIYOO MINI PLUS (SSD202D, Cortex-A7)
++else ifeq ($(platform), miyoomini)
++	LDFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++	TARGET := $(TARGET_NAME)_libretro.so
++	CC = $(CROSS_COMPILE)gcc
++	CXX = $(CROSS_COMPILE)g++
++	AR = $(CROSS_COMPILE)ar
++	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
++	LDFLAGS += -fPIC -flto
++	CFLAGS += -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -marm
++	CFLAGS += -fomit-frame-pointer -ffast-math -fPIC -flto
++	OPTIMIZE := -Ofast -DNDEBUG
++	EXTERNAL_ZLIB = 1
++	HAVE_NTSC = 0
++	ifeq (,$(DEBUG))
++		# LDFLAGS += -s
++	endif
++	
+ # Windows MSVC 2017 all architectures
+ else ifneq (,$(findstring windows_msvc2017,$(platform)))
+ 	CC  = cl.exe
+@@ -731,8 +749,8 @@ else
+       CFLAGS     += -MT
+       CXXFLAGS   += -MT
+ 	endif
+-      CFLAGS     += -O2 -DNDEBUG
+-      CXXFLAGS   += -O2 -DNDEBUG
++      CFLAGS     += -O3 -DNDEBUG
++      CXXFLAGS   += -O3 -DNDEBUG
+ endif
+ 
+ ifneq ($(SANITIZER),)
+diff --git a/src/drivers/libretro/libretro.c b/src/drivers/libretro/libretro.c
+index 96ea7dd..1753ffc 100644
+--- a/src/drivers/libretro/libretro.c
++++ b/src/drivers/libretro/libretro.c
+@@ -328,7 +328,11 @@ extern int zapper_sensor_invert_option;
+ const char *GetKeyboard(void); /* used by src/boards/transformer.c */
+ const char * GetKeyboard(void)
+ {
+-   return "";
++   /* transformer.c scans 256 bytes of keyboard state every IRQ tick; returning a
++      1-byte literal read 255 bytes out of bounds. No host keyboard on this platform,
++      so a persistent zeroed 256-byte state is the correct "no keys" answer. */
++   static const char keyboard_state[256];
++   return keyboard_state;
+ }
+ 
+ #define BUILD_PIXEL_RGB565(R,G,B) (((int) ((R)&0x1f) << RED_SHIFT) | ((int) ((G)&0x3f) << GREEN_SHIFT) | ((int) ((B)&0x1f) << BLUE_SHIFT))

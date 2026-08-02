@@ -1,6 +1,7 @@
 // loosely based on https://github.com/gameblabla/clock_sdl_app
 
 #include <stdio.h>
+#include <stdlib.h> // system(), EXIT_SUCCESS — pulled in transitively by the tg5040 toolchain
 #include <time.h>
 #include <unistd.h>
 #include <msettings.h>

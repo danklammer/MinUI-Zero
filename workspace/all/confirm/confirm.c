@@ -4,6 +4,8 @@
 //   confirm "message" "START" "BACK"           -> custom A/B labels
 //   confirm "message" "START" "BACK" "REVERT"  -> adds X (exit 2)
 #include <stdio.h>
+#include <stdlib.h> // EXIT_SUCCESS
+#include <string.h> // strlen — pulled in transitively by the tg5040 toolchain
 #include <math.h>
 #include <msettings.h>
 

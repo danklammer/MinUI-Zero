@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -95,6 +96,49 @@ static struct PWR_Context {
 
 static int _;
 
+// GFX_blitPill/GFX_blitRect draw one shape from two sources: rounded caps blitted out of the
+// asset sheet, and a flat SDL_FillRect for the straight middle. The fill colour came from the
+// hardcoded TRIAD_* constants, so a sheet whose grays don't match those constants renders a
+// visibly two-tone pill -- MEASURED on a card carrying a foreign sheet: caps 0x1C vs middle
+// 0x26, i.e. luma 26 against 35 on the RGB565 panel, with a hard seam where the cap meets the
+// fill. Sample the fill straight out of the sheet instead, so the two halves of a shape can
+// never disagree no matter which assets are installed. Falls back to the TRIAD_* value for any
+// sprite whose centre isn't opaque (and for a missing sheet), so behaviour is unchanged when
+// the sheet already matches.
+static uint32_t sampleAssetPixel(SDL_Surface* s, int x, int y, uint32_t fallback) {
+	if (!s || !s->pixels) return fallback;
+	if (x < 0 || y < 0 || x >= s->w || y >= s->h) return fallback;
+
+	uint8_t* p = (uint8_t*)s->pixels + y * s->pitch + x * s->format->BytesPerPixel;
+	uint32_t pixel;
+	switch (s->format->BytesPerPixel) {
+		case 1:  pixel = *p; break;
+		case 2:  pixel = *(uint16_t*)p; break;
+		case 4:  pixel = *(uint32_t*)p; break;
+		default: return fallback; // 24bpp: byte order varies, not worth the risk
+	}
+
+	uint8_t r,g,b,a;
+	SDL_GetRGBA(pixel, s->format, &r,&g,&b,&a);
+	if (a != 255) return fallback; // transparent centre: sprite isn't a solid fill
+	return SDL_MapRGB(gfx.screen->format, r,g,b);
+}
+static void GFX_sampleAssetRGBs(void) {
+	if (!gfx.assets) return;
+
+	int must_lock = SDL_MUSTLOCK(gfx.assets);
+	if (must_lock && SDL_LockSurface(gfx.assets) != 0) return;
+
+	// [0,ASSET_COLORS) is exactly the set of assets drawn by GFX_blitPill/GFX_blitRect
+	for (int asset=0; asset<ASSET_COLORS; asset++) {
+		SDL_Rect* r = &asset_rects[asset];
+		asset_rgbs[asset] = sampleAssetPixel(gfx.assets,
+			r->x + r->w/2, r->y + r->h/2, asset_rgbs[asset]);
+	}
+
+	if (must_lock) SDL_UnlockSurface(gfx.assets);
+}
+
 SDL_Surface* GFX_init(int mode) {
 	// TODO: this doesn't really belong here...
 	// tried adding to PWR_init() but that was no good (not sure why)
@@ -155,12 +199,39 @@ SDL_Surface* GFX_init(int mode) {
 	sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
 	if (!exists(asset_path)) LOG_info("missing assets, you're about to segfault dummy!\n");
 	gfx.assets = IMG_Load(asset_path);
-	
+	GFX_sampleAssetRGBs(); // fills must match the sheet they're capped with; see above
+
 	TTF_Init();
-	font.large 	= TTF_OpenFont(FONT_PATH, SCALE1(FONT_LARGE));
-	font.medium = TTF_OpenFont(FONT_PATH, SCALE1(FONT_MEDIUM));
-	font.small 	= TTF_OpenFont(FONT_PATH, SCALE1(FONT_SMALL));
-	font.tiny 	= TTF_OpenFont(FONT_PATH, SCALE1(FONT_TINY));
+	// Read the font ONCE and open all four sizes from that one in-memory copy.
+	// TTF_OpenFont(path,...) re-opens and re-reads the file every call, so four sizes meant four
+	// full reads of the same ~165KB OTF off FAT32 on every launch — pure boot latency on a cold
+	// page cache. (MEASURED: graphics init is 90ms of a 174ms warm startup; it is worse cold.)
+	// The buffer must outlive the fonts, so it is intentionally never freed — it is process-
+	// lifetime state, like the fonts themselves.
+	static void* font_buf = NULL;
+	static size_t font_len = 0;
+	if (!font_buf) {
+		FILE* ff = fopen(FONT_PATH, "rb");
+		if (ff) {
+			fseek(ff, 0, SEEK_END);
+			long n = ftell(ff);
+			fseek(ff, 0, SEEK_SET);
+			if (n > 0) {
+				font_buf = malloc((size_t)n);
+				if (font_buf && fread(font_buf, 1, (size_t)n, ff) == (size_t)n) font_len = (size_t)n;
+				else { free(font_buf); font_buf = NULL; }
+			}
+			fclose(ff);
+		}
+	}
+	#define OPEN_FONT(sz) ( font_buf \
+		? TTF_OpenFontRW(SDL_RWFromConstMem(font_buf, (int)font_len), 1, (sz)) \
+		: TTF_OpenFont(FONT_PATH, (sz)) )
+	font.large 	= OPEN_FONT(SCALE1(FONT_LARGE));
+	font.medium = OPEN_FONT(SCALE1(FONT_MEDIUM));
+	font.small 	= OPEN_FONT(SCALE1(FONT_SMALL));
+	font.tiny 	= OPEN_FONT(SCALE1(FONT_TINY));
+	#undef OPEN_FONT
 	
 	TTF_SetFontStyle(font.large, TTF_STYLE_BOLD);
 	TTF_SetFontStyle(font.medium, TTF_STYLE_BOLD);
@@ -713,12 +784,27 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 	
 	if (pwr.is_charging) {
 		GFX_blitAsset(ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
+
+		// Bolt only, no level fill — same as upstream, and it is not an oversight.
+		//
+		// ASSET_BATTERY_BOLT is a KNOCKOUT: an opaque 12x6 block with the bolt shape punched out as
+		// transparency, so the bolt you see is the background showing through. It is the exact same
+		// 12x6 rect as ASSET_BATTERY_FILL, so it covers any fill drawn beneath it completely — and
+		// where it does not cover (the punched-out bolt), a white fill underneath shows through and
+		// erases the bolt instead. Drawing both gives a featureless block, not a level + a bolt.
+		// (That is what the charging Miyoo photo showed when this branch briefly drew the fill.)
+		//
+		// Showing level AND charge state in the same 12x6 needs a bolt asset that can be told apart
+		// from the fill. Until that asset exists the bolt alone is the honest signal: it answers the
+		// question the icon is actually asked while a cable is attached, at every level. The charge
+		// screen (ChargingScreen / batmon) is where the number lives.
 		GFX_blitAsset(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x+SCALE1(3),y+SCALE1(2)});
 	}
 	else {
+		// Discharging path deliberately UNCHANGED.
 		int percent = pwr.charge;
 		GFX_blitAsset(percent<=10?ASSET_BATTERY_LOW:ASSET_BATTERY, NULL, dst, &(SDL_Rect){x,y});
-		
+
 		rect = asset_rects[ASSET_BATTERY_FILL];
 		SDL_Rect clip = rect;
 		clip.w *= percent;
@@ -726,7 +812,7 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 		if (clip.w<=0) return;
 		clip.x = rect.w - clip.w;
 		clip.y = 0;
-		
+
 		GFX_blitAsset(percent<=20?ASSET_BATTERY_FILL_LOW:ASSET_BATTERY_FILL, &clip, dst, &(SDL_Rect){x+SCALE1(3)+clip.x,y+SCALE1(2)});
 	}
 }
@@ -1130,6 +1216,7 @@ static struct SND_Context {
 	_Atomic long underruns;
 	_Atomic long overruns;
 	_Atomic long wait_ms;
+	_Atomic uint32_t wait_us; // same waits, us precision, WRAP-SAFE — see SND_Stats in api.h
 
 	int resample_diff;
 	SND_Frame resample_prev;
@@ -1285,9 +1372,19 @@ static void SND_selectResampler(void) { // plat_sound_select_resampler
 	}
 }
 static void SND_updateAdjustedRate(void) {
-	int64_t adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
-	if (atomic_load(&snd_ff_nonblock))
-		adjusted = adjusted * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	int64_t adjusted;
+	if (atomic_load(&snd_ff_nonblock)) {
+		// Fast-forward: the MEASURED multiplier REPLACES the static ratio, it does not compound
+		// with it. FFAudioRate_measure is fed the UNADJUSTED snd.sample_rate_in, so rate_q16 is
+		// actual-production / nominal and already embodies any static slowdown. Multiplying by
+		// (1 + ppm) again oversupplied the DAC by the ratio — ~1.28%, about 613 surplus frames/sec
+		// at 48kHz — filling the ring until snd_ff_nonblock discarded chunks, which is exactly the
+		// arbitrary dropping the FF resampler exists to avoid. (Adversarial review, 2026-08-01.)
+		adjusted = (int64_t)snd.sample_rate_in * snd.ff_rate.rate_q16 / FF_AUDIO_RATE_ONE_Q16;
+	}
+	else {
+		adjusted = (int64_t)snd.sample_rate_in * (1000000 + snd.rate_adjust_ppm) / 1000000;
+	}
 	if (adjusted < 1) adjusted = 1;
 	snd.sample_rate_in_adj = (int)adjusted;
 	SND_selectResampler();
@@ -1446,8 +1543,9 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		// liveness under the audio lock). wait_ms keeps its meaning — wall ms blocked —
 		// which the governor's pure-work sensor and DRC consume as deltas.
 		uint32_t wait_t0 = 0;
+		uint64_t wait_t0_us = 0;
 		while (!snd_ff_nonblock && snd.frame_in==snd.frame_filled) {
-			if (!wait_t0) { wait_t0 = SDL_GetTicks(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
+			if (!wait_t0) { wait_t0 = SDL_GetTicks(); wait_t0_us = getMicroseconds(); atomic_fetch_add_explicit(&snd.overruns, 1, memory_order_relaxed); }
 			pthread_mutex_lock(&snd_space_mx);
 			unsigned g0 = snd_space_gen;
 			SDL_UnlockAudio();
@@ -1467,6 +1565,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 		if (wait_t0) {
 			uint32_t waited = SDL_GetTicks() - wait_t0;
 			atomic_fetch_add_explicit(&snd.wait_ms, waited ? waited : 1, memory_order_relaxed);
+			atomic_fetch_add_explicit(&snd.wait_us, (uint32_t)(getMicroseconds() - wait_t0_us), memory_order_relaxed);
 		}
 		// FF non-blocking: ring still full after the (skipped) wait — drop the remaining
 		// frames and return so emulation never blocks on audio during fast-forward.
@@ -1502,6 +1601,7 @@ void SND_getStats(SND_Stats* out) {
 	out->underruns = atomic_load_explicit(&snd.underruns, memory_order_relaxed);
 	out->overruns = atomic_load_explicit(&snd.overruns, memory_order_relaxed);
 	out->wait_ms = atomic_load_explicit(&snd.wait_ms, memory_order_relaxed);
+	out->wait_us = atomic_load_explicit(&snd.wait_us, memory_order_relaxed);
 	uint64_t ring = atomic_load_explicit(&snd_ring_frames, memory_order_acquire);
 	out->frame_count = (int)(ring >> 32);
 	out->queue_frames = (int)(uint32_t)ring;
@@ -1532,15 +1632,45 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	spec_in.channels = 2;
 	spec_in.samples = SAMPLES;
 	spec_in.callback = SND_audioCallback;
-	
+
+	// Mute BEFORE the open as well. Opening reconfigures the DAC (the SigmaStar SDL driver sets
+	// the public attrs / sample rate and calls MI_AO_Enable), and reconfiguring a LIVE codec is
+	// itself an audible transient — that is the remaining "pop when a game starts".
+	// This used to be impossible: MI_AO rejects SetMute on a disabled device, so a pre-open mute
+	// was a silent no-op. Now that the codec is left enabled between processes (PLAT_keepAudioOpen
+	// + the SDL_Quit fix), the device IS already enabled at game launch and this mute takes effect.
+	// On a cold boot the device really is disabled, the ioctl no-ops as before, and the post-open
+	// mute below still covers us.
+	PLAT_muteAudio(1);
+
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
 		// producer paths gate on snd.initialized, so leave it cleared (audit 2026-07-11)
+		// The device may still be enabled from a process that died without closing it, in which
+		// case MI_AO_SetPubAttr refuses and EVERY launch after the first is silent until reboot
+		// (MEASURED across 5 back-to-back systems). Reset it and try exactly once more.
+		LOG_info("SDL_OpenAudio failed (%s) — resetting the audio device and retrying\n", SDL_GetError());
+		PLAT_resetAudio();
+		if (SDL_OpenAudio(&spec_in, &spec_out) >= 0) {
+			LOG_info("audio recovered after reset\n");
+			goto audio_open_ok;
+		}
 		LOG_info("SDL_OpenAudio error: %s — audio disabled\n", SDL_GetError());
 		snd.initialized = 0;
+		// MUST unmute before bailing. We muted just above, and on platforms that keep the codec
+		// enabled across processes (PLAT_keepAudioOpen) that mute is GLOBAL and PERSISTENT — a
+		// single failed open would otherwise leave the whole device silent, including the menu
+		// and every later game, with nothing to undo it.
+		PLAT_muteAudio(0);
 		return;
 	}
+audio_open_ok:
 	
+	// Mute AFTER the open: MI_AO rejects SetMute/SetVolume before the device is enabled
+	// (MEASURED in dmesg: "MI_AO_IMPL_SetMute: Dev0 has not been enabled"), so muting earlier was
+	// a silent no-op. Held muted until the ring has prefilled, then released in one step.
+	PLAT_muteAudio(1);
+
 	snd.buffer_seconds = 12; // ring CAPACITY (~200ms), not latency — latency is occupancy,
 	                         // set by the production/consumption balance. 5 frames (83ms)
 	                         // could not absorb pcsx load-stalls (BR2/THPS logo+demo audio
@@ -1567,10 +1697,20 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
 	SND_publishOccupancy();
+	// device is up and the ring is prefilling — safe to let signal through now (settles first)
+	PLAT_muteAudio(0);
 }
 void SND_pause(void) { // close the device so the SDL audio thread fully stops during sleep
 	if (!snd.initialized) return;                 // (pause alone kept it spinning ~7% CPU; from MyMinUI)
 	atomic_store(&snd.paused, 1); // no consumer exists now: producers drop instead of waiting (review 5/r3)
+	// Mute BEFORE the close, exactly as SND_quit does. On SigmaStar the close IS
+	// MI_AO_Disable/DisableChn, and that codec power-down is the audible pop — so without this,
+	// every sleep popped and every wake popped again on reopen. This was the same defect SND_quit
+	// was fixed for; this path was missed.
+	// NOTE: unlike SND_quit we still CLOSE here even when PLAT_keepAudioOpen() is set. Closing is
+	// what actually stops the SDL audio thread; leaving it open costs ~7% CPU for the whole
+	// faux-sleep, which on a sleep path is a worse trade than a muted transient.
+	PLAT_muteAudio(1);
 	SDL_PauseAudio(1);
 	SDL_CloseAudio();
 	SND_signalSpace(); // a blocked producer wakes and exits via the paused check
@@ -1596,11 +1736,47 @@ void SND_resume(void) { // reopen at the rate negotiated in SND_init; ring buffe
 	}
 	atomic_store(&snd.paused, 0); // consumer is back: producers may wait again
 	snd.prefilling = 1; // re-arm the prefill gate (empty-ring starts chop audibly)
+	// Release the mute SND_pause took. The reopen above re-enabled/reconfigured the codec, which
+	// is the transient we were hiding; the ring is prefilling so nothing audible is lost.
+	PLAT_muteAudio(0);
 }
+// Weak default: platforms without a hardware mute simply do nothing.
+__attribute__((weak)) void PLAT_muteAudio(int mute) { (void)mute; }
+__attribute__((weak)) int PLAT_keepAudioOpen(void) { return 0; }
+__attribute__((weak)) void PLAT_resetAudio(void) { }
+// -1 = "no idea", which the telemetry prints as dac=? rather than inventing a number.
+__attribute__((weak)) int PLAT_getAudioQueued(void) { return -1; }
+
+// Exact charge percentage for the charging screen, or -1 when this platform has no better source
+// than PLAT_getBatteryStatus's coarse buckets. Added because the charging screen was reading
+// tg5040-only sysfs (axp2202-battery/capacity) DIRECTLY, so on every other platform it rendered
+// "..." instead of a number. Platforms that can answer override this; the rest are unchanged.
+__attribute__((weak)) int PLAT_getChargePercent(void) { return -1; }
+
+// Is the audio codec owned by ANOTHER process that outlives us? 1 = yes, do not touch device-global
+// audio state. Default 0: we own it, current behaviour is unchanged everywhere that does.
+__attribute__((weak)) int PLAT_audioIsShared(void) { return 0; }
+
+// Is the battery still being filled? Platforms that cannot tell fall back to "same as charging",
+// preserving existing behaviour; only platforms that distinguish the two override this.
+__attribute__((weak)) int PLAT_isToppingUp(void) { return -1; }
+
 void SND_quit(void) { // plat_sound_finish
 	if (snd.initialized) {
+		// Stop feeding the device first, either way.
 		SDL_PauseAudio(1);
-		SDL_CloseAudio();
+		// Closing calls MI_AO_Disable/DisableChn on SigmaStar, and that power-down IS the pop.
+		// Leave the codec enabled and let the next process reuse it.
+		//
+		// MUTE ONLY IF WE ARE ACTUALLY CLOSING. The mute exists solely to silence the DAC across
+		// that power-down. When the codec is kept open there is no power-down to protect, and
+		// because the device stays ENABLED between processes the mute would be GLOBAL and
+		// PERSISTENT — MEASURED on device: the exit pop went away but the next game launched
+		// silent, because nothing in the new process cleared a mute it never set.
+		if (!PLAT_keepAudioOpen()) {
+			PLAT_muteAudio(1);
+			SDL_CloseAudio();
+		}
 	}
 
 	if (snd.buffer) {
@@ -2074,15 +2250,26 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	
 	static int was_charging = -1;
 	if (was_charging==-1) was_charging = pwr.is_charging;
+	// The drawn LEVEL, tracked separately from the charging flag. PWR_monitorBattery refreshes
+	// pwr.charge on its own thread every 5s, but nothing here ever noticed: only a change of the
+	// charging flag marked the UI dirty, so a level that moved while the menu sat idle was updated
+	// in memory and never repainted. Reported on-device (2026-08-01): charged to 100%, indicator
+	// kept showing low until something unrelated forced a redraw.
+	static int was_charge = -1;
+	if (was_charge==-1) was_charge = pwr.charge;
 
 	uint32_t now = SDL_GetTicks();
 	if (was_charging || PAD_anyPressed() || last_input_at==0) last_input_at = now;
-	
+
 	#define CHARGE_DELAY 1000
 	if (dirty || now-checked_charge_at>=CHARGE_DELAY) {
 		int is_charging = pwr.is_charging;
 		if (was_charging!=is_charging) {
 			was_charging = is_charging;
+			dirty = 1;
+		}
+		if (was_charge!=pwr.charge) {
+			was_charge = pwr.charge;
 			dirty = 1;
 		}
 		checked_charge_at = now;
@@ -2102,7 +2289,12 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	
 	if (PAD_justPressed(BTN_POWER)) {
 		power_pressed_at = now;
-		power_press_is_wake = PLAT_supportsDeepSleep() && pwr.resume_tick && now-pwr.resume_tick<1000;
+		// NOT gated on PLAT_supportsDeepSleep(). pwr.resume_tick is set at the end of PWR_sleep(),
+		// which is the COMMON path — faux sleep reaches it just as deep sleep does — so this
+		// debounce is meaningful on every platform. Gating it meant that on a device without deep
+		// sleep the guard below collapsed to "always sleep on release", so the release of the very
+		// press that woke the device put it straight back to sleep.
+		power_press_is_wake = pwr.resume_tick && now-pwr.resume_tick<1000;
 		if (power_press_is_wake) LOG_debug("guarding power button release (just resumed)\n");
 	}
 	int power_released = PAD_justReleased(BTN_POWER);
@@ -2113,7 +2305,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	if (
 		pwr.requested_sleep || // hardware requested sleep
 		now-last_input_at>=SLEEP_DELAY || // autosleep
-		(pwr.can_sleep && power_released && (!PLAT_supportsDeepSleep() || (power_pressed_at && !power_press_is_wake))) // manual sleep (resume-press guard only where deep sleep is on)
+		(pwr.can_sleep && power_released && power_pressed_at && !power_press_is_wake) // manual sleep (resume-press guarded on EVERY platform)
 	) {
 		pwr.requested_sleep = 0;
 		if (before_sleep) before_sleep();
@@ -2212,13 +2404,27 @@ void PWR_powerOff(void) {
 }
 
 static void PWR_enterSleep(void) {
+	// Stop the haptics before anything else. Sleeping mid-rumble left the motor running for the
+	// ENTIRE faux-sleep (up to the 2-minute escalation) — the vib thread has no timeout that stops
+	// an already-active rumble, and nothing else on this path clears it. Onion calls rumble(0) in
+	// its suspend sequence for the same reason.
+	VIB_setStrength(0);
+	// MUTE BEFORE closing the device, not after. SND_pause() tears the audio device down, and on
+	// SigmaStar that power-down of a still-live output stage is audible as a pop — the same
+	// discontinuity the game-exit path already mutes for (see PLAT_muteAudio). Volume was
+	// previously dropped several lines later, i.e. after the pop had already happened.
+	// Do NOT mute a codec we do not own. MI_AO_SETMUTE is DEVICE-GLOBAL, and when another process
+	// owns the codec nothing unmutes per game on resume: PWR_exitSleep's SetVolume() reads the
+	// current level first, and that read fails for a process which never brought AO up, so the
+	// `old==-60 -> setMute(0)` boundary never fires and the device stays silent for the menu and
+	// every later game until reboot. PLAT_resetAudio refuses the same operation for the same reason.
+	if (!GetHDMI() && !PLAT_audioIsShared()) SetRawVolume(MUTE_VOLUME_RAW);
 	SND_pause(); // fully closes the audio device (thread stops); no-op when sound isn't initialized (minui)
 	if (GetHDMI()) {
 		PLAT_clearVideo(gfx.screen);
 		PLAT_flip(gfx.screen, 0);
 	}
 	else {
-		SetRawVolume(MUTE_VOLUME_RAW);
 		PLAT_enableBacklight(0);
 	}
 	system("killall -STOP keymon.elf");
@@ -2317,7 +2523,14 @@ void PWR_enableAutosleep(void) {
 	pwr.can_autosleep = 1;
 }
 int PWR_preventAutosleep(void) {
-	return pwr.is_charging || !pwr.can_autosleep || GetHDMI() || exists(STAY_AWAKE_PATH);
+	// Inhibit while the cell is still FILLING, not merely while a cable is attached. On a platform
+	// that reports power presence (rather than charge current) as is_charging, the old test meant a
+	// plugged-in device could never autosleep at any level — panel and core live indefinitely,
+	// which is the opposite of this fork's thesis. Platforms that cannot distinguish the two return
+	// -1 and keep the previous behaviour exactly.
+	int topping = PLAT_isToppingUp();
+	int charging_inhibit = (topping < 0) ? pwr.is_charging : topping;
+	return charging_inhibit || !pwr.can_autosleep || GetHDMI() || exists(STAY_AWAKE_PATH);
 }
 
 // updated by PWR_updateBatteryStatus()
