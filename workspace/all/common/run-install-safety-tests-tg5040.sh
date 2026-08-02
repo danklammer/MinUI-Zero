@@ -114,6 +114,21 @@ grep -q "LIVE-LAUNCHER" "$T/c4/.system/tg5040/paks/MinUI.pak/launch.sh" 2>/dev/n
 [ -f "$T/c4/MinUI.zip" ] || [ -f "$T/c4/MinUI.zip.failed" ] \
 	&& ok "archive retained for diagnosis or retry" || bad "archive lost after a failed extract"
 
+echo "=== case 5: no launcher and no archive — must hand back to stock, not a black screen ==="
+# Reaching the end of boot.sh with nothing installed used to just exit. The wrapper has already
+# exec'd this script, so there is no caller to return to and the user sees a black screen on every
+# boot — recoverable only by removing the card, which nobody knows to try.
+grep -q "runtrimui-original.sh" "$SRC" \
+	&& ok "falls back to the stock launcher when MinUI cannot run" \
+	|| bad "no stock fallback — a failed install leaves a black screen"
+LAUNCH_LN=$(grep -n "^LAUNCH_PATH=" "$SRC" | head -1 | cut -d: -f1)
+FALLBACK_LN=$(grep -n "runtrimui-original.sh" "$SRC" | tail -1 | cut -d: -f1)
+if [ -n "$LAUNCH_LN" ] && [ -n "$FALLBACK_LN" ] && [ "$FALLBACK_LN" -gt "$LAUNCH_LN" ]; then
+	ok "fallback comes after the launcher attempt, not instead of it"
+else
+	bad "fallback ordering wrong — it could pre-empt a working MinUI"
+fi
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
