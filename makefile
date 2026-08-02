@@ -290,9 +290,13 @@ else
 	# NOT miyoo355 (Miyoo Flip): that is a different SoC needing its own platform build and an
 	# init/squashfs payload we do not produce. Shipping an empty miyoo355 would let a Flip boot
 	# into a card with no runtime, which is worse than not being recognised at all.
-	mv ./build/BOOT/common ./build/BOOT/.tmp_update 2>/dev/null || true
+	# These were `2>/dev/null || true`. A suppressed failure here does not fail the build — it
+	# SHIPS a short bootstrap, and since the model directories below are copies, one partial write
+	# is duplicated identically into all three. The device then finds an incomplete bootstrap and
+	# the on-card recovery logic is what has to cope. Fail the build instead.
+	mv ./build/BOOT/common ./build/BOOT/.tmp_update
 	mv ./build/BOOT/miyoo ./build/BASE/
-	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/ 2>/dev/null || true
+	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/
 	cp -R ./build/BASE/miyoo ./build/BASE/miyoo354
 	cp -R ./build/BASE/miyoo ./build/BASE/miyoo285
 endif
