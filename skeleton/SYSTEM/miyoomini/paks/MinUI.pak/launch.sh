@@ -39,17 +39,27 @@ export SAVES_PATH="$SDCARD_PATH/Saves"
 export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
 export CORES_PATH="$SYSTEM_PATH/cores"
 
-# This panel's TRUE refresh: 59.6720 Hz. MEASURED DIRECTLY with tools/panelprobe.c (tight page-flip
-# loop, no emulator/audio/scaler, CLOCK_MONOTONIC in-process; three runs agreed to four decimals).
-# Corroborated at 59.6873 Hz by timing 120 FBIO_WAITFORVSYNC calls.
+# PANEL REFRESH — PER MODEL, and only ever a MEASURED one.
 #
-# minarch derives a per-core correction: NES/SNES -7102ppm, GB/GBC/GBA -929, Genesis -4184, PS1 -4471.
+# The Mini Plus panel's true refresh is 59.6720 Hz. MEASURED DIRECTLY with tools/panelprobe.c (tight
+# page-flip loop, no emulator/audio/scaler, CLOCK_MONOTONIC in-process; three runs agreed to four
+# decimals). Corroborated at 59.6873 Hz by timing 120 FBIO_WAITFORVSYNC calls. minarch derives a
+# per-core correction from it: NES/SNES -7102ppm, GB/GBC/GBA -929, Genesis -4184, PS1 -4471.
 #
 # THIS REQUIRES the page-ownership state machine in platform.c (flip_front/active/pending/rendering).
 # Enabling the rate match without it caused visible TEARING, twice: matching the producer to the
 # panel stops the phase drifting, so the front-page race went from rare to every frame. The producer
 # used to guard only against `active` and `pending` — nothing tracked the page being scanned out.
-export MINARCH_PANEL_FPS=59.6720
+#
+# WHY THIS IS GATED. The value above is a property of ONE panel, on the one model we own. The
+# original Mini and the Mini Flip ship the same binaries but nobody has measured their panels, and
+# an unmeasured rate is worse than none: minarch would pull every core toward a number we invented.
+# Leaving it unset costs those models nothing they had before — no rate match is exactly the
+# pre-v1.5.4 behaviour. To add a model, run tools/panelprobe.c ON IT and put the result here; do not
+# copy the Plus's figure across on the assumption that one SSD202D panel is another.
+if [ "$IS_PLUS" = "true" ]; then
+	export MINARCH_PANEL_FPS=59.6720
+fi
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"

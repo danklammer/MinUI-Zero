@@ -1628,6 +1628,27 @@ static void Config_syncFrontend(char* key, int value) {
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_TEARING].key)) {
 		prevent_tearing = value;
+		#ifdef GOV_PLATFORM_MIYOOMINI
+		// STRICT NEEDS A MEASURED PANEL RATE — on this platform specifically.
+		//
+		// Here Strict means the producer blocks on a raw fbdev pan, so the core is paced by the
+		// panel itself. On a panel SLOWER than the core that throttles the core below native and
+		// audio production runs at a deficit. The static rate match is what repays it, and it only
+		// exists when the platform declared a MEASURED MINARCH_PANEL_FPS. DRC cannot stand in: it
+		// is clamped >= 0 and only ever climbs (see drc_supported), so it cannot express a
+		// slow-panel correction at all.
+		//
+		// This is guarded rather than global because it is a property of THIS present path. On
+		// tg5040 Strict runs through SDL_RENDERER_PRESENTVSYNC, which needs no declared rate.
+		//
+		// It matters because one Miyoo build serves three models from identical binaries and only
+		// the Mini Plus's panel has been measured; without this an unmeasured Mini or Mini Flip
+		// would inherit the Plus's locked Strict with nothing to repay the deficit.
+		if (prevent_tearing == VSYNC_STRICT && !getenv("MINARCH_PANEL_FPS")) {
+			LOG_info("tearing: Strict requested but no measured MINARCH_PANEL_FPS — using Lenient\n");
+			prevent_tearing = VSYNC_LENIENT;
+		}
+		#endif
 		i = FE_OPT_TEARING;
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_THREAD].key)) {
