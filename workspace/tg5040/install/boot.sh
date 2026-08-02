@@ -144,3 +144,20 @@ LAUNCH_PATH="$SYSTEM_PATH/$PLATFORM/paks/MinUI.pak/launch.sh"
 if [ -f "$LAUNCH_PATH" ] ; then
 	exec "$LAUNCH_PATH"
 fi
+
+# NO LAUNCHER — MinUI is not installed, and we reached here without a usable archive to install it
+# from (a corrupt download, or an install that failed and had nothing left to retry).
+#
+# Simply falling off the end of this script leaves a BLACK SCREEN. Our wrapper in
+# /usr/trimui/bin/runtrimui.sh has already `exec`ed this script, so there is no caller to return to
+# and its own stock fallback is unreachable — that `else` branch only runs when .tmp_update/updater
+# is missing entirely. The device looks dead even though nothing is broken in the firmware.
+#
+# (It is recoverable without a PC by removing the card, which makes the wrapper take its stock
+# branch. But a user with a blank screen has no way to know that.)
+#
+# So hand the device back to stock for this boot. The wrapper stays installed, so simply fixing the
+# card — dropping a good MinUI.zip on it — makes the next boot install normally.
+if [ -x /usr/trimui/bin/runtrimui-original.sh ]; then
+	exec /usr/trimui/bin/runtrimui-original.sh
+fi
