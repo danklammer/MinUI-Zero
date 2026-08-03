@@ -155,7 +155,13 @@ audio_daemon_ok() {
 	# Plus ONLY. The stock /customer/app/audioserver is the qualified path for THIS model; other
 	# Miyoo models use audioserver.mod, which is not qualified here. Testing for the binary is not
 	# enough -- keep everything else on explicit direct MMIYOO.
+	#
+	# The Flip must be EXCLUDED explicitly: it ships /customer/app/axp_test too, so IS_PLUS is true
+	# there. IS_PLUS means "has the AXP PMIC", not "is the Plus" — see where IS_FLIP is derived.
+	# Without this a Flip that happens to have the daemon, shim and FIFO would be routed through an
+	# audio path nobody has qualified on that hardware.
 	[ "$IS_PLUS" = "true" ] || return 1
+	[ "$IS_FLIP" != "true" ] || return 1
 	[ -x /customer/app/audioserver ] || return 1
 	# The client shim is what actually routes /dev/dsp into the daemon. Without it, selecting the
 	# OSS driver just opens the raw device and the game is silent.
@@ -169,6 +175,7 @@ audio_daemon_ok() {
 # never hang the launcher; returns non-zero instead, and the caller falls back.
 audio_daemon_start() {
 	[ "$IS_PLUS" = "true" ] || return 1
+	[ "$IS_FLIP" != "true" ] || return 1   # Flip has axp_test too; see audio_daemon_ok
 	[ -x /customer/app/audioserver ] || return 1
 	# Check the CLIENT SHIM *before* spawning anything. Without libpadsp we cannot route games to
 	# the daemon — but a spawned daemon would still CLAIM MI_AO, and then the direct-MMIYOO fallback
