@@ -277,12 +277,13 @@ fi
 # (no AXP) that read always fails, so "one predicate in batmon" silently meant NO CHARGE SCREEN AT
 # ALL on that model, even though platform.c and keymon both read gpio59 there correctly. The gate
 # below is therefore not a duplicate hardware rule, it is the non-AXP branch batmon does not have.
-# Select on the AXP PMIC ITSELF, not on the presence of an i2c bus. batmon needs the PMIC; an i2c
-# node is only a proxy for it, and this SoC can expose the bus whether or not an AXP hangs off it —
-# so a Mini with /dev/i2c-1 would be sent to batmon, whose read fails, and get no charge screen at
-# all. IS_PLUS is derived from /customer/app/axp_test and means exactly "has the AXP", which is the
-# question being asked here (this is the one place where its literal meaning is the right one, and
-# the Flip is deliberately NOT excluded: it has an AXP and wants the AXP path).
+# Select on the AXP PMIC ITSELF, not on the presence of an i2c bus. batmon does a raw AXP read, and
+# an i2c ADAPTER NODE DOES NOT PROVE THE AXP SLAVE IS PRESENT — it is a proxy for the question, not
+# the question. (I have no device evidence that a Mini actually exposes /dev/i2c-1, so this is a
+# correctness change on the predicate, not a fix for an observed failure.) IS_PLUS is derived from
+# /customer/app/axp_test and means exactly "has the AXP", which is what is being asked here — the
+# one place where its literal meaning is the right one. The Flip is deliberately NOT excluded: it
+# has an AXP and wants the AXP path.
 if [ "$IS_PLUS" = "true" ]; then
 	batmon.elf
 else
