@@ -132,12 +132,21 @@ screen, then sleeps — cooler charging, honest percentages.
 TurboGrafx-16, Virtual Boy, PICO-8 — create the matching Roms folder (eg. "Virtual Boy (VB)")
 and the system appears, tuned core already installed.
 
-## Miyoo Mini Plus (experimental)
+## Miyoo Mini family (experimental)
 
-There is an **alpha** build for the Miyoo Mini Plus (SigmaStar SSD202D, dual Cortex-A7). It is a
+There is an **alpha** build for the Miyoo Mini family (SigmaStar SSD202D, dual Cortex-A7). It is a
 real port — same launcher, same closed-loop governor, the same eleven emulator cores rebuilt for
 ARMv7/NEON — but it is **newer and less proven than the TrimUI builds**, and it is missing
 features they have. Treat it as a preview, back up your card, and expect rough edges.
+
+One card serves all three models (new in v1.5.5); the firmware detects which device it woke up on:
+
+- **Miyoo Mini Plus** — the model this port is developed and verified on.
+- **Miyoo Mini (original)** — same binaries, correct battery/audio paths, **never tested on real
+  hardware**. It should work; nobody has watched it work.
+- **Miyoo Mini Flip** — boots from its own `miyoo285` folder, keeps the lid, battery, and audio
+  paths appropriate to a clamshell, **never tested on real hardware**. Its panel is unmeasured, so
+  it deliberately runs the safe present path rather than inheriting the Plus's measured rate.
 
 | | TrimUI Brick / Smart Pro | Miyoo Mini Plus |
 |---|---|---|
