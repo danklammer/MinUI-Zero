@@ -25,9 +25,11 @@
 # fallback, dies "scp: not found"). Piping through the shell needs only cat, which busybox has.
 set -e
 
-PLATFORM=${1:?usage: deploy-device.sh <platform> [user@host[:port]] [-i identity]}
+PLATFORM=${1:?usage: deploy-device.sh <platform> [user@host[:port]] [-i identity] [--delete]}
 TARGET=${2:-root@192.168.1.10}
 IDENT=""
+DELETE_STALE=0
+for arg in "$@"; do [ "$arg" = "--delete" ] && DELETE_STALE=1; done
 if [ "${3:-}" = "-i" ] && [ -n "${4:-}" ]; then IDENT="-i $4"; fi
 PORT=22
 case "$TARGET" in
@@ -99,20 +101,30 @@ while IFS= read -r f; do
 	$SSH "$TARGET" "mkdir -p '$DST/$(dirname "$f")' && cat > '$DST/$f.new' && chmod 755 '$DST/$f.new' && mv -f '$DST/$f.new' '$DST/$f'" < "$SRC/$f"
 done < "$CHANGED"
 
-# Remove remote files the build no longer produces. Without this the "sync" is upload-only, so a
-# deleted pak or renamed core lingers on the card and quietly contaminates the next device test
-# (exactly the stale-pairing class that cost an evening on the MINARCH_PRELOAD audio break).
-# Scoped strictly to $DST, which is OUR payload directory — user data lives elsewhere on the card.
+# Remove remote files the build no longer produces — OPT-IN via --delete. Without deletion the
+# "sync" is upload-only, so a deleted pak or renamed core lingers and can contaminate the next
+# device test (the stale-pairing class that cost an evening on the MINARCH_PRELOAD audio break).
+# But $DST on a DAILY-DRIVER card legitimately holds files the build never produced — Dan's Brick
+# carries a dozen minarch.elf.* backups and unshipped libraries — and an unconditional pass here
+# would have deleted all of them (previewed 2026-08-01: 63 files; never run). Default is therefore
+# KEEP; pass --delete on cards we own outright (the MMP test card).
 cut -d' ' -f3- "$WORK/local.txt" | sed 's/^ *//' | sort > "$WORK/local-paths.txt"
 cut -d' ' -f3- "$WORK/remote.txt" 2>/dev/null | sed 's/^ *//' | sort > "$WORK/remote-paths.txt"
 STALE=$(comm -13 "$WORK/local-paths.txt" "$WORK/remote-paths.txt")
 if [ -n "$STALE" ]; then
-	echo "--- removing stale ---"
-	echo "$STALE" | while IFS= read -r f; do
-		[ -n "$f" ] || continue
-		echo "  xx $f"
-		$SSH "$TARGET" "rm -f '$DST/$f'"
-	done
+	if [ "$DELETE_STALE" = "1" ]; then
+		echo "--- removing stale ---"
+		echo "$STALE" | while IFS= read -r f; do
+			[ -n "$f" ] || continue
+			echo "  xx $f"
+			$SSH "$TARGET" "rm -f '$DST/$f'"
+		done
+	else
+		echo "--- stale files on device KEPT (pass --delete to remove) ---"
+		echo "$STALE" | head -5 | sed 's/^/  keep /'
+		N=$(echo "$STALE" | wc -l | tr -d ' ')
+		[ "$N" -gt 5 ] && echo "  ... and $((N-5)) more"
+	fi
 fi
 
 # Flush to the card before anything can power-cycle it. FAT32 + a yanked battery loses the write.

@@ -22,7 +22,7 @@ endif
 # stamps itself with the last clean SHA and claims to be a commit it is not — which makes every
 # "what exactly is on this card?" question unanswerable, and burned a review cycle.
 BUILD_HASH:=$(shell git rev-parse --short HEAD)$(shell test -n "$$(git status --porcelain)" && echo -dirty)
-ZERO_VERSION=v1.5.4
+ZERO_VERSION=v1.5.5
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 RELEASE_BETA=
 # Device family for the release name: tg5040 -> trimui, miyoomini -> miyoo. Per-family zips keep
@@ -59,8 +59,13 @@ test-governor:
 	sh ./workspace/all/common/run-governor-tests.sh
 test-shellquote:
 	sh ./workspace/all/common/run-shellquote-tests.sh
+# All three install-safety harnesses, not just the Miyoo one. The tg5040 installer and BOTH outer
+# bootstraps are equally able to strand a device, and a harness that has to be remembered by hand
+# is one that stops being run.
 test-install-safety:
 	sh ./workspace/all/common/run-install-safety-tests.sh
+	sh ./workspace/all/common/run-install-safety-tests-tg5040.sh
+	sh ./workspace/all/common/run-bootstrap-safety-tests.sh
 test-cfg-migrate:
 	sh ./workspace/all/common/run-cfg-migrate-tests.sh
 check-parity:
@@ -261,9 +266,13 @@ setup: name
 done:
 	say "done" 2>/dev/null || true
 
-# card-root bootstrap folder per family (trimui/ for TrimUI, miyoo/ for Miyoo)
+# Card-root bootstrap folders per family. The stock loader looks in a directory fixed BY MODEL, so
+# a card only serves more than one model if each model's directory is present. The Miyoo entry is
+# therefore a list, not a name: identical payloads, with Mini/Plus/Mini-Flip resolved at runtime.
+#   miyoo    = Miyoo Mini (original)   miyoo354 = Miyoo Mini Plus   miyoo285 = Miyoo Mini Flip
+# See the `special` target for why miyoo355 (Miyoo Flip) is deliberately absent.
 BOOT_DIR_trimui=trimui
-BOOT_DIR_miyoo=miyoo
+BOOT_DIR_miyoo=miyoo miyoo354 miyoo285
 BOOT_DIR=$(BOOT_DIR_$(FAMILY))
 
 special:
@@ -273,10 +282,28 @@ ifeq (trimui,$(FAMILY))
 	mv ./build/BOOT/trimui ./build/BASE/
 	cp -R ./build/BOOT/.tmp_update ./build/BASE/trimui/app/
 else
-	# miyoo (Miyoo Mini Plus): the stock loader runs miyoo/app/<platform>.sh from the card root
-	mv ./build/BOOT/common ./build/BOOT/.tmp_update 2>/dev/null || true
+	# miyoo: the stock loader runs <boot-dir>/app/<platform>.sh from the card root, and WHICH
+	# boot-dir it looks in is fixed per model. One card serves the whole Mini family only if every
+	# model's directory is present, so ship all three as copies of the same payload — identical
+	# binaries, with the Mini/Plus/Mini-Flip split resolved at RUNTIME (is_plus from
+	# /customer/app/axp_test, has_axp additionally from the hall sensor). Upstream MinUI does
+	# exactly this (miyoo -> miyoo354/miyoo355/miyoo285) and spruceOS resolves the same split at
+	# runtime from the same two files.
+	#   miyoo    = Miyoo Mini (original)
+	#   miyoo354 = Miyoo Mini Plus     <- the only model whose panel rate we have MEASURED
+	#   miyoo285 = Miyoo Mini Flip
+	# NOT miyoo355 (Miyoo Flip): that is a different SoC needing its own platform build and an
+	# init/squashfs payload we do not produce. Shipping an empty miyoo355 would let a Flip boot
+	# into a card with no runtime, which is worse than not being recognised at all.
+	# These were `2>/dev/null || true`. A suppressed failure here does not fail the build — it
+	# SHIPS a short bootstrap, and since the model directories below are copies, one partial write
+	# is duplicated identically into all three. The device then finds an incomplete bootstrap and
+	# the on-card recovery logic is what has to cope. Fail the build instead.
+	mv ./build/BOOT/common ./build/BOOT/.tmp_update
 	mv ./build/BOOT/miyoo ./build/BASE/
-	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/ 2>/dev/null || true
+	cp -R ./build/BOOT/.tmp_update ./build/BASE/miyoo/app/
+	cp -R ./build/BASE/miyoo ./build/BASE/miyoo354
+	cp -R ./build/BASE/miyoo ./build/BASE/miyoo285
 endif
 
 tidy:

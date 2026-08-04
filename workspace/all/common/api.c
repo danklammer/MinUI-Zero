@@ -2018,7 +2018,24 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		}
 	}
 	
-	if (lid.has_lid && PLAT_lidChanged(NULL)) pad.just_released |= BTN_SLEEP;
+	// LID CLOSE REQUESTS SLEEP DIRECTLY — it must not go through a synthetic button release.
+	//
+	// This used to set `just_released |= BTN_SLEEP`, and BTN_SLEEP is #defined to BTN_POWER on the
+	// platforms that have a lid. PWR_update's manual-sleep condition requires `power_pressed_at`,
+	// i.e. proof of a preceding PHYSICAL press (the guard that stops a resume-press immediately
+	// re-sleeping the device). A hall-sensor transition never sets it, so the condition was
+	// unreachable and closing the clamshell did nothing: panel, audio and game stayed live in a
+	// shut lid, draining and heating. `requested_sleep` is the existing hardware-request path and
+	// bypasses that guard by design.
+	//
+	// Gate on !lid_open: the old code fired on ANY transition, so OPENING synthesized a sleep too.
+	// That was masked only because the guard rejected both.
+	//
+	// PAD_poll owns the CLOSE and PLAT_shouldWake owns the OPEN. These do not race despite
+	// PLAT_lidChanged being stateful: PAD_poll runs only while awake, and PLAT_shouldWake runs only
+	// inside the wake loop, when PAD_poll is not running.
+	int lid_open = 1;
+	if (lid.has_lid && PLAT_lidChanged(&lid_open) && !lid_open) PWR_requestSleep();
 }
 FALLBACK_IMPLEMENTATION int PLAT_shouldWake(void) {
 	int lid_open = 1; // assume open by default
