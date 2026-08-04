@@ -76,15 +76,78 @@ if [ -f "$UPDATE_PATH" ]; then
 	# kept for diagnosis but unable to install-loop; a power-cut mid-extract leaves the
 	# package in place so the next boot retries.
 	UPDATED=
-	if ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
-		if ./unzip -o "$UPDATE_PATH" -d "$SDCARD_PATH"; then # &> /mnt/SDCARD/unzip.txt
+	COPY_OK=0
+	STAGE="$SDCARD_PATH/.minui-staging"   # inert name: nothing boots from it
+	rm -rf "$STAGE"
+	if ! ./unzip -tqq "$UPDATE_PATH" > /dev/null 2>&1; then
+		mv -f "$UPDATE_PATH" "$UPDATE_PATH.bad"
+	# ...and that it is a payload for THIS platform. A release archive for another device is
+	# perfectly VALID, so the CRC test above passes it, and extracting it wrote another device's
+	# .system over this one and then deleted the only copy of the archive: a working console
+	# turned into one that needs a PC. The README tells users to update by dropping MinUI.zip on
+	# the card, and the release page offers an archive per device, so picking the wrong one is an
+	# ordinary mistake rather than an exotic one.
+	#
+	# The Miyoo installer has always checked this (see its boot.sh, same grep); tg5040 never did.
+	# That was drift, not an earned divergence.
+	#
+	# Change NOTHING on rejection, matching the Miyoo behaviour: the installed system still boots,
+	# and the archive is KEPT so the user can simply replace it with the right one and reboot.
+	elif ! ./unzip -l "$UPDATE_PATH" 2>/dev/null | grep -q "$PLATFORM/paks/MinUI.pak/launch.sh"; then
+		echo "$(date '+%F %T') This MinUI.zip is a valid archive but does not contain a $PLATFORM system - it is probably the download for a different device. Nothing was changed and the file was kept; replace it with the $PLATFORM release and reboot." > "$SDCARD_PATH/MinUI-update-failed.txt"
+		sync
+	# STAGE THE EXTRACT. This used to run `unzip -o ... -d "$SDCARD_PATH"`, straight over the live
+	# tree. A CRC-valid archive can still fail to extract — the card fills, or the power goes — and
+	# that left .system as a mix of old and new binaries while the archive was renamed aside, so
+	# there was nothing left to retry from. Nothing touches the installed system until the whole
+	# payload is on disk and has been checked.
+	#
+	# This is the pattern the Miyoo installer has used since its own audit; tg5040 never got it.
+	# Same drift as the platform check above.
+	elif ! mkdir -p "$STAGE"; then
+		echo "$(date '+%F %T') Could not create a staging folder on the card - it may be full or write-protected. Nothing was changed." > "$SDCARD_PATH/MinUI-update-failed.txt"
+		sync
+	elif ./unzip -o "$UPDATE_PATH" -d "$STAGE" && [ -f "$STAGE/.system/$PLATFORM/paks/MinUI.pak/launch.sh" ]; then
+		# Payload is complete on disk. Only now merge it into the live tree.
+		#
+		# `.tmp_update` MUST be copied explicitly. A glob of "$STAGE"/* does not match dotfiles, so
+		# an earlier version of this silently skipped it — the install reported success, consumed
+		# the archive, and left the OLD tg5040.sh and updater in place. Nothing visibly failed,
+		# which is what made it dangerous: the safety-critical bootstrap could never self-update.
+		cp -rf "$STAGE/.system" "$SDCARD_PATH/" && COPY_OK=1
+		# .tmp_update IS DELIBERATELY NOT INSTALLED HERE. Copying it merges over the LIVE bootstrap,
+		# including the tg5040.sh that is executing right now, and `cp` truncates before writing: a
+		# power cut mid-copy leaves a truncated `updater` that the firmware hook still finds by
+		# presence, `exec`s, and fails on — with its stock fallback unreachable. That needs a PC.
+		#
+		# The consequence of leaving it out is that the bootstrap cannot self-update: a new
+		# tg5040.sh ships in the archive but the installed one keeps running. That is a missing
+		# feature, not a brick, and it is the behaviour every released version has had.
+		#
+		# Doing this properly needs the inert-stage + checked-atomic-promote treatment the OUTER
+		# bootstrap now uses, applied to a directory whose contents are mid-execution. That is worth
+		# doing carefully rather than quickly — see the note in docs/qol-backlog.md.
+		for extra in "$STAGE"/* "$STAGE"/.[!.]*; do
+			case "$(basename "$extra")" in .system|.tmp_update|"*"|".[!.]*") continue;; esac
+			[ -e "$extra" ] && cp -rf "$extra" "$SDCARD_PATH/" 2>/dev/null
+		done
+
+		# COMMIT BEFORE DISCARDING THE WAY BACK. The card is remounted `async` at the top of this
+		# script, so deleting the staging tree and the archive can reach the disk before the merged
+		# file data does. A power cut in that window left a partial .system with no stage and no
+		# archive — no dishonest card required. Make the merge durable first.
+		sync
+		rm -rf "$STAGE"
+		if [ "${COPY_OK:-0}" = "1" ]; then
 			rm -f "$UPDATE_PATH"
 			UPDATED=yes
 		else
-			mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
+			echo "$(date '+%F %T') Update failed while installing (the card may be full). MinUI.zip was kept - free some space and reboot to retry." > "$SDCARD_PATH/MinUI-update-failed.txt"
 		fi
 	else
-		mv -f "$UPDATE_PATH" "$UPDATE_PATH.bad"
+		# Extract failed or the payload was not what it claimed. The live system was never touched.
+		rm -rf "$STAGE"
+		mv -f "$UPDATE_PATH" "$UPDATE_PATH.failed"
 	fi
 	sync
 
@@ -103,4 +166,21 @@ fi
 LAUNCH_PATH="$SYSTEM_PATH/$PLATFORM/paks/MinUI.pak/launch.sh"
 if [ -f "$LAUNCH_PATH" ] ; then
 	exec "$LAUNCH_PATH"
+fi
+
+# NO LAUNCHER — MinUI is not installed, and we reached here without a usable archive to install it
+# from (a corrupt download, or an install that failed and had nothing left to retry).
+#
+# Simply falling off the end of this script leaves a BLACK SCREEN. Our wrapper in
+# /usr/trimui/bin/runtrimui.sh has already `exec`ed this script, so there is no caller to return to
+# and its own stock fallback is unreachable — that `else` branch only runs when .tmp_update/updater
+# is missing entirely. The device looks dead even though nothing is broken in the firmware.
+#
+# (It is recoverable without a PC by removing the card, which makes the wrapper take its stock
+# branch. But a user with a blank screen has no way to know that.)
+#
+# So hand the device back to stock for this boot. The wrapper stays installed, so simply fixing the
+# card — dropping a good MinUI.zip on it — makes the next boot install normally.
+if [ -x /usr/trimui/bin/runtrimui-original.sh ]; then
+	exec /usr/trimui/bin/runtrimui-original.sh
 fi

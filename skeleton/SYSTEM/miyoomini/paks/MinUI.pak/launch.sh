@@ -32,6 +32,24 @@ else
 fi
 export IS_PLUS
 
+# IS_PLUS IS NOT "IS THE MINI PLUS". The Mini FLIP also ships /customer/app/axp_test — Allium routes
+# the Flip and the Plus to the SAME AXP battery implementation (Miyoo285 | Miyoo354 =>
+# Miyoo354Battery), and that implementation shells out to axp_test, so the file must be present on a
+# Flip. IS_PLUS therefore means "has the AXP PMIC", which is what the battery code wants and is NOT
+# a model identity.
+#
+# Anything keyed to the PLUS SPECIFICALLY must exclude the Flip, and the hall sensor is the test:
+# it is the clamshell lid, present only on the Flip, and five independent sources agree on the path
+# (ours, upstream MinUI, MyMinUI, spruceOS's MiyooMini.sh, Allium's evdev.rs).
+#
+# MY_MODEL would be the obvious discriminator but is not resolved until much later in this file.
+if [ -e /sys/devices/soc0/soc/soc:hall-mh248/hallvalue ]; then
+	IS_FLIP=true
+else
+	IS_FLIP=false
+fi
+export IS_FLIP
+
 export PLATFORM="miyoomini"
 export SDCARD_PATH="/mnt/SDCARD"
 export BIOS_PATH="$SDCARD_PATH/Bios"
@@ -39,17 +57,30 @@ export SAVES_PATH="$SDCARD_PATH/Saves"
 export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
 export CORES_PATH="$SYSTEM_PATH/cores"
 
-# This panel's TRUE refresh: 59.6720 Hz. MEASURED DIRECTLY with tools/panelprobe.c (tight page-flip
-# loop, no emulator/audio/scaler, CLOCK_MONOTONIC in-process; three runs agreed to four decimals).
-# Corroborated at 59.6873 Hz by timing 120 FBIO_WAITFORVSYNC calls.
+# PANEL REFRESH — PER MODEL, and only ever a MEASURED one.
 #
-# minarch derives a per-core correction: NES/SNES -7102ppm, GB/GBC/GBA -929, Genesis -4184, PS1 -4471.
+# The Mini Plus panel's true refresh is 59.6720 Hz. MEASURED DIRECTLY with tools/panelprobe.c (tight
+# page-flip loop, no emulator/audio/scaler, CLOCK_MONOTONIC in-process; three runs agreed to four
+# decimals). Corroborated at 59.6873 Hz by timing 120 FBIO_WAITFORVSYNC calls. minarch derives a
+# per-core correction from it: NES/SNES -7102ppm, GB/GBC/GBA -929, Genesis -4184, PS1 -4471.
 #
 # THIS REQUIRES the page-ownership state machine in platform.c (flip_front/active/pending/rendering).
 # Enabling the rate match without it caused visible TEARING, twice: matching the producer to the
 # panel stops the phase drifting, so the front-page race went from rare to every frame. The producer
 # used to guard only against `active` and `pending` — nothing tracked the page being scanned out.
-export MINARCH_PANEL_FPS=59.6720
+#
+# WHY THIS IS GATED. The value above is a property of ONE panel, on the one model we own. The
+# original Mini and the Mini Flip ship the same binaries but nobody has measured their panels, and
+# an unmeasured rate is worse than none: minarch would pull every core toward a number we invented.
+# Leaving it unset costs those models nothing they had before — no rate match is exactly the
+# pre-v1.5.4 behaviour. To add a model, run tools/panelprobe.c ON IT and put the result here; do not
+# copy the Plus's figure across on the assumption that one SSD202D panel is another.
+# Gated on the PLUS specifically, not merely on having an AXP: the Flip sets IS_PLUS too (see the
+# note where IS_FLIP is derived), and handing a Flip the Plus's measured figure is exactly the
+# invented-number hazard this gate exists to prevent. Its panel has never been measured.
+if [ "$IS_PLUS" = "true" ] && [ "$IS_FLIP" != "true" ]; then
+	export MINARCH_PANEL_FPS=59.6720
+fi
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"
@@ -124,7 +155,13 @@ audio_daemon_ok() {
 	# Plus ONLY. The stock /customer/app/audioserver is the qualified path for THIS model; other
 	# Miyoo models use audioserver.mod, which is not qualified here. Testing for the binary is not
 	# enough -- keep everything else on explicit direct MMIYOO.
+	#
+	# The Flip must be EXCLUDED explicitly: it ships /customer/app/axp_test too, so IS_PLUS is true
+	# there. IS_PLUS means "has the AXP PMIC", not "is the Plus" — see where IS_FLIP is derived.
+	# Without this a Flip that happens to have the daemon, shim and FIFO would be routed through an
+	# audio path nobody has qualified on that hardware.
 	[ "$IS_PLUS" = "true" ] || return 1
+	[ "$IS_FLIP" != "true" ] || return 1
 	[ -x /customer/app/audioserver ] || return 1
 	# The client shim is what actually routes /dev/dsp into the daemon. Without it, selecting the
 	# OSS driver just opens the raw device and the game is silent.
@@ -138,6 +175,7 @@ audio_daemon_ok() {
 # never hang the launcher; returns non-zero instead, and the caller falls back.
 audio_daemon_start() {
 	[ "$IS_PLUS" = "true" ] || return 1
+	[ "$IS_FLIP" != "true" ] || return 1   # Flip has axp_test too; see audio_daemon_ok
 	[ -x /customer/app/audioserver ] || return 1
 	# Check the CLIENT SHIM *before* spawning anything. Without libpadsp we cannot route games to
 	# the daemon — but a spawned daemon would still CLAIM MI_AO, and then the direct-MMIYOO fallback
@@ -239,7 +277,14 @@ fi
 # (no AXP) that read always fails, so "one predicate in batmon" silently meant NO CHARGE SCREEN AT
 # ALL on that model, even though platform.c and keymon both read gpio59 there correctly. The gate
 # below is therefore not a duplicate hardware rule, it is the non-AXP branch batmon does not have.
-if [ -e /dev/i2c-1 ]; then
+# Select on the AXP PMIC ITSELF, not on the presence of an i2c bus. batmon does a raw AXP read, and
+# an i2c ADAPTER NODE DOES NOT PROVE THE AXP SLAVE IS PRESENT — it is a proxy for the question, not
+# the question. (I have no device evidence that a Mini actually exposes /dev/i2c-1, so this is a
+# correctness change on the predicate, not a fix for an observed failure.) IS_PLUS is derived from
+# /customer/app/axp_test and means exactly "has the AXP", which is what is being asked here — the
+# one place where its literal meaning is the right one. The Flip is deliberately NOT excluded: it
+# has an AXP and wants the AXP path.
+if [ "$IS_PLUS" = "true" ]; then
 	batmon.elf
 else
 	CHARGING=`cat /sys/devices/gpiochip0/gpio/gpio59/value 2>/dev/null`
