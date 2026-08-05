@@ -99,29 +99,45 @@ void PLAT_quitInput(void) {
 	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
 }
 
-// code -> (btn, id). Candidates; unknowns are logged and this table is corrected from the log.
+// code -> (btn, id). MEASURED 2026-08-05: counted-press session on the RG35XX Plus (each button
+// pressed a distinct number of times, decoded from count + temporal order). The canonical evdev
+// names are WRONG on this hardware — 315 "BTN_START" is R2, 314 "BTN_SELECT" is L2, 310 "BTN_TL"
+// is Select — so this table is receipts, not <input-event-codes.h>. The MENU key emits 312 AND 354
+// together; both map to BTN_MENU (same bit, harmless).
+// The dpad is an ANALOG HAT (EV_ABS codes 16/17), handled separately in PLAT_pollInput.
 static void ev_translate(uint16_t code, int* btn, int* id) {
 	switch (code) {
-	case 103: *btn = BTN_DPAD_UP;    *id = BTN_ID_DPAD_UP;    break; // KEY_UP
-	case 108: *btn = BTN_DPAD_DOWN;  *id = BTN_ID_DPAD_DOWN;  break; // KEY_DOWN
-	case 105: *btn = BTN_DPAD_LEFT;  *id = BTN_ID_DPAD_LEFT;  break; // KEY_LEFT
-	case 106: *btn = BTN_DPAD_RIGHT; *id = BTN_ID_DPAD_RIGHT; break; // KEY_RIGHT
-	case 305: *btn = BTN_A;      *id = BTN_ID_A;      break; // BTN_EAST  (right = A, Anbernic)
-	case 304: *btn = BTN_B;      *id = BTN_ID_B;      break; // BTN_SOUTH (bottom = B)
-	case 307: *btn = BTN_X;      *id = BTN_ID_X;      break; // BTN_NORTH
-	case 308: *btn = BTN_Y;      *id = BTN_ID_Y;      break; // BTN_WEST
-	case 310: *btn = BTN_L1;     *id = BTN_ID_L1;     break; // BTN_TL
-	case 311: *btn = BTN_R1;     *id = BTN_ID_R1;     break; // BTN_TR
-	case 312: *btn = BTN_L2;     *id = BTN_ID_L2;     break; // BTN_TL2
-	case 313: *btn = BTN_R2;     *id = BTN_ID_R2;     break; // BTN_TR2
-	case 314: *btn = BTN_SELECT; *id = BTN_ID_SELECT; break; // BTN_SELECT
-	case 315: *btn = BTN_START;  *id = BTN_ID_START;  break; // BTN_START
-	case 316: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break; // BTN_MODE
-	case 116: *btn = BTN_POWER;  *id = BTN_ID_POWER;  break; // KEY_POWER
+	case 304: *btn = BTN_A;      *id = BTN_ID_A;      break;
+	case 305: *btn = BTN_B;      *id = BTN_ID_B;      break;
+	case 307: *btn = BTN_X;      *id = BTN_ID_X;      break;
+	case 306: *btn = BTN_Y;      *id = BTN_ID_Y;      break;
+	case 308: *btn = BTN_L1;     *id = BTN_ID_L1;     break;
+	case 309: *btn = BTN_R1;     *id = BTN_ID_R1;     break;
+	case 314: *btn = BTN_L2;     *id = BTN_ID_L2;     break;
+	case 315: *btn = BTN_R2;     *id = BTN_ID_R2;     break;
+	case 311: *btn = BTN_START;  *id = BTN_ID_START;  break;
+	case 310: *btn = BTN_SELECT; *id = BTN_ID_SELECT; break;
+	case 354: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break;
+	case 312: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break; // MENU companion code
+	case 116: *btn = BTN_POWER;  *id = BTN_ID_POWER;  break; // KEY_POWER (event0, axp2202-pek)
 	case 115: *btn = BTN_PLUS;   *id = BTN_ID_PLUS;   break; // KEY_VOLUMEUP
 	case 114: *btn = BTN_MINUS;  *id = BTN_ID_MINUS;  break; // KEY_VOLUMEDOWN
 	default:  *btn = BTN_NONE;   *id = -1;            break;
 	}
+}
+
+// The dpad hat: EV_ABS code 16 (X: -1 left / +1 right) and 17 (Y: -1 up / +1 down), 0 = released.
+static void ev_hat(uint16_t code, int32_t value, uint32_t tick) {
+	int neg_btn, neg_id, pos_btn, pos_id;
+	if (code == 16) { neg_btn = BTN_DPAD_LEFT; neg_id = BTN_ID_DPAD_LEFT; pos_btn = BTN_DPAD_RIGHT; pos_id = BTN_ID_DPAD_RIGHT; }
+	else if (code == 17) { neg_btn = BTN_DPAD_UP; neg_id = BTN_ID_DPAD_UP; pos_btn = BTN_DPAD_DOWN; pos_id = BTN_ID_DPAD_DOWN; }
+	else { LOG_info("hat: ignored ABS code=%u value=%d\n", code, value); return; }
+	LOG_info("hat: code=%u value=%d\n", code, value);
+	// release whichever direction is no longer held, press whichever is
+	if (value <= 0 && (pad.is_pressed & pos_btn)) { pad.is_pressed &= ~pos_btn; pad.just_released |= pos_btn; }
+	if (value >= 0 && (pad.is_pressed & neg_btn)) { pad.is_pressed &= ~neg_btn; pad.just_released |= neg_btn; }
+	if (value < 0 && !(pad.is_pressed & neg_btn)) { pad.is_pressed |= neg_btn; pad.just_pressed |= neg_btn; pad.repeat_at[neg_id] = tick + PAD_REPEAT_DELAY; }
+	if (value > 0 && !(pad.is_pressed & pos_btn)) { pad.is_pressed |= pos_btn; pad.just_pressed |= pos_btn; pad.repeat_at[pos_id] = tick + PAD_REPEAT_DELAY; }
 }
 
 void PLAT_pollInput(void) {
@@ -141,24 +157,19 @@ void PLAT_pollInput(void) {
 	SDL_PumpEvents();
 	SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT); // SDL is not our input source here
 
-	static uint32_t seen_unknown[8]; // log each unknown code once, not per event
+	// Log EVERY key-down once per distinct code — mapped or not — so a single press-everything
+	// session yields the complete map. (The first version deduped by code&7 and codes silenced
+	// each other; a press session came back with 2 of ~15 codes. Receipts require a real set.)
 	struct raw_input_event ev;
 	for (int i = 0; i < EVDEV_COUNT; i++) {
 		if (ev_fds[i] < 0) continue;
 		while (read(ev_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
-			if (ev.type != 1) continue;      // EV_KEY only (EV_ABS sticks come later)
+			if (ev.type == 3) { ev_hat(ev.code, ev.value, tick); continue; } // dpad hat
+			if (ev.type != 1) continue;      // EV_KEY otherwise
 			if (ev.value == 2) continue;     // autorepeat: we do our own
 			int btn, id;
 			ev_translate(ev.code, &btn, &id);
-			if (btn == BTN_NONE) {
-				int slot = ev.code & 7;
-				if (seen_unknown[slot] != ev.code) {
-					seen_unknown[slot] = ev.code;
-					LOG_info("evdev: UNKNOWN key code=%u value=%d (%s) — add to ev_translate\n",
-						ev.code, ev.value, ev_paths[i]);
-				}
-				continue;
-			}
+			if (btn == BTN_NONE) continue;
 			if (ev.value) {
 				pad.is_pressed   |= btn;
 				pad.just_pressed |= btn;
@@ -239,9 +250,12 @@ static void fb_blit565(int page) {
 	int dst_stride = vid.finfo.line_length / 4;
 	int w = vid.vinfo.xres < (unsigned)vid.screen->w ? vid.vinfo.xres : vid.screen->w;
 	int h = vid.vinfo.yres < (unsigned)vid.screen->h ? vid.vinfo.yres : vid.screen->h;
+	// center a smaller-than-panel surface (scaled game); borders were cleared at resize
+	int ox = ((int)vid.vinfo.xres - w) / 2; if (ox < 0) ox = 0;
+	int oy = ((int)vid.vinfo.yres - h) / 2; if (oy < 0) oy = 0;
 	for (int y = 0; y < h; y++) {
 		uint16_t* s = src + y * src_stride;
-		uint32_t* d = dst + y * dst_stride;
+		uint32_t* d = dst + (y + oy) * dst_stride + ox;
 		for (int x = 0; x < w; x++) {
 			uint16_t p = s[x];
 			uint32_t r = (p >> 11) & 0x1F, g = (p >> 5) & 0x3F, b = p & 0x1F;
@@ -279,7 +293,18 @@ void PLAT_setVsync(int vsync) {
 }
 
 SDL_Surface* PLAT_resizeVideo(int w, int h, int p) {
-	// v0 launcher never resizes (fixed 640x480). Games will need this; see README order-of-work.
+	// minarch resizes the render surface to the SCALED game size (e.g. 480x432 for GBC at 3x) and
+	// derives its row pitch from it. Ignoring this was the shear-and-repeat glitch: minarch wrote
+	// 480-wide rows into a 640-wide surface. Recreate the surface at the requested size; the flip
+	// centers it on the panel.
+	if (w == vid.width && h == vid.height && p == vid.pitch) return vid.screen;
+	LOG_info("resizeVideo(%d,%d,%d)\n", w, h, p);
+	if (vid.screen) SDL_FreeSurface(vid.screen);
+	vid.screen = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, FIXED_DEPTH, RGBA_MASK_565);
+	vid.width = w; vid.height = h; vid.pitch = vid.screen->pitch;
+	// geometry changed: scrub both fb pages so old borders do not linger (one brief artifact
+	// beats permanent letterbox garbage; the proper deferred scrub comes with the DE-layer work)
+	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.page_bytes * vid.pages);
 	return vid.screen;
 }
 
@@ -292,17 +317,25 @@ void PLAT_vsync(int remaining) {
 	if (remaining > 0) SDL_Delay(remaining);
 }
 
+// Integer scaling + centering, the MMP pattern exactly: minarch computes the scale and dst rect;
+// the platform honors both. (v0 ignored them — the first game ran 1:1 in the corner.)
 scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
-	return scale1x1_c16;
+	switch (renderer->scale) {
+		case 6:  return scale6x6_c16;
+		case 5:  return scale5x5_c16;
+		case 4:  return scale4x4_c16;
+		case 3:  return scale3x3_c16;
+		case 2:  return scale2x2_c16;
+		default: return scale1x1_c16;
+	}
 }
 
 void PLAT_blitRenderer(GFX_Renderer* renderer) {
 	vid.blit = renderer;
-	scale1x1_c16(
-		renderer->src, renderer->dst,
-		renderer->true_w, renderer->true_h, renderer->src_p,
-		vid.screen->w, vid.screen->h, vid.screen->pitch
-	);
+	void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
+	((scaler_t)renderer->blit)(renderer->src, dst,
+		renderer->src_w, renderer->src_h, renderer->src_p,
+		renderer->dst_w, renderer->dst_h, renderer->dst_p);
 }
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
@@ -348,6 +381,15 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	else if (i>20) *charge =  40;
 	else if (i>10) *charge =  20;
 	else           *charge =  10;
+}
+
+// Charging inhibits autosleep (same behaviour as the Brick). Crucial in hosted dev: the 30s
+// autosleep was ending input sessions before anyone pressed a button.
+int PLAT_isToppingUp(void) {
+	// HOSTED-DEV: report always-topping-up so autosleep never fires. Twice tonight the 30s
+	// autosleep ate an input session (screen slept, the wake tap fell into the power-off flow).
+	// The real charging read returns with the image build, where sleep policy matters.
+	return 1;
 }
 
 void PLAT_enableBacklight(int enable) {
