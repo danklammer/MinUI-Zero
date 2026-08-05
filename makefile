@@ -117,6 +117,17 @@ build:
 	make build -f makefile.toolchain PLATFORM=$(PLATFORM)
 	# ----------------------------------------------------
 
+# h700 (Anbernic RG35XX Plus/H) is hosted-dev alpha: binaries only, no release packaging yet
+# (that arrives with the boot-image milestone — no BOOT/anbernic bootstrap exists to package).
+# Builds libmsettings + minui + minarch + the all/ tools in the tg5040 toolchain image; deploy
+# with the on-device dev loop in workspace/h700/README-BRINGUP.md.
+h700-build:
+	echo $(BUILD_HASH) > ./workspace/hash.txt
+	make build -f makefile.toolchain PLATFORM=h700
+
+h700:
+	$(error h700 has no release packaging yet — use `make h700-build` for binaries; see workspace/h700/README-BRINGUP.md)
+
 system:
 	make -f ./workspace/$(PLATFORM)/platform/makefile.copy PLATFORM=$(PLATFORM)
 	

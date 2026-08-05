@@ -9,16 +9,24 @@ endif
 HOST_WORKSPACE=$(shell pwd)/workspace
 GUEST_WORKSPACE=/root/workspace
 
-GIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain
+# h700 (Anbernic RG35XX Plus/H) has no union toolchain of its own: it is the same aarch64
+# Cortex-A53 target family as tg5040 and builds in that toolchain/image (every bring-up binary —
+# panelprobe, hellofb, minui, minarch — was produced there and ran on-device). The container's
+# bashrc still says UNION_PLATFORM=tg5040, so the guest make below is told PLATFORM explicitly.
+# A dedicated image arrives with the boot-image milestone if the sysroots ever diverge.
+TC_PLATFORM_h700=tg5040
+TC_PLATFORM=$(if $(TC_PLATFORM_$(PLATFORM)),$(TC_PLATFORM_$(PLATFORM)),$(PLATFORM))
+
+GIT_IF_NECESSARY=toolchains/$(TC_PLATFORM)-toolchain
 # per-platform toolchain pins (union-<platform>-toolchain @ hash)
 TOOLCHAIN_HASH_tg5040=b2132906f5de206c80a2664580ef22bc3e80c543
 TOOLCHAIN_HASH_miyoomini=cfcae3083679de59d6600d4ba05676c654b6d24e
-TOOLCHAIN_HASH=$(TOOLCHAIN_HASH_$(PLATFORM))
+TOOLCHAIN_HASH=$(TOOLCHAIN_HASH_$(TC_PLATFORM))
 ifeq (,$(TOOLCHAIN_HASH))
 $(error no toolchain hash pinned for PLATFORM=$(PLATFORM) — add TOOLCHAIN_HASH_$(PLATFORM) to makefile.toolchain)
 endif
 PIN_IF_NECESSARY=$(GIT_IF_NECESSARY)/.minui-zero-$(TOOLCHAIN_HASH)
-INIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain/.build
+INIT_IF_NECESSARY=toolchains/$(TC_PLATFORM)-toolchain/.build
 
 # Image the compiler actually runs in. Defaults to the upstream union toolchain, but the
 # miyoomini port is an SDL2 build and union-miyoomini-toolchain ships SDL 1.2 ONLY, so it builds
@@ -26,7 +34,7 @@ INIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain/.build
 # a bare "SDL2/SDL.h: No such file or directory", which reads like a source bug rather than a
 # missing image.
 IMAGE_miyoomini=miyoomini-toolchain-sdl2
-IMAGE=$(if $(IMAGE_$(PLATFORM)),$(IMAGE_$(PLATFORM)),$(PLATFORM)-toolchain)
+IMAGE=$(if $(IMAGE_$(PLATFORM)),$(IMAGE_$(PLATFORM)),$(TC_PLATFORM)-toolchain)
 
 define REQUIRE_IMAGE
 @docker image inspect $(IMAGE) >/dev/null 2>&1 || { \
@@ -43,11 +51,11 @@ all: $(INIT_IF_NECESSARY)
 	docker run -it --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE) /bin/bash
 
 $(INIT_IF_NECESSARY): $(PIN_IF_NECESSARY)
-	cd toolchains/$(PLATFORM)-toolchain && DOCKER_DEFAULT_PLATFORM=linux/amd64 make .build
+	cd toolchains/$(TC_PLATFORM)-toolchain && DOCKER_DEFAULT_PLATFORM=linux/amd64 make .build
 
 $(GIT_IF_NECESSARY):
 	mkdir -p toolchains
-	git clone https://github.com/shauninman/union-$(PLATFORM)-toolchain/ toolchains/$(PLATFORM)-toolchain
+	git clone https://github.com/shauninman/union-$(TC_PLATFORM)-toolchain/ toolchains/$(TC_PLATFORM)-toolchain
 
 $(PIN_IF_NECESSARY): $(GIT_IF_NECESSARY)
 	cd $(GIT_IF_NECESSARY) && (git cat-file -e $(TOOLCHAIN_HASH)^{commit} || git fetch origin $(TOOLCHAIN_HASH))
@@ -56,8 +64,8 @@ $(PIN_IF_NECESSARY): $(GIT_IF_NECESSARY)
 	touch $(PIN_IF_NECESSARY)
 
 clean:
-	cd toolchains/$(PLATFORM)-toolchain && make clean
+	cd toolchains/$(TC_PLATFORM)-toolchain && make clean
 
 build: $(INIT_IF_NECESSARY)
 	$(REQUIRE_IMAGE)
-	docker run --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make'
+	docker run --rm --platform linux/amd64 -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make PLATFORM=$(PLATFORM)'

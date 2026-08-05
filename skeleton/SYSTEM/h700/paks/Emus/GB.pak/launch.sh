@@ -12,6 +12,8 @@ export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export SAVES_PATH="$SDCARD_PATH/Saves"
 export BIOS_PATH="$SDCARD_PATH/Bios"
 export CORES_PATH="$SYSTEM_PATH/cores"
+# make-built binaries link libmsettings.so (shipped in .system/h700/lib)
+export LD_LIBRARY_PATH="$SYSTEM_PATH/lib:$LD_LIBRARY_PATH"
 # Panel measured 59.9777 Hz (panelprobe 2026-08-04)
 export MINARCH_PANEL_FPS=59.9777
 # muOS's pipewire owns the audio hardware; ALSA "default" routes to it via the pipewire plugin,

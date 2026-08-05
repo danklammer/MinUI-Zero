@@ -35,28 +35,8 @@
 #include "scaler.h"
 
 ///////////////////////////////
-// msettings: muOS owns audio/brightness while we are a guest. Brightness passes through the
-// backlight sysfs when present; volume is a stub until the ALSA path lands (minui is silent).
-
-void InitSettings(void){}
-void QuitSettings(void){}
-
-int GetBrightness(void) { return getInt("/sys/class/backlight/backlight/brightness"); }
-int GetVolume(void) { return 0; }
-
-void SetRawBrightness(int value) { putInt("/sys/class/backlight/backlight/brightness", value); }
-void SetRawVolume(int value){}
-
-void SetBrightness(int value) { SetRawBrightness(value * 10); } // 0-10 UI -> 0-100ish raw; TODO: verify range
-void SetVolume(int value) {}
-
-int GetJack(void) { return 0; }
-void SetJack(int value) {}
-
-int GetHDMI(void) { return 0; }
-void SetHDMI(int value) {}
-
-int GetMute(void) { return 0; }
+// msettings lives in ../libmsettings (guest stubs: muOS owns audio/brightness) — the shared
+// minui/minarch makefiles link -lmsettings on every platform.
 
 ///////////////////////////////
 

@@ -56,13 +56,27 @@ loop but keeps the GPU lit — fine for bring-up, not for shipping. Do not let v
   unconditionally. The restore must not depend on the ssh link surviving. Not yet implemented;
   required before the next hosted run.
 
-## Dev loop (proven tonight)
+## Dev loop (proven; make-wired 2026-08-05)
 
-1. Build: `docker run --rm -v "$PWD:/w" tg5040-toolchain /bin/bash -c \
+1. Build: **`make h700-build`** at the repo root (Docker running). Wired through the standard
+   chain: tg5040 toolchain/image (aliased via `TC_PLATFORM_h700` in makefile.toolchain — the
+   container bashrc says UNION_PLATFORM=tg5040, so the guest make is told PLATFORM=h700
+   explicitly), h700's own libmsettings (guest stubs — muOS owns audio/brightness), minui +
+   minarch + all/ tools. keymon and cores are deliberately skipped in workspace/makefile
+   (no keymon as a guest; cores dir arrives with the boot-image milestone — hosted-dev runs the
+   tg5040 gambatte build). `-flto` is REQUIRED (makefile.env LIBS): api.c carries 32-bit ARM asm
+   under `#if __ARM_ARCH >= 5`, true on aarch64 — only LTO dead-strips it out of the link.
+   Verified end-to-end 2026-08-05: make-built minui + minarch ran the menu→game loop on-device
+   (md5-matched running processes, audio open). `make h700` (release zip) errors on purpose.
+2. Ship with a VERIFY LOOP (cat-over-ssh can fail silently): plain ssh for binary stdin
+   (`-tt` mangles it), then `md5sum` both ends, retry on mismatch. Binaries now link
+   libmsettings.so → ship it to `.system/h700/lib/` and export
+   `LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib` (session.sh + pak launch.sh both do).
+3. Clean window: one session.sh only (it freezes idle/frontend/muhotkey, dead-man restores).
+   muOS is the dev harness; no boot integration needed until the platform layer is real.
+4. One-off probes can still use the raw line:
+   `docker run --rm -v "$PWD:/w" tg5040-toolchain /bin/bash -c \
    '/opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-gcc -O2 -static -o /w/out /w/in.c'`
-2. Ship: `cat binary | ssh -tt -i ~/.ssh/tg5040_dev root@<ip> 'cat > /tmp/x && chmod +x /tmp/x'`
-3. Clean window: `kill -STOP <muxfrontend pid>` … run … `kill -CONT <pid>`. muOS is the dev
-   harness; no boot integration needed until the platform layer is real.
 
 ## Boot model (decided 2026-08-03, ledger)
 

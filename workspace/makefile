@@ -17,7 +17,11 @@ endif
 all:
 	cd ./$(PLATFORM)/libmsettings && make
 	cd ./$(PLATFORM) && make early # eg. other libs
+# h700 has no keymon: minui reads evdev directly (platform.c), and as a GUEST inside muOS a
+# second input daemon would fight the host's. Revisit with the boot-image milestone.
+ifneq (h700,$(PLATFORM))
 	cd ./$(PLATFORM)/keymon && make
+endif
 	cd ./all/minui/ && make clean && make
 	cd ./all/minarch/ && make clean && make
 	cd ./all/clock/ && make
@@ -36,12 +40,18 @@ ifeq (tg5040,$(PLATFORM))
 endif
 	# A release must not reuse an output .so built from an older checkout, patch, or flags.
 	# Pin/patch verification runs inside the core makefile before this clean rebuild.
+# h700 has no cores dir yet: hosted-dev runs the tg5040 gambatte build (same aarch64 A53
+# target). A real pinned/patched core set arrives with the boot-image milestone.
+ifneq (h700,$(PLATFORM))
 	cd ./$(PLATFORM)/cores && make verify && make clean && make
+endif
 	cd ./$(PLATFORM) && make
 
 clean:
 	cd ./$(PLATFORM)/libmsettings && make clean
+ifneq (h700,$(PLATFORM))
 	cd ./$(PLATFORM)/keymon && make clean
+endif
 	cd ./all/minui/ && make clean
 	cd ./all/minarch/ && make clean
 	cd ./all/clock/ && make clean
