@@ -422,7 +422,15 @@ void PLAT_setRumble(int strength) {
 }
 
 int PLAT_pickSampleRate(int requested, int max) {
-	return MIN(requested, max);
+	// Open the device at the pipewire graph/hardware rate (48000, MEASURED via
+	// /proc/asound/card0/pcm0p/sub0/hw_params + pw-top 2026-08-05) instead of the core's
+	// native rate. At 32768 the alsa-pipewire plugin resampled us into the 48k graph in ITS
+	// clock domain — the hw output node logged 118 xruns (pw-top ERR) while our client node
+	// showed 0, i.e. the glitches happened downstream of a stream we fed correctly, and our
+	// producer blocked on the plugin's drain clock instead of the real DAC (audibly choppy
+	// AND slow, RG35XX Plus 2026-08-05). At 48000 pipewire mixes pass-through and OUR
+	// resampler (which the rate-match/DRC machinery adjusts) owns the conversion.
+	return MIN(48000, max);
 }
 
 // minarch-only surface, v0 stubs
