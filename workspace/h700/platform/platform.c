@@ -60,14 +60,116 @@ int GetMute(void) { return 0; }
 
 ///////////////////////////////
 
+// RAW EVDEV INPUT. muOS's SDL2 delivered zero keyboard events to us (live-tested: every button
+// dead), so this platform reads the hardware nodes directly and overrides the weak PLAT_pollInput
+// in api.c. Minimal evdev ABI declared by hand — <linux/input.h> defines BTN_* macros that collide
+// with api.h's button names (the miyoomini port hit the same wall).
+//
+// The code table below is CANDIDATE mappings (standard gpio-keys arrows + standard gamepad BTN_*
+// codes, Anbernic A-right/B-down orientation). Every event from an UNKNOWN code is logged once, so
+// the first hands-on session corrects this table from its own log. That turns the capture problem
+// into normal use.
+struct raw_input_event { // struct input_event, aarch64 layout
+	uint64_t tv_sec;
+	uint64_t tv_usec;
+	uint16_t type;   // EV_KEY=1, EV_ABS=3
+	uint16_t code;
+	int32_t  value;  // 1=down, 0=up, 2=autorepeat
+};
+#define EVDEV_COUNT 3
+static int ev_fds[EVDEV_COUNT] = { -1, -1, -1 };
+static const char* ev_paths[EVDEV_COUNT] = {
+	"/dev/input/event0", // axp2202-pek: power button
+	"/dev/input/event1", // muOS-Keys (gpio-keys-polled)
+	"/dev/input/event2", // dierct-keys-polled (sic)
+};
+
 static SDL_Joystick *joystick;
 void PLAT_initInput(void) {
 	SDL_InitSubSystem(SDL_INIT_JOYSTICK);
-	joystick = SDL_JoystickOpen(0); // muOS-Keys is js0
+	joystick = SDL_JoystickOpen(0);
+	for (int i = 0; i < EVDEV_COUNT; i++) {
+		ev_fds[i] = open(ev_paths[i], O_RDONLY | O_NONBLOCK);
+		LOG_info("evdev: %s -> fd %d\n", ev_paths[i], ev_fds[i]);
+	}
 }
 void PLAT_quitInput(void) {
+	for (int i = 0; i < EVDEV_COUNT; i++) if (ev_fds[i] >= 0) close(ev_fds[i]);
 	if (joystick) SDL_JoystickClose(joystick);
 	SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
+}
+
+// code -> (btn, id). Candidates; unknowns are logged and this table is corrected from the log.
+static void ev_translate(uint16_t code, int* btn, int* id) {
+	switch (code) {
+	case 103: *btn = BTN_DPAD_UP;    *id = BTN_ID_DPAD_UP;    break; // KEY_UP
+	case 108: *btn = BTN_DPAD_DOWN;  *id = BTN_ID_DPAD_DOWN;  break; // KEY_DOWN
+	case 105: *btn = BTN_DPAD_LEFT;  *id = BTN_ID_DPAD_LEFT;  break; // KEY_LEFT
+	case 106: *btn = BTN_DPAD_RIGHT; *id = BTN_ID_DPAD_RIGHT; break; // KEY_RIGHT
+	case 305: *btn = BTN_A;      *id = BTN_ID_A;      break; // BTN_EAST  (right = A, Anbernic)
+	case 304: *btn = BTN_B;      *id = BTN_ID_B;      break; // BTN_SOUTH (bottom = B)
+	case 307: *btn = BTN_X;      *id = BTN_ID_X;      break; // BTN_NORTH
+	case 308: *btn = BTN_Y;      *id = BTN_ID_Y;      break; // BTN_WEST
+	case 310: *btn = BTN_L1;     *id = BTN_ID_L1;     break; // BTN_TL
+	case 311: *btn = BTN_R1;     *id = BTN_ID_R1;     break; // BTN_TR
+	case 312: *btn = BTN_L2;     *id = BTN_ID_L2;     break; // BTN_TL2
+	case 313: *btn = BTN_R2;     *id = BTN_ID_R2;     break; // BTN_TR2
+	case 314: *btn = BTN_SELECT; *id = BTN_ID_SELECT; break; // BTN_SELECT
+	case 315: *btn = BTN_START;  *id = BTN_ID_START;  break; // BTN_START
+	case 316: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break; // BTN_MODE
+	case 116: *btn = BTN_POWER;  *id = BTN_ID_POWER;  break; // KEY_POWER
+	case 115: *btn = BTN_PLUS;   *id = BTN_ID_PLUS;   break; // KEY_VOLUMEUP
+	case 114: *btn = BTN_MINUS;  *id = BTN_ID_MINUS;  break; // KEY_VOLUMEDOWN
+	default:  *btn = BTN_NONE;   *id = -1;            break;
+	}
+}
+
+void PLAT_pollInput(void) {
+	pad.just_pressed  = BTN_NONE;
+	pad.just_released = BTN_NONE;
+	pad.just_repeated = BTN_NONE;
+
+	uint32_t tick = SDL_GetTicks();
+	for (int i = 0; i < BTN_ID_COUNT; i++) {
+		int btn = 1 << i;
+		if ((pad.is_pressed & btn) && (tick >= pad.repeat_at[i])) {
+			pad.just_repeated |= btn;
+			pad.repeat_at[i] += PAD_REPEAT_INTERVAL;
+		}
+	}
+
+	SDL_PumpEvents();
+	SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT); // SDL is not our input source here
+
+	static uint32_t seen_unknown[8]; // log each unknown code once, not per event
+	struct raw_input_event ev;
+	for (int i = 0; i < EVDEV_COUNT; i++) {
+		if (ev_fds[i] < 0) continue;
+		while (read(ev_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
+			if (ev.type != 1) continue;      // EV_KEY only (EV_ABS sticks come later)
+			if (ev.value == 2) continue;     // autorepeat: we do our own
+			int btn, id;
+			ev_translate(ev.code, &btn, &id);
+			if (btn == BTN_NONE) {
+				int slot = ev.code & 7;
+				if (seen_unknown[slot] != ev.code) {
+					seen_unknown[slot] = ev.code;
+					LOG_info("evdev: UNKNOWN key code=%u value=%d (%s) — add to ev_translate\n",
+						ev.code, ev.value, ev_paths[i]);
+				}
+				continue;
+			}
+			if (ev.value) {
+				pad.is_pressed   |= btn;
+				pad.just_pressed |= btn;
+				pad.repeat_at[id] = tick + PAD_REPEAT_DELAY;
+			}
+			else {
+				pad.is_pressed    &= ~btn;
+				pad.just_released |= btn;
+			}
+		}
+	}
 }
 
 ///////////////////////////////
