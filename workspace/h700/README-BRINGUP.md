@@ -43,6 +43,19 @@ note its `sunxi_display2.h` structs and the config2 ioctls). This is the thesis-
 used SDL2 window+renderer against the STOCK OS; on muOS the same approach is plausible for a dev
 loop but keeps the GPU lit — fine for bring-up, not for shipping. Do not let v0 ossify into v1.
 
+## Recovery + hosted-dev safety (learned the hard way, 2026-08-05)
+
+- **There is a RESET BUTTON under the power button.** Hardware reset, works when everything else is
+  frozen. This is the recovery of last resort and it makes the device effectively unbrickable at
+  the process level.
+- A dev session freeze happened once: the ssh link died mid-window, the restore never ran, and the
+  device resumed with muxfrontend dead and frontend.sh SIGSTOPped — no input handler, so it looked
+  hard-frozen, and the short power press (handled by the frozen userspace) did nothing.
+- **RULE: never freeze/kill host daemons without a DEAD-MAN'S SWITCH on the device** — before
+  stopping anything, start a detached script that restores the frontend after N minutes
+  unconditionally. The restore must not depend on the ssh link surviving. Not yet implemented;
+  required before the next hosted run.
+
 ## Dev loop (proven tonight)
 
 1. Build: `docker run --rm -v "$PWD:/w" tg5040-toolchain /bin/bash -c \
