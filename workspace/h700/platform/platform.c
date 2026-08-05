@@ -168,6 +168,19 @@ void PLAT_pollInput(void) {
 			}
 		}
 	}
+
+	// APPLY volume/brightness here: on shipping platforms KEYMON does this and the shared
+	// PWR_update only draws the OSD ("keymon is catching input on the next frame"). This
+	// platform has no keymon, so the volume keys showed an OSD that never changed anything
+	// (found live 2026-08-05). just_repeated fires on the initial press AND while held, so
+	// press-and-hold ramps for free. MENU held = brightness, matching the BTN_MOD_BRIGHTNESS
+	// convention every other platform uses.
+	int adj = pad.just_repeated & (BTN_PLUS | BTN_MINUS);
+	if (adj) {
+		int delta = (adj & BTN_PLUS) ? 1 : -1;
+		if (pad.is_pressed & BTN_MENU) SetBrightness(GetBrightness() + delta); // clamps 0-10
+		else SetVolume(GetVolume() + delta);                                   // clamps 0-20
+	}
 }
 
 ///////////////////////////////

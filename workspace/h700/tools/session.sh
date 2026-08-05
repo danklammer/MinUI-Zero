@@ -21,6 +21,7 @@ kill_watchdogs() {
 	done
 }
 kill_watchdogs
+rm -rf /tmp/.muos-restore-lock
 
 restore_muos() {
 	FS=$(ps | grep "frontend.sh" | grep -v grep | awk '{print $1}' | head -1)
@@ -29,7 +30,9 @@ restore_muos() {
 	kill -CONT $FS 2>/dev/null
 	kill -CONT $ID 2>/dev/null
 	kill -CONT $HK 2>/dev/null
-	pidof muxfrontend >/dev/null || sh /opt/muos/script/mux/frontend.sh &
+	if ! pidof muxfrontend >/dev/null && mkdir /tmp/.muos-restore-lock 2>/dev/null; then
+		sh /opt/muos/script/mux/frontend.sh &
+	fi
 }
 
 # watchdog: argv tagged via $0 so stale instances are findable/killable by name
@@ -51,7 +54,9 @@ restore_muos() {
 	kill -CONT $FS 2>/dev/null
 	kill -CONT $ID 2>/dev/null
 	kill -CONT $HK 2>/dev/null
-	pidof muxfrontend >/dev/null || sh /opt/muos/script/mux/frontend.sh &
+	if ! pidof muxfrontend >/dev/null && mkdir /tmp/.muos-restore-lock 2>/dev/null; then
+		sh /opt/muos/script/mux/frontend.sh &
+	fi
 	echo "watchdog restored muOS $(date)" >> /tmp/session.log
 	' session-watchdog
 ) &
