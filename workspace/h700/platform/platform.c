@@ -409,6 +409,11 @@ void PLAT_setCPUSpeed(int speed) {
 }
 
 void PLAT_setCPUMaxFreq(int khz) {
+	// The governor re-asserts its ceiling ~1/s; logging every call wrote thousands of
+	// identical lines per session to the SD. Log decisions, not the clock.
+	static int last_khz = -1;
+	if (khz == last_khz) return;
+	last_khz = khz;
 	LOG_info("PLAT_setCPUMaxFreq: %d kHz — guest mode, not applied\n", khz);
 }
 
