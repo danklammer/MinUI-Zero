@@ -387,6 +387,14 @@ int PLAT_pickSampleRate(int requested, int max) {
 	return MIN(requested, max);
 }
 
+// minarch-only surface, v0 stubs
+void PLAT_setEffect(int effect) {} // no scanline/DMG effects on the fbdev path yet
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {} // HUD later
+void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
+	// v0 presents full-screen 640x480; refine when scaling modes land
+	if (x) *x = 0; if (y) *y = 0; if (w) *w = FIXED_WIDTH; if (h) *h = FIXED_HEIGHT;
+}
+
 char* PLAT_getModel(void) {
 	// TODO: distinguish RG35XX Plus vs H (near-twins; likely a DT compatible string or a key count)
 	return "Anbernic RG35XX";
