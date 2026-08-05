@@ -70,6 +70,22 @@ Image-native like muOS/Knulli (Allwinner BROM boots SD first; stock stays untouc
 Knulli's h700 board config is the image-tooling reference. This is LATER work — everything until
 then runs hosted inside muOS.
 
+## Audio (SOLVED 2026-08-05)
+
+muOS's **pipewire owns the audio hardware** (it holds the hw PCM; /etc/asound.conf routes ALSA
+"default" through the pipewire plugin). SDL's alsa driver works through it IF the environment
+carries `XDG_RUNTIME_DIR=/run` + `PIPEWIRE_RUNTIME_DIR=/run` (socket at /run/pipewire-0); without
+them SDL_OpenAudio fails "Host is down". Device SDL2 ships ONLY the alsa audio backend (no native
+pipewire/pulse). Verified: 32768Hz stream opened via the normal pak launch flow. Volume is
+pipewire's for now (msettings stubbed). On our own image WE own audio and none of this applies.
+
+HOSTED-DEV SESSION HYGIENE (each cost real debugging time): only ONE session.sh may run — stacked
+sessions answer injected input with STALE launchers (kill all before starting); busybox sed with
+backslash-n in replacements corrupts scripts — WRITE files whole, never sed shell scripts; injected
+input must be HUMAN-TIMED (press blob, sleep, release blob) or same-poll press+release cancels
+justRepeated; the dead-man resurrection mid-test is indistinguishable from a rendering bug — check
+`pidof muxfrontend` before trusting any capture.
+
 ## Order of work
 
 1. `platform.h` constants + input verification on device (evdev capture while pressing buttons).
