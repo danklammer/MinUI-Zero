@@ -12,9 +12,10 @@
 //     set proven to link against the shared api.c.
 //
 // Panel: 640x480 MEASURED 59.9777 Hz. fb is ARGB8888 (stride 2560), virtual 640x960 = 2 pages.
-// Render surface is RGB565 like every platform; flip converts 565->XRGB while copying to the
-// back page, then pans. 640x480x2 conversions are ~1.2MB of writes — fine for the launcher; games
-// revisit this (NEON or the DE layer does the conversion for free).
+// Render surface is RGB565 like every platform; flip converts 565->XRGB (NEON on the wide path)
+// while copying to the back page, then pans. The plain-C conversion measurably halved the game
+// loop (29.98fps panrate receipt); the DE layer would do the conversion for free — still the
+// destination present path.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #include "msettings.h"
 
@@ -223,8 +228,10 @@ SDL_Surface* PLAT_initVideo(void) {
 	return vid.screen;
 }
 
-// RGB565 -> XRGB8888 while copying into a fb page. Plain C: the launcher redraws on input, not
-// per-frame, so this is nowhere near hot. Games get NEON or the DE layer.
+// RGB565 -> XRGB8888 while copying into a fb page. NEON on the wide path: this runs per GAME
+// frame (207k px for GBC at 3x), and the per-pixel C version was a measured contributor to the
+// loop locking at 29.98fps (panrate receipt, 2026-08-05 — every frame's work exceeded one 16.7ms
+// vblank, so every pan waited for the second one and audio starved to ~2/3 supply).
 static void fb_blit565(int page) {
 	uint16_t* src = (uint16_t*)vid.screen->pixels;
 	int src_stride = vid.screen->pitch / 2;
@@ -238,7 +245,21 @@ static void fb_blit565(int page) {
 	for (int y = 0; y < h; y++) {
 		uint16_t* s = src + y * src_stride;
 		uint32_t* d = dst + (y + oy) * dst_stride + ox;
-		for (int x = 0; x < w; x++) {
+		int x = 0;
+#if defined(__aarch64__)
+		for (; x + 8 <= w; x += 8) {
+			uint16x8_t p = vld1q_u16(s + x);
+			uint8x8_t r = vshrn_n_u16(vandq_u16(p, vdupq_n_u16(0xF800)), 8);            // r5<<3
+			uint8x8_t g = vshrn_n_u16(vandq_u16(p, vdupq_n_u16(0x07E0)), 3);            // g6<<2
+			uint8x8_t b = vmovn_u16(vshlq_n_u16(vandq_u16(p, vdupq_n_u16(0x001F)), 3)); // b5<<3
+			r = vsri_n_u8(r, r, 5); // replicate top bits into the low ones: full 0-255 range
+			g = vsri_n_u8(g, g, 6);
+			b = vsri_n_u8(b, b, 5);
+			uint8x8x4_t o = {{ b, g, r, vdup_n_u8(0xFF) }}; // little-endian XRGB: B,G,R,X
+			vst4_u8((uint8_t*)(d + x), o);
+		}
+#endif
+		for (; x < w; x++) {
 			uint16_t p = s[x];
 			uint32_t r = (p >> 11) & 0x1F, g = (p >> 5) & 0x3F, b = p & 0x1F;
 			d[x] = 0xFF000000 | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
@@ -321,17 +342,20 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 }
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
+	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
 	fb_blit565(vid.page);
 	fb_pan(vid.page);                        // synchronous: returns with the page on its way out
 	if (vid.pages > 1) {
 		int shown = vid.page;
 		vid.page = !vid.page;
-		// Keep the pages COHERENT: minui only redraws dirty regions, so with strict alternation
-		// each page misses the other page updates and the menu ghosts between two half-states
-		// (seen in fb captures as composite frames). Copy what was just shown into the next draw
-		// target; ~1.2MB at menu redraw rate is nothing, and games full-redraw anyway.
-		memcpy(vid.fbmmap + (size_t)vid.page * vid.page_bytes,
-		       vid.fbmmap + (size_t)shown * vid.page_bytes, vid.page_bytes);
+		// Keep the pages COHERENT for the UI: minui only redraws dirty regions, so with strict
+		// alternation each page misses the other page updates and the menu ghosts between two
+		// half-states (seen in fb captures as composite frames). Games are exempt: they blit the
+		// full game rect every frame (borders were scrubbed on both pages at resize), and this
+		// 1.2MB copy per frame was part of the work that locked the loop at half rate.
+		if (!fullframe)
+			memcpy(vid.fbmmap + (size_t)vid.page * vid.page_bytes,
+			       vid.fbmmap + (size_t)shown * vid.page_bytes, vid.page_bytes);
 	}
 	vid.blit = NULL;
 }
