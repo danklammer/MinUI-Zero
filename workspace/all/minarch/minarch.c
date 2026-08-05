@@ -357,22 +357,28 @@ static void Zero_applyRateMatch(void) {
 	const char* hz = getenv("MINARCH_PANEL_FPS");
 	if (hz && *hz && core.fps > 1.0) {
 		double panel = atof(hz);
-		// GATE BOTH SIDES. This corrects a ~60Hz core down to a slightly slower ~60Hz panel and
-		// must never touch anything else:
+		// GATE BOTH SIDES. This corrects a ~60Hz core to a nearby ~60Hz panel and must never
+		// touch anything else:
 		//  * PAL/50Hz content would compute +186000ppm and run 5%% FAST. Reachable in cores we ship
 		//    (fceumm, picodrive, snes9x2005_plus, pcsx_rearmed all report PAL timing).
-		//  * panel >= core.fps means there is no surplus frame, so there is nothing to correct.
 		//  * an absurd panel value must not be "corrected" into a clamp. MINARCH_PANEL_FPS=30 with
 		//    a 60fps core used to clamp to -50000ppm and target 57fps while the panel actually
 		//    delivered 30 — the resampler compensated 5%% against a 50%% shortfall and underran
-		//    continuously. Requiring the panel within 5%% of the core makes the clamp unreachable
-		//    from this path.
+		//    continuously. Requiring the panel within a few %% of the core makes the clamp
+		//    unreachable from this path.
+		// Below-core band is 5%% (MMP: panel 59.672 under GBC 59.7275 — audio deficit repaid by
+		// slowing the core). Above-core band is a tight 1%%: the h700 panel (59.978 measured) sits
+		// 0.42%% ABOVE the GBC core, and under Strict the pan-blocked loop stepped the core 0.42%%
+		// fast with nothing pacing the surplus — the ring filled, the producer blocked, and one
+		// vblank slipped every ~4s (a visible judder beat, RG35XX Plus 2026-08-05). Matching the
+		// core up to the panel locks the cadence; +1%% is inaudible in pitch (<17 cents) while
+		// keeping PAL and typo'd panels unreachable.
 		int core_ok  = (core.fps >= 58.0 && core.fps <= 61.0);
-		int panel_ok = (panel > 1.0 && panel < core.fps && panel >= core.fps * 0.95);
+		int panel_ok = (panel > 1.0 && panel >= core.fps * 0.95 && panel <= core.fps * 1.01);
 		if (core_ok && panel_ok)
 			ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
 		else if (panel > 1.0)
-			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below it)\n",
+			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below / 1%% above)\n",
 			         core.fps, panel);
 	}
 
