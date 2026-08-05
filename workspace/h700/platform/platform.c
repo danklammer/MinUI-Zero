@@ -131,13 +131,12 @@ static void ev_hat(uint16_t code, int32_t value, uint32_t tick) {
 	int neg_btn, neg_id, pos_btn, pos_id;
 	if (code == 16) { neg_btn = BTN_DPAD_LEFT; neg_id = BTN_ID_DPAD_LEFT; pos_btn = BTN_DPAD_RIGHT; pos_id = BTN_ID_DPAD_RIGHT; }
 	else if (code == 17) { neg_btn = BTN_DPAD_UP; neg_id = BTN_ID_DPAD_UP; pos_btn = BTN_DPAD_DOWN; pos_id = BTN_ID_DPAD_DOWN; }
-	else { LOG_info("hat: ignored ABS code=%u value=%d\n", code, value); return; }
-	LOG_info("hat: code=%u value=%d\n", code, value);
+	else return;
 	// release whichever direction is no longer held, press whichever is
-	if (value <= 0 && (pad.is_pressed & pos_btn)) { pad.is_pressed &= ~pos_btn; pad.just_released |= pos_btn; }
-	if (value >= 0 && (pad.is_pressed & neg_btn)) { pad.is_pressed &= ~neg_btn; pad.just_released |= neg_btn; }
-	if (value < 0 && !(pad.is_pressed & neg_btn)) { pad.is_pressed |= neg_btn; pad.just_pressed |= neg_btn; pad.repeat_at[neg_id] = tick + PAD_REPEAT_DELAY; }
-	if (value > 0 && !(pad.is_pressed & pos_btn)) { pad.is_pressed |= pos_btn; pad.just_pressed |= pos_btn; pad.repeat_at[pos_id] = tick + PAD_REPEAT_DELAY; }
+	if (value <= 0 && (pad.is_pressed & pos_btn)) { pad.is_pressed &= ~pos_btn; pad.just_repeated &= ~pos_btn; pad.just_released |= pos_btn; }
+	if (value >= 0 && (pad.is_pressed & neg_btn)) { pad.is_pressed &= ~neg_btn; pad.just_repeated &= ~neg_btn; pad.just_released |= neg_btn; }
+	if (value < 0 && !(pad.is_pressed & neg_btn)) { pad.is_pressed |= neg_btn; pad.just_pressed |= neg_btn; pad.just_repeated |= neg_btn; pad.repeat_at[neg_id] = tick + PAD_REPEAT_DELAY; }
+	if (value > 0 && !(pad.is_pressed & pos_btn)) { pad.is_pressed |= pos_btn; pad.just_pressed |= pos_btn; pad.just_repeated |= pos_btn; pad.repeat_at[pos_id] = tick + PAD_REPEAT_DELAY; }
 }
 
 void PLAT_pollInput(void) {
@@ -171,12 +170,15 @@ void PLAT_pollInput(void) {
 			ev_translate(ev.code, &btn, &id);
 			if (btn == BTN_NONE) continue;
 			if (ev.value) {
-				pad.is_pressed   |= btn;
-				pad.just_pressed |= btn;
+				pad.is_pressed    |= btn;
+				pad.just_pressed  |= btn;
+				pad.just_repeated |= btn; // CONTRACT: the initial press IS a repeat (api.c:1967);
+				                          // minui's list nav gates on justRepeated alone
 				pad.repeat_at[id] = tick + PAD_REPEAT_DELAY;
 			}
 			else {
 				pad.is_pressed    &= ~btn;
+				pad.just_repeated &= ~btn;
 				pad.just_released |= btn;
 			}
 		}
@@ -341,7 +343,16 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	fb_blit565(vid.page);
 	fb_pan(vid.page);                        // synchronous: returns with the page on its way out
-	if (vid.pages > 1) vid.page = !vid.page; // strict alternation = ownership by structure
+	if (vid.pages > 1) {
+		int shown = vid.page;
+		vid.page = !vid.page;
+		// Keep the pages COHERENT: minui only redraws dirty regions, so with strict alternation
+		// each page misses the other page updates and the menu ghosts between two half-states
+		// (seen in fb captures as composite frames). Copy what was just shown into the next draw
+		// target; ~1.2MB at menu redraw rate is nothing, and games full-redraw anyway.
+		memcpy(vid.fbmmap + (size_t)vid.page * vid.page_bytes,
+		       vid.fbmmap + (size_t)shown * vid.page_bytes, vid.page_bytes);
+	}
 	vid.blit = NULL;
 }
 
