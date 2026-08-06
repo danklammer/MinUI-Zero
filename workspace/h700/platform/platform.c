@@ -396,7 +396,14 @@ static int disp_open(void) {
 	if (vid.ionfd < 0) { LOG_info("disp: no /dev/ion (%s)\n", strerror(errno)); return -1; }
 	vid.dispfd = open("/dev/disp", O_RDWR);
 	if (vid.dispfd < 0) { LOG_info("disp: no /dev/disp (%s)\n", strerror(errno)); close(vid.ionfd); return -1; }
-	vid.ion_bytes = (size_t)vid.vinfo.xres * vid.vinfo.yres * 2; // RGB565 at full panel = max any frame needs
+	// Size for the LARGEST render surface a core requests, not just the panel: minarch scales the
+	// game to an integer multiple that can EXCEED 640x480 (GBA 720x540, SNES 784x672, PS1 hi-res),
+	// and the DE hardware scaler then downscales the whole thing to the panel via screen_win. A
+	// panel-sized buffer overflowed on those cores (segfault, sweep 2026-08-06). 1024x768 RGB565
+	// = 1.5MB/page covers every core we ship.
+	#define DISP_MAX_W 1024
+	#define DISP_MAX_H 768
+	vid.ion_bytes = (size_t)DISP_MAX_W * DISP_MAX_H * 2;
 	for (int i = 0; i < 2; i++) {
 		struct ion_allocation_data_v1 alloc = { .len = vid.ion_bytes, .align = 4096, .heap_id_mask = ION_HEAP_DMA_MASK, .flags = 0 };
 		if (ioctl(vid.ionfd, ION_IOC_ALLOC_A64, &alloc) < 0) { LOG_info("disp: ION alloc %d failed (%s)\n", i, strerror(errno)); return -1; }
@@ -583,10 +590,10 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int p) {
 	vid.screen = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, FIXED_DEPTH, RGBA_MASK_565);
 	vid.width = w; vid.height = h; vid.pitch = vid.screen->pitch;
 	if (vid.use_disp) {
-		// clamp to the panel: the ION pages hold at most panel-sized RGB565 (matches what
-		// minarch ever requests on a 640x480 platform; a bigger ask would be a bug upstream)
-		if (w > (int)vid.vinfo.xres || h > (int)vid.vinfo.yres)
-			LOG_info("resizeVideo %dx%d exceeds panel — refusing layer reshape\n", w, h);
+		// Accept any render surface that fits the ION buffer; the DE scaler downscales it to the
+		// panel (screen_win). Refuse only if it would overflow the buffer (should never happen).
+		if ((size_t)w * h * 2 > vid.ion_bytes)
+			LOG_info("resizeVideo %dx%d exceeds ION buffer - refusing\n", w, h);
 		else {
 			disp_shape_rect(0, 0, w, h);
 			memset(vid.ionmmap[0], 0, vid.ion_bytes);
