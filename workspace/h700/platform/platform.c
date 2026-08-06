@@ -22,6 +22,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/fb.h>
+#include <stdint.h>
+#include "sunxi_display2.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -193,6 +195,72 @@ void PLAT_pollInput(void) {
 
 ///////////////////////////////
 
+// ---------------------------------------------------------------------------------------------
+// DE-LAYER PRESENT (default; ZERO_H700_FB=1 falls back to the fbdev path below).
+//
+// The Allwinner Display Engine composes layers with a FREE hardware scaler: we hand it an
+// RGB565 ION buffer at whatever size minarch rendered (crop) and a screen_win rect, and the
+// silicon scales to fullscreen — no 565->XRGB convert, no CPU scale beyond minarch's integer
+// prescale (sharp pixels + hardware finish, the same recipe as tg5040's Crisp).
+//
+// Plumbing adapted from MyMinUI's h700 port (Turro75/MyMinUI, workspace/h700/platform/) — the
+// ION ioctl ABI and the 220-byte raw disp_layer_config2 packing are its hard-won discoveries;
+// it uses the layer as a fullscreen page-flipper, we add the crop->screen_win scaling.
+// FAILSAFE: a dead process leaves its layer configured OVER muOS's screen — tools/layerclean.c
+// runs in every session.sh restore path.
+// PROBED ABI (ionprobe3, RG35XX Plus muOS 4.9.170, 2026-08-05): this kernel wants the LEGACY
+// ion API at aarch64-NATURAL layout — sizeof(alloc)=32 (u64 len/align + trailing pad), so the
+// cmd is 0xC0204900, not MyMinUI's 32-bit-userspace 0xC0144900 (ENOTTY here). Heap bit 4 is
+// the contiguous DMA heap (bit 0 = system, NOT contiguous — the display engine cannot scan it).
+#define ION_IOC_ALLOC_A64 0xC0204900
+#define ION_IOC_FREE_A64  0xC0044901
+#define ION_IOC_SHARE_A64 0xC0084904
+#define ION_HEAP_DMA_MASK (1u << 4)
+struct ion_allocation_data_v1 {
+	uint64_t len;
+	uint64_t align;
+	uint32_t heap_id_mask;
+	uint32_t flags;
+	int32_t handle;
+	uint32_t pad;
+};
+struct ion_fd_data_v1 {
+	int32_t handle;
+	int32_t fd;
+};
+// The kernel's disp_layer_config2 ABI does not match the header struct (MyMinUI finding):
+// SET_CONFIG2 consumes a raw 220-byte block. Pack the logical struct into it by dword index.
+struct disp_layer_config2_raw {
+	uint32_t dwords[55];
+};
+static void disp_pack(struct disp_layer_config2_raw* dst, const struct disp_layer_config2* src) {
+	memset(dst, 0, sizeof(*dst));
+	dst->dwords[0]  = (uint32_t)src->info.mode;
+	dst->dwords[1]  = ((uint32_t)src->info.alpha_value << 16) |
+	                  ((uint32_t)src->info.alpha_mode  << 8)  |
+	                  ((uint32_t)src->info.zorder);
+	dst->dwords[2]  = (uint32_t)src->info.screen_win.x;
+	dst->dwords[3]  = (uint32_t)src->info.screen_win.y;
+	dst->dwords[4]  = src->info.screen_win.width;
+	dst->dwords[5]  = src->info.screen_win.height;
+	dst->dwords[8]  = (uint32_t)src->info.fb.fd;
+	dst->dwords[9]  = src->info.fb.size[0].width;
+	dst->dwords[10] = src->info.fb.size[0].height;
+	dst->dwords[18] = (uint32_t)src->info.fb.format;
+	dst->dwords[19] = (uint32_t)src->info.fb.color_space;
+	dst->dwords[23] = (uint32_t)(src->info.fb.crop.x >> 32);
+	dst->dwords[24] = (uint32_t)(src->info.fb.crop.x & 0xFFFFFFFFULL);
+	dst->dwords[25] = (uint32_t)(src->info.fb.crop.y >> 32);
+	dst->dwords[26] = (uint32_t)(src->info.fb.crop.y & 0xFFFFFFFFULL);
+	dst->dwords[27] = (uint32_t)(src->info.fb.crop.width  >> 32);
+	dst->dwords[28] = (uint32_t)(src->info.fb.crop.width  & 0xFFFFFFFFULL);
+	dst->dwords[29] = (uint32_t)(src->info.fb.crop.height >> 32);
+	dst->dwords[30] = (uint32_t)(src->info.fb.crop.height & 0xFFFFFFFFULL);
+	dst->dwords[52] = (uint32_t)src->enable;
+	dst->dwords[53] = src->channel;
+	dst->dwords[54] = src->layer_id;
+}
+
 static struct VID_Context {
 	SDL_Surface* screen;   // RGB565 render target handed to the frontend
 	GFX_Renderer* blit;
@@ -208,7 +276,110 @@ static struct VID_Context {
 	int width;
 	int height;
 	int pitch;
+
+	// DE-layer state
+	int use_disp;          // 1 = layer present path active
+	int dispfd;
+	int ionfd;
+	int ion_fds[2];        // dma-buf fds, one per page
+	void* ionmmap[2];
+	size_t ion_bytes;      // per-page capacity (panel W*H*2)
+	struct disp_layer_config2 lcfg;
+	struct disp_layer_config2_raw lraw;
+	// the rect within the render surface that actually holds the image this frame.
+	// minarch keeps the surface DEVICE-sized and centers the game (fit path, dst_x/dst_y);
+	// the layer CROPS this rect and the hardware scales it to screen_win.
+	int crop_x, crop_y, crop_w, crop_h;
 } vid;
+
+// aspect-fit w x h into the panel, centered — the hardware scaler's output window
+static void disp_screen_win(int w, int h, struct disp_rect* win) {
+	int pw = (int)vid.vinfo.xres, ph = (int)vid.vinfo.yres;
+	double scale = (double)pw / w;
+	if ((double)ph / h < scale) scale = (double)ph / h;
+	int ow = (int)(w * scale + 0.5), oh = (int)(h * scale + 0.5);
+	if (ow > pw) ow = pw;
+	if (oh > ph) oh = ph;
+	win->x = (pw - ow) / 2;
+	win->y = (ph - oh) / 2;
+	win->width = ow;
+	win->height = oh;
+}
+
+// (re)shape the layer: the buffer is the full render surface (vid.width x vid.height); the
+// layer CROPS (cx,cy,cw,ch) out of it and the hardware scales that rect to screen_win
+static void disp_shape_rect(int cx, int cy, int cw, int ch) {
+	memset(&vid.lcfg, 0, sizeof(vid.lcfg));
+	vid.lcfg.info.mode = LAYER_MODE_BUFFER;
+	vid.lcfg.info.zorder = 20;             // above the (frozen) muOS fb
+	vid.lcfg.info.alpha_mode = 1;
+	vid.lcfg.info.alpha_value = 255;
+	disp_screen_win(cw, ch, &vid.lcfg.info.screen_win);
+	vid.lcfg.info.fb.size[0].width = vid.width;
+	vid.lcfg.info.fb.size[0].height = vid.height;
+	vid.lcfg.info.fb.format = DISP_FORMAT_RGB_565;
+	vid.lcfg.info.fb.color_space = DISP_BT601;
+	vid.lcfg.info.fb.crop.x = (int64_t)cx << 32;
+	vid.lcfg.info.fb.crop.y = (int64_t)cy << 32;
+	vid.lcfg.info.fb.crop.width  = (uint64_t)cw << 32;
+	vid.lcfg.info.fb.crop.height = (uint64_t)ch << 32;
+	vid.lcfg.enable = 1;
+	vid.lcfg.channel = 1;
+	vid.lcfg.layer_id = 0;
+	disp_pack(&vid.lraw, &vid.lcfg);
+	vid.crop_x = cx; vid.crop_y = cy; vid.crop_w = cw; vid.crop_h = ch;
+	LOG_info("disp: buf %dx%d crop %d,%d %dx%d -> win %d,%d %dx%d\n", vid.width, vid.height,
+		cx, cy, cw, ch,
+		vid.lcfg.info.screen_win.x, vid.lcfg.info.screen_win.y,
+		vid.lcfg.info.screen_win.width, vid.lcfg.info.screen_win.height);
+}
+
+static int disp_commit(int page) {
+	vid.lraw.dwords[8] = (uint32_t)vid.ion_fds[page];
+	// unsigned long args: the sunxi disp_ioctl copies FOUR LONGS from userspace. uint32_t
+	// worked for MyMinUI's 32-bit builds but truncated our 64-bit pointer (dmesg "para err").
+	unsigned long args[4];
+	args[0] = 0; args[1] = 1; args[2] = 0; args[3] = 0;
+	if (ioctl(vid.dispfd, DISP_SHADOW_PROTECT, &args) < 0) return -1;
+	args[0] = 0; args[1] = (unsigned long)&vid.lraw; args[2] = 1; args[3] = 0;
+	int ret = ioctl(vid.dispfd, DISP_LAYER_SET_CONFIG2, &args);
+	unsigned long cargs[4] = { 0, 4, 1, 0 };
+	ioctl(vid.dispfd, DISP_HWC_COMMIT, &cargs);
+	args[0] = 0; args[1] = 0; args[2] = 0; args[3] = 0;
+	ioctl(vid.dispfd, DISP_SHADOW_PROTECT, &args);
+	return ret;
+}
+
+static void disp_layer_off(void) {
+	if (vid.dispfd < 0) return;
+	struct disp_layer_config2_raw raw;
+	memset(&raw, 0, sizeof(raw));
+	raw.dwords[52] = 0; // enable = 0
+	raw.dwords[53] = 1; // channel
+	raw.dwords[54] = 0; // layer_id
+	unsigned long args[4] = { 0, (unsigned long)&raw, 1, 0 };
+	ioctl(vid.dispfd, DISP_LAYER_SET_CONFIG2, &args);
+}
+
+static int disp_open(void) {
+	vid.ionfd = open("/dev/ion", O_RDWR);
+	if (vid.ionfd < 0) { LOG_info("disp: no /dev/ion (%s)\n", strerror(errno)); return -1; }
+	vid.dispfd = open("/dev/disp", O_RDWR);
+	if (vid.dispfd < 0) { LOG_info("disp: no /dev/disp (%s)\n", strerror(errno)); close(vid.ionfd); return -1; }
+	vid.ion_bytes = (size_t)vid.vinfo.xres * vid.vinfo.yres * 2; // RGB565 at full panel = max any frame needs
+	for (int i = 0; i < 2; i++) {
+		struct ion_allocation_data_v1 alloc = { .len = vid.ion_bytes, .align = 4096, .heap_id_mask = ION_HEAP_DMA_MASK, .flags = 0 };
+		if (ioctl(vid.ionfd, ION_IOC_ALLOC_A64, &alloc) < 0) { LOG_info("disp: ION alloc %d failed (%s)\n", i, strerror(errno)); return -1; }
+		struct ion_fd_data_v1 share = { .handle = alloc.handle, .fd = -1 };
+		if (ioctl(vid.ionfd, ION_IOC_SHARE_A64, &share) < 0) { LOG_info("disp: ION share %d failed (%s)\n", i, strerror(errno)); return -1; }
+		vid.ion_fds[i] = share.fd;
+		vid.ionmmap[i] = mmap(NULL, vid.ion_bytes, PROT_READ|PROT_WRITE, MAP_SHARED, share.fd, 0);
+		if (vid.ionmmap[i] == MAP_FAILED) { LOG_info("disp: ION mmap %d failed\n", i); return -1; }
+		memset(vid.ionmmap[i], 0, vid.ion_bytes);
+	}
+	disp_layer_off(); // clear any stale layer a crashed predecessor left behind
+	return 0;
+}
 
 SDL_Surface* PLAT_initVideo(void) {
 	// SDL video first, for its input plumbing (keyboard events ride the video subsystem; the MMP
@@ -238,6 +409,18 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.width  = FIXED_WIDTH;
 	vid.height = FIXED_HEIGHT;
 	vid.pitch  = FIXED_PITCH;
+
+	// DE-layer present unless opted out or unavailable; fbdev remains the fallback
+	vid.dispfd = vid.ionfd = -1;
+	vid.use_disp = 0;
+	if (!getenv("ZERO_H700_FB")) {
+		if (disp_open() == 0) {
+			disp_shape_rect(0, 0, vid.width, vid.height);
+			vid.use_disp = 1;
+			LOG_info("present: DE layer (hardware scaler)\n");
+		}
+		else LOG_info("present: fbdev fallback\n");
+	}
 
 	// Draw into the page the panel is NOT scanning. The MMP's whole tearing saga came from
 	// nothing tracking the front page; with 2 pages and a SYNCHRONOUS pan (blocks ~16.7ms,
@@ -295,6 +478,15 @@ static void fb_pan(int page) {
 }
 
 void PLAT_quitVideo(void) {
+	if (vid.use_disp) {
+		disp_layer_off(); // a guest must hand the display back — a leaked layer covers muOS
+		for (int i = 0; i < 2; i++) {
+			if (vid.ionmmap[i] && vid.ionmmap[i] != MAP_FAILED) munmap(vid.ionmmap[i], vid.ion_bytes);
+			if (vid.ion_fds[i] > 0) close(vid.ion_fds[i]);
+		}
+		if (vid.dispfd >= 0) close(vid.dispfd);
+		if (vid.ionfd >= 0) close(vid.ionfd);
+	}
 	if (vid.screen) SDL_FreeSurface(vid.screen);
 	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) munmap(vid.fbmmap, vid.page_bytes * vid.pages);
 	if (vid.fdfb >= 0) close(vid.fdfb);
@@ -306,6 +498,11 @@ void PLAT_clearVideo(SDL_Surface* screen) {
 }
 void PLAT_clearAll(void) {
 	PLAT_clearVideo(vid.screen);
+	if (vid.use_disp) {
+		// same live-scanout rule as fbdev: only the back page is ours to scrub
+		memset(vid.ionmmap[vid.page], 0, vid.ion_bytes);
+		return;
+	}
 	// Zero only the page WE own next; the pan in the next flip retires the other. Never memset
 	// the whole mmap — that writes into live scanout (the MMP's PLAT_clearAll lesson).
 	if (vid.fbmmap && vid.fbmmap != MAP_FAILED)
@@ -326,9 +523,19 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int p) {
 	if (vid.screen) SDL_FreeSurface(vid.screen);
 	vid.screen = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, FIXED_DEPTH, RGBA_MASK_565);
 	vid.width = w; vid.height = h; vid.pitch = vid.screen->pitch;
-	// geometry changed: scrub both fb pages so old borders do not linger (one brief artifact
-	// beats permanent letterbox garbage; the proper deferred scrub comes with the DE-layer work)
-	if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.page_bytes * vid.pages);
+	if (vid.use_disp) {
+		// clamp to the panel: the ION pages hold at most panel-sized RGB565 (matches what
+		// minarch ever requests on a 640x480 platform; a bigger ask would be a bug upstream)
+		if (w > (int)vid.vinfo.xres || h > (int)vid.vinfo.yres)
+			LOG_info("resizeVideo %dx%d exceeds panel — refusing layer reshape\n", w, h);
+		else {
+			disp_shape_rect(0, 0, w, h);
+			memset(vid.ionmmap[0], 0, vid.ion_bytes);
+			memset(vid.ionmmap[1], 0, vid.ion_bytes);
+		}
+	}
+	// geometry changed: scrub both fb pages so old borders do not linger (fbdev path)
+	else if (vid.fbmmap && vid.fbmmap != MAP_FAILED) memset(vid.fbmmap, 0, vid.page_bytes * vid.pages);
 	return vid.screen;
 }
 
@@ -356,6 +563,25 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 
 void PLAT_blitRenderer(GFX_Renderer* renderer) {
 	vid.blit = renderer;
+	if (vid.use_disp) {
+		// scale into the CACHED SDL surface exactly like the fbdev path — scaling straight
+		// into the write-combined ION mapping cost +24% of a core (54% vs 30%, measured:
+		// scale3x's per-pixel writes defeat write combining). The flip then streams just the
+		// crop rect into the ION page as one sequential copy, which WC handles ideally.
+		void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
+		((scaler_t)renderer->blit)(renderer->src, dst,
+			renderer->src_w, renderer->src_h, renderer->src_p,
+			renderer->dst_w, renderer->dst_h, renderer->dst_p);
+		// the true drawn size is src * integer scale — on the fit path minarch leaves
+		// dst_w/dst_h at DEVICE size (observed live: crop was 640x480 while the game was
+		// a 3x 480x432), and only dst_x/dst_y locate the image
+		int cw = renderer->scale >= 1 ? renderer->src_w * renderer->scale : renderer->dst_w;
+		int ch = renderer->scale >= 1 ? renderer->src_h * renderer->scale : renderer->dst_h;
+		if (renderer->dst_x != vid.crop_x || renderer->dst_y != vid.crop_y ||
+		    cw != vid.crop_w || ch != vid.crop_h)
+			disp_shape_rect(renderer->dst_x, renderer->dst_y, cw, ch);
+		return;
+	}
 	void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
 	((scaler_t)renderer->blit)(renderer->src, dst,
 		renderer->src_w, renderer->src_h, renderer->src_p,
@@ -364,6 +590,36 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
+	if (vid.use_disp) {
+		{
+			// stream the live rect from the cached surface into the back ION page.
+			// UI = full surface; game = just the crop rect (416KB for GBC at 3x, one
+			// sequential pass — the write-combine-friendly shape).
+			int cx = fullframe ? vid.crop_x : 0;
+			int cy = fullframe ? vid.crop_y : 0;
+			int cw = fullframe ? vid.crop_w : vid.width;
+			int ch = fullframe ? vid.crop_h : vid.height;
+			uint8_t* srcp = (uint8_t*)vid.screen->pixels + cy * vid.screen->pitch + cx * FIXED_BPP;
+			int rowbytes = vid.width * FIXED_BPP;
+			uint8_t* dstp = (uint8_t*)vid.ionmmap[vid.page] + cy * rowbytes + cx * FIXED_BPP;
+			int copybytes = cw * FIXED_BPP;
+			for (int y = 0; y < ch; y++)
+				memcpy(dstp + y * rowbytes, srcp + y * vid.screen->pitch, copybytes);
+		}
+		if (!fullframe) {
+			if (vid.crop_x || vid.crop_y || vid.crop_w != vid.width || vid.crop_h != vid.height)
+				disp_shape_rect(0, 0, vid.width, vid.height); // UI owns the whole surface
+		}
+		disp_commit(vid.page);
+		int shown = vid.page;
+		vid.page = !vid.page;
+		if (!fullframe) {
+			// keep pages coherent for partial UI redraws (same reasoning as the fbdev path)
+			memcpy(vid.ionmmap[vid.page], vid.ionmmap[shown], (size_t)vid.height * vid.width * FIXED_BPP);
+		}
+		vid.blit = NULL;
+		return;
+	}
 	fb_blit565(vid.page);
 	fb_pan(vid.page);                        // synchronous: returns with the page on its way out
 	if (vid.pages > 1) {

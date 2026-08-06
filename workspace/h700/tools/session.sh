@@ -14,9 +14,13 @@ echo "session start $(date)" >> $LOG
 # only ONE session may exist: kill stale watchdogs from previous sessions.
 # busybox ps TRUNCATES long cmdlines (the watchdog tag is at the end), so scan /proc instead.
 kill_watchdogs() {
+	# match the EXACT argv layout of the watchdog (sh -c <script> session-watchdog) by its
+	# trailing argv0 — a loose *session-watchdog* substring match killed an SSH session whose
+	# remote script merely CONTAINED that string (2026-08-05, three dead sessions to find it)
 	for d in /proc/[0-9]*; do
-		case "$(tr '\0' ' ' < $d/cmdline 2>/dev/null)" in
-			*session-watchdog*) kill "$(basename $d)" 2>/dev/null;;
+		[ "$(basename $d)" = "$$" ] && continue
+		case "$(tr '\0' '|' < $d/cmdline 2>/dev/null)" in
+			sh"|-c|"*"|session-watchdog|") kill "$(basename $d)" 2>/dev/null;;
 		esac
 	done
 }
@@ -24,6 +28,7 @@ kill_watchdogs
 rm -rf /tmp/.muos-restore-lock
 
 restore_muos() {
+	[ -x /tmp/layerclean ] && /tmp/layerclean >> $LOG 2>&1
 	FS=$(ps | grep "frontend.sh" | grep -v grep | awk '{print $1}' | head -1)
 	ID=$(ps | grep "idle.sh" | grep -v grep | awk '{print $1}' | head -1)
 	HK=$(ps | grep muhotkey | grep -v grep | awk '{print $1}' | head -1)
@@ -48,6 +53,7 @@ restore_muos() {
 		misses=$((misses+1))
 		[ $misses -ge 2 ] && break
 	done
+	[ -x /tmp/layerclean ] && /tmp/layerclean >> /tmp/session.log 2>&1
 	FS=$(ps | grep "frontend.sh" | grep -v grep | awk "{print \$1}" | head -1)
 	ID=$(ps | grep "idle.sh" | grep -v grep | awk "{print \$1}" | head -1)
 	HK=$(ps | grep muhotkey | grep -v grep | awk "{print \$1}" | head -1)
