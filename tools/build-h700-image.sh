@@ -54,7 +54,12 @@ tar xzf "$ASSETS/modules-4.9.170.tar.gz" -C "$R"          # /lib/modules
 find "$R/lib/modules/4.9.170/kernel" -name '*.ko' ! -name '8821cs.ko' -delete
 find "$R/lib/modules/4.9.170/kernel" -type d -empty -delete 2>/dev/null || true
 tar xzf "$ASSETS/alsa-wifi-ssh.tar.gz" -C "$R"            # /usr/share/alsa + wpa_supplicant + sshd
-tar xzf "$ASSETS/wifi-libs.tar.gz" -C "$R"                # libnl/ssl/crypto for wpa_supplicant
+tar xzf "$ASSETS/wifi-libs.tar.gz" -C "$R"                # ssl/crypto for wpa_supplicant
+# the libnl trio in wifi-libs are DANGLING SYMLINKS (pre-dereference-lesson extraction);
+# libnl-real.tar.gz carries the actual files pulled from the muOS rootfs dump — extract AFTER
+# so real files replace the husks
+rm -f "$R/usr/lib/libnl-3.so.200" "$R/usr/lib/libnl-genl-3.so.200" "$R/usr/lib/libnl-route-3.so.200"
+tar xzf "$ASSETS/libnl-real.tar.gz" -C "$R/usr/lib"
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti" "$R/usr/sbin/dropbearmulti"
 cp "$REPO/tools/h700-image/init" "$R/init"
 cp "$REPO/tools/h700-image/udhcpc.script" "$R/etc/udhcpc.script"
