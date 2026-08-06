@@ -75,6 +75,20 @@ fi
 # its trace readable on a Mac (flash test 3: minui hung, and its tmpfs log died with the power)
 ( while : ; do sync; sleep 2; done ) &
 
+# display-state receipts (flash test 4-6: minui runs and commits, panel keeps the logo — the
+# question is WHICH layers the display engine thinks are live): snapshot the DE layer table,
+# backlight, and kernel log 8s in, then again at 20s
+( for T in 8 20; do
+	sleep $T
+	{
+		echo "=== disp state at ${T}s ==="
+		cat /sys/class/disp/disp/attr/sys 2>/dev/null
+		echo "=== dmesg tail ==="
+		dmesg | tail -15
+	} >> /mnt/log/disp-state.log 2>/dev/null
+	sync
+  done ) &
+
 # the launch loop IS the OS. Crashes and quits both land back in minui; a broken minui parks
 # with logs flushed instead of powering off.
 cd /tmp
