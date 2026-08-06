@@ -122,7 +122,9 @@
 // Panel: 640x480 MEASURED at 59.9777 Hz (see workspace/h700/README-BRINGUP.md). The render
 // surface is RGB565 like every other platform; the fb is ARGB8888 and platform.c converts on flip.
 
-#define FIXED_SCALE		1
+// @2x UI assets, matching the miyoomini — the SAME 640x480 panel geometry. At 1 the whole
+// launcher rendered half-size ("the resolution is off, everything is tiny", Dan 2026-08-05).
+#define FIXED_SCALE		2
 #define FIXED_WIDTH		640
 #define FIXED_HEIGHT	480
 #define FIXED_BPP		2
