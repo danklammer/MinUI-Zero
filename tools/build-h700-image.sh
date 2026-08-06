@@ -62,8 +62,10 @@ rm -f "$R/usr/lib/libnl-3.so.200" "$R/usr/lib/libnl-genl-3.so.200" "$R/usr/lib/l
 tar xzf "$ASSETS/libnl-real.tar.gz" -C "$R/usr/lib"
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti" "$R/usr/sbin/dropbearmulti"
 cp "$REPO/tools/h700-image/init" "$R/init"
-cp "$REPO/tools/h700-image/udhcpc.script" "$R/etc/udhcpc.script"
-chmod +x "$R/etc/udhcpc.script"
+# wifi tools from the muOS rootfs dump (dhcpcd/iw/iwconfig — busybox has none of these)
+tar xzf "$ASSETS/wifi-tools.tar.gz" -C "$R/sbin"
+chmod +x "$R/sbin/dhcpcd" "$R/sbin/iw" "$R/sbin/iwconfig" 2>/dev/null || true
+ln -sf ../sbin/iw "$R/usr/sbin/iw" 2>/dev/null || true
 # WiFi credentials: OPTIONAL, never in git — drop a wpa_supplicant.conf in the assets dir
 if [ -f "$ASSETS/wifi.conf" ]; then
 	cp "$ASSETS/wifi.conf" "$R/etc/wpa_supplicant.conf"

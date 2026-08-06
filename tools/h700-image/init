@@ -1,33 +1,27 @@
 #!/bin/sh
-# MinUI Zero h700 — PID 1. The whole OS: mount, governor, then the launch loop.
-# The muOS-derived ramdisk switch_roots here after mounting p5 (see the extracted ramdisk init:
-# `[ -x /mnt/init ] && exec switch_root /mnt /init`). /dev arrives populated (moved from the
-# ramdisk's devtmpfs).
+# MinUI Zero h700 — PID 1. The whole OS: mount, wifi, then the launch loop.
+# The muOS-derived ramdisk switch_roots here after mounting p5.
 #
-# DEBUGGABILITY RULES (v2, after the first flash test powered straight off and took its logs
-# with it): every step breadcrumbs to p2 — the FAT partition a Mac can read — and failure NEVER
-# powers off; it parks with the logs flushed. v1's "minui exited => poweroff" made a boot
-# failure indistinguishable from a power fault.
+# WiFi + poweroff replicate muOS's OWN method (read from its rootfs, not guessed): the earlier
+# hand-rolled versions failed because (a) poweroff needs the AXP register poke, plain poweroff
+# just reboots, and (b) wifi needs iwconfig-essid + dhcpcd, not bare wpa+udhcpc.
+# Every step breadcrumbs to p2 (the FAT partition a Mac reads); failure NEVER powers off.
 
 /bin/busybox --install -s /bin 2>/dev/null
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
-mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null   # dispdbg brightness lives here
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
 mount -t devpts devpts /dev/pts 2>/dev/null
 mount -t tmpfs tmpfs /tmp 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
-mkdir -p /dev/shm
-mount -t tmpfs tmpfs /dev/shm 2>/dev/null   # ALSA dmix wants shm
+mkdir -p /dev/shm /var/run /var/db/dhcpcd
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
 
-# breadcrumb log on the Mac-readable FAT partition
 mkdir -p /mnt/log
 mount /dev/mmcblk0p2 /mnt/log 2>/dev/null
 LOG=/mnt/log/minui-zero-boot.log
-log() {
-	echo "[$(cut -d" " -f1 /proc/uptime 2>/dev/null)] $*" >> "$LOG" 2>/dev/null
-	sync
-}
+log() { echo "[$(cut -d' ' -f1 /proc/uptime 2>/dev/null)] $*" >> "$LOG" 2>/dev/null; sync; }
 : > "$LOG" 2>/dev/null
 log "MinUI Zero h700 init"
 
@@ -35,10 +29,43 @@ echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/nu
 log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
 
 mkdir -p /mnt/mmc
-if mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null; then
-	log "p6 mounted"
-else
-	log "p6 MOUNT FAILED"
+mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null && log "p6 mounted" || log "p6 MOUNT FAILED"
+
+# poweroff the RG the way muOS does: AXP PMIC register (plain poweroff just REBOOTS on this board)
+power_off() {
+	log "power_off: sync + AXP cut"
+	sync
+	umount /mnt/mmc 2>/dev/null
+	echo 0x1801 > /sys/class/axp/axp_reg 2>/dev/null
+	poweroff -f
+}
+
+# WiFi — muOS's exact sequence, backgrounded so it never delays the menu.
+( if [ -f /etc/wpa_supplicant.conf ]; then
+	SSID=$(sed -n 's/^[[:space:]]*ssid="\(.*\)"/\1/p' /etc/wpa_supplicant.conf | head -1)
+	log "wifi: loading 8821cs (ssid='$SSID')"
+	insmod /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko 2>>"$LOG"
+	I=0; while [ $I -lt 15 ]; do [ -e /sys/class/net/wlan0 ] && break; sleep 1; I=$((I+1)); done
+	if [ ! -e /sys/class/net/wlan0 ]; then log "wifi: wlan0 NEVER appeared (lsmod: $(lsmod | grep 8821))"; exit; fi
+	log "wifi: wlan0 up after ${I}s"
+	ifconfig wlan0 up 2>>"$LOG"
+	iw dev wlan0 set power_save off 2>>"$LOG"          # the RTL8821CS deafness fix, at the source
+	iwconfig wlan0 essid -- "$SSID" 2>>"$LOG"
+	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>>"$LOG" || log "wifi: wpa_supplicant failed"
+	sleep 3
+	dhcpcd -t 20 wlan0 >>"$LOG" 2>&1 &
+	J=0; while [ $J -lt 20 ]; do
+		IP=$(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+		[ -n "$IP" ] && break; sleep 1; J=$((J+1))
+	done
+	log "wifi: IP=${IP:-NONE} after ${J}s; assoc=$(iw dev wlan0 link 2>/dev/null | head -1)"
+  fi ) &
+
+if [ -x /usr/sbin/dropbearmulti ]; then
+	mkdir -p /etc/dropbear
+	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
+	/usr/sbin/dropbearmulti dropbear -R -B 2>/dev/null
+	log "dropbear started"
 fi
 
 export PLATFORM=h700
@@ -52,59 +79,14 @@ export BIOS_PATH=/mnt/mmc/Bios
 export CORES_PATH=/mnt/mmc/.system/h700/cores
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
 export SDL_AUDIODRIVER=alsa
-# dummy video: our present path is the DE layer, SDL video is unused — and SDL real video
-# drivers dlopen libudev (absent on this rootfs) and SEGFAULT (flash test 2 breadcrumbs,
-# rc=139 with "Failed loading libudev.so.0"). The dummy driver needs nothing and crashes never.
 export SDL_VIDEODRIVER=dummy
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui"
 
 M="$SYSTEM_PATH/bin/minui.elf"
-if [ -x "$M" ]; then
-	log "minui present: $(ls -la "$M" 2>/dev/null)"
-	log "loader check: $(LD_TRACE_LOADED_OBJECTS=1 "$M" 2>&1 | grep "not found" | tr "\n" ";")"
-else
-	log "minui MISSING at $M; p6 root: $(ls /mnt/mmc 2>/dev/null | tr "\n" " ")"
-fi
 
-# WiFi: driver-level power-save OFF via module params — the RTL8821CS drops inbound unicast
-# under powersave (the whole muOS-era deafness saga); rtw_power_mgnt=0 kills it at the source
-if [ -f /etc/wpa_supplicant.conf ]; then
-	insmod /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko rtw_power_mgnt=0 rtw_ips_mode=0 2>/dev/null
-	( sleep 2
-	  /usr/sbin/wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1
-	  udhcpc -i wlan0 -s /etc/udhcpc.script -b -q >/dev/null 2>&1
-	  log "wifi: $(ip addr show wlan0 2>/dev/null | grep "inet " | tr -s " ")"
-	) &
-	log "wifi bring-up started"
-fi
+# background syncer: stream logs to the FAT partition so even a hang leaves a trace
+( while : ; do sync; sleep 3; done ) &
 
-if [ -x /usr/sbin/dropbearmulti ]; then
-	mkdir -p /etc/dropbear
-	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
-	/usr/sbin/dropbearmulti dropbear -R -B 2>/dev/null   # -B: blank-password fallback
-	log "dropbear started"
-fi
-
-# background syncer: minui logs stream STRAIGHT to the FAT partition, so even a HANG leaves
-# its trace readable on a Mac (flash test 3: minui hung, and its tmpfs log died with the power)
-( while : ; do sync; sleep 2; done ) &
-
-# display-state receipts (flash test 4-6: minui runs and commits, panel keeps the logo — the
-# question is WHICH layers the display engine thinks are live): snapshot the DE layer table,
-# backlight, and kernel log 8s in, then again at 20s
-( for T in 8 20; do
-	sleep $T
-	{
-		echo "=== disp state at ${T}s ==="
-		cat /sys/class/disp/disp/attr/sys 2>/dev/null
-		echo "=== dmesg tail ==="
-		dmesg | tail -15
-	} >> /mnt/log/disp-state.log 2>/dev/null
-	sync
-  done ) &
-
-# the launch loop IS the OS. Crashes and quits both land back in minui; a broken minui parks
-# with logs flushed instead of powering off.
 cd /tmp
 FAILS=0
 while : ; do
@@ -117,22 +99,18 @@ while : ; do
 		log "launch: $CMD"
 		sh -c "$CMD"
 		log "game exited rc=$?"
-		# game logs live on p6 (ext4, Mac-unreadable) — mirror them to the FAT for debugging
 		cp "$LOGS_PATH"/*.txt /mnt/log/ 2>/dev/null
 		sync
 	elif [ "$RC" = "0" ]; then
-		# clean exit with no queued game = the user chose Power Off (PLAT_powerOff is exit 0).
-		# Flash test 8: "Powering off..." bounced back to the menu because init restarted it.
-		log "clean exit — powering off"
-		sync
-		poweroff -f
+		log "minui clean exit — powering off"
+		power_off
 	else
 		FAILS=$((FAILS+1))
 		log "minui exited rc=$RC (fail $FAILS); tail:"
 		tail -20 /mnt/log/minui-live.log >> "$LOG" 2>/dev/null
 		sync
 		if [ $FAILS -ge 3 ]; then
-			log "minui failing repeatedly — parking with logs flushed (pull the card to read p2)"
+			log "minui failing repeatedly — parking (ssh in if wifi is up, or pull p2)"
 			while : ; do sleep 60; done
 		fi
 		sleep 2
