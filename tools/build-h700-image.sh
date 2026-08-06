@@ -25,13 +25,17 @@ OUT_DIR="$ASSETS/out"
 STAGE="$OUT_DIR/stage"
 IMG="$OUT_DIR/MinUI-Zero-h700-$(date +%Y%m%d).img"
 
-# image geometry (sectors). p1-p4 = EXACT muOS offsets (U-Boot may address by sector).
-TOTAL=8388608           # 4GB image
+# image geometry (sectors). p1-p4 = EXACT muOS offsets (U-Boot may address by sector) — those
+# first 156MB are the fixed cost of the verbatim boot chain. p5/p6 are sized to CONTENT
+# (rootfs ~17MB after module pruning, payload ~22MB): ~476MB total, most of it the boot chain.
+# Growing p6 to fill the real card is the v2 first-boot expansion job.
 P5_FIRST=319488
-P5_SECTORS=4194304      # 2GB rootfs partition
+P5_SECTORS=131072       # 64MB rootfs partition
 P5_LAST=$((P5_FIRST + P5_SECTORS - 1))
 P6_FIRST=$((P5_LAST + 1))
-P6_LAST=$((TOTAL - 40)) # leave room for backup GPT
+P6_SECTORS=262144       # 128MB roms partition (boot-test size; first-boot expansion is v2)
+P6_LAST=$((P6_FIRST + P6_SECTORS - 1))
+TOTAL=$((P6_LAST + 40)) # + backup GPT tail
 
 [ -f "$ASSETS/parts/raw-36mb.img.gz" ] || { echo "ERROR: assets not found at $ASSETS"; exit 1; }
 [ -f "$REPO/workspace/all/minui/build/h700/minui.elf" ] || { echo "ERROR: run 'make h700-build' first"; exit 1; }
@@ -44,7 +48,11 @@ R="$STAGE/rootfs"
 mkdir -p "$R/bin" "$R/sbin" "$R/dev" "$R/proc" "$R/sys" "$R/tmp" "$R/run" "$R/mnt/mmc" \
          "$R/etc/dropbear" "$R/usr/sbin" "$R/sys/kernel/debug" "$R/dev/pts"
 tar xzf "$ASSETS/userland-closure.tar.gz" -C "$R"        # /lib /usr/lib closure + /bin/busybox
-tar xzf "$ASSETS/modules-4.9.170.tar.gz" -C "$R"          # /lib/modules (8821cs etc.)
+tar xzf "$ASSETS/modules-4.9.170.tar.gz" -C "$R"          # /lib/modules
+# prune to the ONE module we can ever need: wifi (8821cs). Display/ION/audio are built-in
+# (verified: lsmod on muOS shows only 8821cs + mali, and we do not use the GPU). 30MB -> ~3MB.
+find "$R/lib/modules/4.9.170/kernel" -name '*.ko' ! -name '8821cs.ko' -delete
+find "$R/lib/modules/4.9.170/kernel" -type d -empty -delete 2>/dev/null || true
 tar xzf "$ASSETS/alsa-wifi-ssh.tar.gz" -C "$R"            # /usr/share/alsa + wpa_supplicant + sshd
 tar xzf "$ASSETS/wifi-libs.tar.gz" -C "$R"                # libnl/ssl/crypto for wpa_supplicant
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti" "$R/usr/sbin/dropbearmulti"
@@ -91,13 +99,24 @@ rm -f "$IMG"
 gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"                       # boot0+uboot+GPT verbatim
 gunzip -c "$ASSETS/parts/p2-boot.img.gz"   | dd of="$IMG" bs=512 seek=90112  conv=notrunc status=none
 gunzip -c "$ASSETS/parts/p3-env.img.gz"    | dd of="$IMG" bs=512 seek=155648 conv=notrunc status=none
-gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | dd of="$IMG" bs=512 seek=188416 conv=notrunc status=none
+# p4: write only the TRUE Android bootimg length — the rest of the 64MB partition on the
+# donor card is old flash residue (incompressible, +40MB of download for nothing)
+BOOTIMG_BYTES=$(gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | head -c 48 | python3 -c '
+import sys, struct
+d = sys.stdin.buffer.read(48)
+k, _, r = struct.unpack("<III", d[8:20])
+pg = struct.unpack("<I", d[36:40])[0]
+print(pg * (1 + (k + pg - 1)//pg + (r + pg - 1)//pg))
+')
+gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | head -c "$BOOTIMG_BYTES" | dd of="$IMG" bs=512 seek=188416 conv=notrunc status=none
 dd if="$ASSETS/out/p5.img" of="$IMG" bs=512 seek=$P5_FIRST conv=notrunc status=none
 dd if="$ASSETS/out/p6.img" of="$IMG" bs=512 seek=$P6_FIRST conv=notrunc status=none
 python3 "$REPO/tools/h700-image/gpt.py" "$IMG" $TOTAL $P5_LAST $P6_FIRST $P6_LAST
 rm -f "$ASSETS/out/p5.img" "$ASSETS/out/p6.img"
 
+xz -9 -T0 -f -k "$IMG"
+
 echo ""
-echo "IMAGE: $IMG ($(du -h "$IMG" | cut -f1))"
+echo "IMAGE: $IMG ($(du -h "$IMG" | cut -f1) on disk)  DOWNLOAD: $IMG.xz ($(du -h "$IMG.xz" | cut -f1))"
 echo "Flash (macOS): diskutil unmountDisk /dev/diskN && sudo dd if=$IMG of=/dev/rdiskN bs=4m"
 echo "NEVER flash the muOS card."
