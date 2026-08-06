@@ -436,6 +436,22 @@ SDL_Surface* PLAT_initVideo(void) {
 	vid.pitch  = FIXED_PITCH;
 
 	// DE-layer present unless opted out or unavailable; fbdev remains the fallback
+	// Model detect: muOS resolves the board (rg35xx-plus vs rg35xx-h vs cube/34xx variants)
+	// into this device var. Logged now, consumed later: the H adds HDMI + analog sticks, and
+	// the boot-image milestone reads the DT instead. Guest-mode = trust the host answer.
+	{
+		char model[64] = "unknown";
+		FILE* f = fopen("/opt/muos/device/config/board/name", "r");
+		if (f) {
+			if (fgets(model, sizeof(model), f)) {
+				char* nl = strchr(model, 10);
+				if (nl) *nl = 0;
+			}
+			fclose(f);
+		}
+		LOG_info("model: %s\n", model);
+	}
+
 	vid.dispfd = vid.ionfd = -1;
 	vid.use_disp = 0;
 	if (!getenv("ZERO_H700_FB")) {
