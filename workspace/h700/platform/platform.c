@@ -153,6 +153,11 @@ void PLAT_pollInput(void) {
 			if (ev.type == 3) { ev_hat(ev.code, ev.value, tick); continue; } // dpad hat
 			if (ev.type != 1) continue;      // EV_KEY otherwise
 			if (ev.value == 2) continue;     // autorepeat: we do our own
+			// BOOT GRACE for the power key: the press that powers the device ON reaches minui
+			// as a press+release pair — the manual-sleep gesture — so every image boot drew one
+			// frame and went straight to hybrid sleep ("flash then logo", flash tests 4-7; the
+			// menu was one wake-press away the whole time).
+			if (ev.code == 116 && tick < 3000) continue;
 			int btn, id;
 			ev_translate(ev.code, &btn, &id);
 			if (btn == BTN_NONE) continue;

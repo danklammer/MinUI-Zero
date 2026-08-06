@@ -17,6 +17,8 @@ mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null   # dispdbg brightness li
 mount -t devpts devpts /dev/pts 2>/dev/null
 mount -t tmpfs tmpfs /tmp 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
+mkdir -p /dev/shm
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null   # ALSA dmix wants shm
 
 # breadcrumb log on the Mac-readable FAT partition
 mkdir -p /mnt/log
@@ -102,6 +104,10 @@ while : ; do
 		CMD=$(cat /tmp/next)
 		log "launch: $CMD"
 		sh -c "$CMD"
+		log "game exited rc=$?"
+		# game logs live on p6 (ext4, Mac-unreadable) — mirror them to the FAT for debugging
+		cp "$LOGS_PATH"/*.txt /mnt/log/ 2>/dev/null
+		sync
 	else
 		FAILS=$((FAILS+1))
 		log "minui exited rc=$RC (fail $FAILS); tail:"
