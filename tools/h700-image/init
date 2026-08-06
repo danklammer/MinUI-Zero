@@ -81,7 +81,7 @@ fi
 if [ -x /usr/sbin/dropbearmulti ]; then
 	mkdir -p /etc/dropbear
 	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
-	/usr/sbin/dropbearmulti dropbear -R 2>/dev/null
+	/usr/sbin/dropbearmulti dropbear -R -B 2>/dev/null   # -B: blank-password fallback
 	log "dropbear started"
 fi
 

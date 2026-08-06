@@ -66,7 +66,11 @@ if [ -f "$ASSETS/wifi.conf" ]; then
 fi
 chmod +x "$R/init" "$R/usr/sbin/dropbearmulti" "$R/bin/busybox" 2>/dev/null || true
 ln -sf busybox "$R/bin/sh"
-echo "root::0:0:root:/:/bin/sh" > "$R/etc/passwd"   # empty password, dropbear -R accepts
+echo "root::0:0:root:/:/bin/sh" > "$R/etc/passwd"   # root home = /
+# ssh access: the dev key (same one every device uses); dropbear reads /.ssh for root home /
+mkdir -p "$R/.ssh"
+cp "$HOME/.ssh/tg5040_dev.pub" "$R/.ssh/authorized_keys" 2>/dev/null || true
+chmod 700 "$R/.ssh"; chmod 600 "$R/.ssh/authorized_keys" 2>/dev/null || true
 
 echo "== card payload (p6) =="
 C="$STAGE/card"
