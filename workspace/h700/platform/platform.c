@@ -407,17 +407,18 @@ static int disp_open(void) {
 		if (vid.ionmmap[i] == MAP_FAILED) { LOG_info("disp: ION mmap %d failed\n", i); return -1; }
 		memset(vid.ionmmap[i], 0, vid.ion_bytes);
 	}
-	// On a VIRGIN boot (our own image) nobody has bound the display engine to the LCD yet —
-	// commits go nowhere and the U-Boot logo just stays (flash test 4 receipts: minui ran
-	// perfectly, screen never changed). muOS had always done this before we ran as a guest.
-	// MyMinUI (image-native) makes exactly this call at init. Guests must NOT: the switch
-	// bounces the host pipeline.
-	if (!exists("/opt/muos")) {
+	// When we OWN the OS (MinUI Zero image — marked by /opt/minui-zero, present on both the
+	// from-scratch AND stripped-muOS images), (re)bind the display engine to the LCD and claim
+	// the layer. Without it the static menu's single first commit sits in the back buffer and the
+	// boot logo shows until an input forces a second commit — a game commits continuously so it
+	// was never affected ("logo until A", stripped-muOS 2026-08-06). Detect ownership by our OWN
+	// marker, NOT "!muos": the stripped image keeps /opt/muos yet we own the display.
+	if (exists("/opt/minui-zero")) {
 		unsigned long sw[4] = { 0, DISP_OUTPUT_TYPE_LCD, 0, 0 };
 		if (ioctl(vid.dispfd, DISP_DEVICE_SWITCH, &sw) < 0)
 			LOG_info("disp: DEVICE_SWITCH to LCD failed (%s)\n", strerror(errno));
 		else
-			LOG_info("disp: output switched to LCD (image boot)\n");
+			LOG_info("disp: output switched to LCD (owned OS)\n");
 	}
 	disp_layer_off(); // clear any stale layer a crashed predecessor left behind
 	return 0;
@@ -761,20 +762,33 @@ void PLAT_powerOff(void) {
 
 ///////////////////////////////
 
+// We own the governor only on the MinUI Zero image (marked /opt/minui-zero). As a guest on stock
+// muOS we must not fight the host. Cached: the marker does not change within a run.
+#define MAXFREQ_PATH "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
+static int zero_owns_os(void) {
+	static int owns = -1;
+	if (owns < 0) owns = exists("/opt/minui-zero");
+	return owns;
+}
+
 void PLAT_setCPUSpeed(int speed) {
-	// GUEST MODE: log intent, touch nothing. muOS owns the governor while it hosts us. The
-	// schedutil ceiling model (tg5040) ports when we own the image — schedutil is confirmed
-	// available on this SoC.
-	LOG_info("PLAT_setCPUSpeed(%d) — guest mode, not applied\n", speed);
+	// The closed-loop governor drives clocks via PLAT_setCPUMaxFreq (the ceiling); this discrete
+	// entry point just logs. Real ceiling writes happen in setCPUMaxFreq when we own the OS.
+	if (!zero_owns_os()) LOG_info("PLAT_setCPUSpeed(%d) — guest mode, not applied\n", speed);
 }
 
 void PLAT_setCPUMaxFreq(int khz) {
-	// The governor re-asserts its ceiling ~1/s; logging every call wrote thousands of
-	// identical lines per session to the SD. Log decisions, not the clock.
+	// THE THESIS, now real on our own OS: set the schedutil ceiling (scaling_max_freq); the
+	// kernel governor picks beneath it. As a guest we only log. Re-asserted ~1/s, so log on
+	// change only (thousands of identical lines otherwise).
 	static int last_khz = -1;
 	if (khz == last_khz) return;
 	last_khz = khz;
-	LOG_info("PLAT_setCPUMaxFreq: %d kHz — guest mode, not applied\n", khz);
+	if (zero_owns_os()) {
+		putInt(MAXFREQ_PATH, khz);
+		LOG_info("PLAT_setCPUMaxFreq: %d kHz -> scaling_max_freq\n", khz);
+	}
+	else LOG_info("PLAT_setCPUMaxFreq: %d kHz — guest mode, not applied\n", khz);
 }
 
 void PLAT_setRumble(int strength) {
