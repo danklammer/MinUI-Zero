@@ -78,8 +78,11 @@ void SetRawVolume(int value) { // 0-100 percent of the sink
 	// system() forks-and-waits ~tens of ms — at ramp rate (~9 calls/s held) that starved the
 	// audio ring audibly (Dan: "glitchy sounding" while adjusting, 2026-08-05). The shell exits
 	// as soon as wpctl is spawned; last-writer-wins ordering is fine for a volume ramp.
-	char cmd[160];
-	snprintf(cmd, sizeof(cmd), WPCTL_ENV "wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%% >/dev/null 2>&1 &", value);
+	// unmute + set, the same pairing muOS pipewire.sh uses: its own restore paths can leave
+	// the sink MUTED (found live 2026-08-05 — "I do not hear audio": sink at 15% muted), and a
+	// volume button that cannot recover from mute is a support ticket
+	char cmd[220];
+	snprintf(cmd, sizeof(cmd), WPCTL_ENV "sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%%' >/dev/null 2>&1 &", value);
 	system(cmd);
 }
 

@@ -334,6 +334,30 @@ static void disp_shape_rect(int cx, int cy, int cw, int ch) {
 		vid.lcfg.info.screen_win.width, vid.lcfg.info.screen_win.height);
 }
 
+// The DE exposes its vsync IRQ count in the attr/sys dump; a commit latches at the NEXT
+// vblank. Writing into the other buffer before that latch means scribbling on the live
+// scanout (tear). disp_wait_latch parks until the count advances past the commit.
+static uint32_t disp_irq_now(void) {
+	static char buf[512];
+	FILE* f = fopen("/sys/class/disp/disp/attr/sys", "r");
+	if (!f) return 0;
+	uint32_t irq = 0;
+	while (fgets(buf, sizeof(buf) - 1, f)) {
+		char* m = strstr(buf, "irq:");
+		if (m && sscanf(m, "irq:%u", &irq) == 1) break;
+	}
+	fclose(f);
+	return irq;
+}
+static uint32_t disp_commit_irq;
+static void disp_wait_latch(void) {
+	if (!vid.use_disp || !disp_commit_irq) return;
+	for (int spins = 0; spins < 20; spins++) { // cap ~20ms: never wedge on a stalled counter
+		if (disp_irq_now() != disp_commit_irq) return;
+		usleep(1000);
+	}
+}
+
 static int disp_commit(int page) {
 	vid.lraw.dwords[8] = (uint32_t)vid.ion_fds[page];
 	// unsigned long args: the sunxi disp_ioctl copies FOUR LONGS from userspace. uint32_t
@@ -347,6 +371,7 @@ static int disp_commit(int page) {
 	ioctl(vid.dispfd, DISP_HWC_COMMIT, &cargs);
 	args[0] = 0; args[1] = 0; args[2] = 0; args[3] = 0;
 	ioctl(vid.dispfd, DISP_SHADOW_PROTECT, &args);
+	disp_commit_irq = disp_irq_now();
 	return ret;
 }
 
@@ -564,6 +589,7 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 void PLAT_blitRenderer(GFX_Renderer* renderer) {
 	vid.blit = renderer;
 	if (vid.use_disp) {
+		disp_wait_latch(); // the OTHER buffer may still be scanning until the last commit latches
 		// scale into the CACHED SDL surface exactly like the fbdev path — scaling straight
 		// into the write-combined ION mapping cost +24% of a core (54% vs 30%, measured:
 		// scale3x's per-pixel writes defeat write combining). The flip then streams just the
