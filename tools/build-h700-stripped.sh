@@ -62,6 +62,8 @@ sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
+# our wifi creds (the ROMS partition muOS kept them on is replaced by our fresh one)
+cp /a/wifi.conf "$R/etc/wpa_supplicant.conf" 2>/dev/null && echo "  wifi config baked"
 # ssh key for our access (muOS keeps its openssh sshd; drop our authorized_keys in root)
 mkdir -p "$R/root/.ssh"
 cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
