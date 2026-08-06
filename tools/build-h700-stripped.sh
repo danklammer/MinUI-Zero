@@ -64,6 +64,11 @@ cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
 # our wifi creds (the ROMS partition muOS kept them on is replaced by our fresh one)
 cp /a/wifi.conf "$R/etc/wpa_supplicant.conf" 2>/dev/null && echo "  wifi config baked"
+# FIX the ssh host-key perms: debugfs rdump + mke2fs -d reset them to 0755, and sshd refuses
+# world-readable private keys ("no hostkeys available -- exiting"). 600 = sshd starts on boot.
+chmod 700 "$R/opt/openssh" "$R/opt/openssh/etc" 2>/dev/null || true
+chmod 600 "$R/opt/openssh/etc/ssh_host_"*_key 2>/dev/null || true
+chmod 644 "$R/opt/openssh/etc/ssh_host_"*_key.pub 2>/dev/null || true
 # ssh key for our access (muOS keeps its openssh sshd; drop our authorized_keys in root)
 mkdir -p "$R/root/.ssh"
 cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
