@@ -603,8 +603,13 @@ void PLAT_setNearestNeighbor(int enabled) {}
 void PLAT_setSharpness(int sharpness) {}
 
 void PLAT_vsync(int remaining) {
-	// The pan blocks a full refresh already; only burn what pacing asks for beyond that.
-	if (remaining > 0) SDL_Delay(remaining);
+	// NO-OP: the DE-layer flip is vblank-SYNCHRONOUS (disp_wait_latch blocks a full refresh), so
+	// it IS the pacer. GFX_sync would ALSO sleep here to hit the frame budget — a SECOND pace on
+	// top of the flip's. That double-pace sleep lands inside the governor's frame-work window
+	// (startFrame->flip), inflating "work" to ~15ms for a Game Boy game and pinning the ceiling
+	// at max (the governor never sank — gov-gate p95=15402us/16672us BUSY, 2026-08-06). With the
+	// flip pacing and this a no-op, the work window is real CPU work and the closed loop can sink.
+	(void)remaining;
 }
 
 // Integer scaling + centering, the MMP pattern exactly: minarch computes the scale and dst rect;

@@ -7195,8 +7195,20 @@ int main(int argc , char* argv[]) {
 						int p95 = (int)gov_work[GOV_TICK_FRAMES - 2]; // ~93rd percentile of 30
 						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
 						int next = gov_sink_target(&gov_state, &gov_profile);
+#ifdef GOV_PLATFORM_H700
+						// GEN-RATE DESCENT (not the frame-work gate). On the DE-layer present the
+						// libretro core SELF-PACES to real time: core.run measures ~16.6ms wall for a
+						// GB game (only ~40%% CPU; the rest is the core's own throttle) so p95 "work"
+						// is ~15ms and the predictive gate reads BUSY forever, pinning the ceiling
+						// (measured 2026-08-06). Reaching this branch already means NOT slipping
+						// (fps_short/fps_gross are checked first), so the game is holding target ->
+						// probe one OPP down. fail-memory + presink-undo revert a step that slips.
+						(void)p95; (void)next; (void)budget_us;
+						frame_overrun = GOV_SIGNAL_SLACK;
+#else
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+#endif
 						{ // ZERO_GOV_DEBUG=1: periodic gate telemetry (why does/doesn't it sink?)
 							static int zgd = -1, zgd_n = 0;
 							if (zgd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zgd = (e && e[0] && e[0] != '0') ? 1 : 0; }
