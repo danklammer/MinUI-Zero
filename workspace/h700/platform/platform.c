@@ -154,17 +154,25 @@ void PLAT_pollInput(void) {
 			int btn, id;
 			ev_translate(ev.code, &btn, &id);
 			if (btn == BTN_NONE) continue;
+			// DEBOUNCE dual-code keys: MENU emits 354 AND 312 for one physical press. When the
+			// pair splits across polls, an unguarded handler set just_pressed twice — so closing
+			// the in-game menu instantly REOPENED it ("menu never closes", Dan 2026-08-05).
+			// Only a real edge (state actually changing) may set the just_* flags.
 			if (ev.value) {
-				pad.is_pressed    |= btn;
-				pad.just_pressed  |= btn;
-				pad.just_repeated |= btn; // CONTRACT: the initial press IS a repeat (api.c:1967);
-				                          // minui's list nav gates on justRepeated alone
-				pad.repeat_at[id] = tick + PAD_REPEAT_DELAY;
+				if (!(pad.is_pressed & btn)) {
+					pad.is_pressed    |= btn;
+					pad.just_pressed  |= btn;
+					pad.just_repeated |= btn; // CONTRACT: the initial press IS a repeat (api.c:1967);
+					                          // minui's list nav gates on justRepeated alone
+					pad.repeat_at[id] = tick + PAD_REPEAT_DELAY;
+				}
 			}
 			else {
-				pad.is_pressed    &= ~btn;
-				pad.just_repeated &= ~btn;
-				pad.just_released |= btn;
+				if (pad.is_pressed & btn) {
+					pad.is_pressed    &= ~btn;
+					pad.just_repeated &= ~btn;
+					pad.just_released |= btn;
+				}
 			}
 		}
 	}

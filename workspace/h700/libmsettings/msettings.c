@@ -74,8 +74,12 @@ void SetRawBrightness(int value) { // 0-255
 	dispdbg_cmd("setbl", buf);
 }
 void SetRawVolume(int value) { // 0-100 percent of the sink
+	// Backgrounded: SetVolume runs on the EMULATION thread (the input hook), and a synchronous
+	// system() forks-and-waits ~tens of ms — at ramp rate (~9 calls/s held) that starved the
+	// audio ring audibly (Dan: "glitchy sounding" while adjusting, 2026-08-05). The shell exits
+	// as soon as wpctl is spawned; last-writer-wins ordering is fine for a volume ramp.
 	char cmd[160];
-	snprintf(cmd, sizeof(cmd), WPCTL_ENV "wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%% >/dev/null 2>&1", value);
+	snprintf(cmd, sizeof(cmd), WPCTL_ENV "wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%% >/dev/null 2>&1 &", value);
 	system(cmd);
 }
 
