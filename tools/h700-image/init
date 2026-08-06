@@ -71,13 +71,17 @@ if [ -x /usr/sbin/dropbearmulti ]; then
 	log "dropbear started"
 fi
 
+# background syncer: minui logs stream STRAIGHT to the FAT partition, so even a HANG leaves
+# its trace readable on a Mac (flash test 3: minui hung, and its tmpfs log died with the power)
+( while : ; do sync; sleep 2; done ) &
+
 # the launch loop IS the OS. Crashes and quits both land back in minui; a broken minui parks
 # with logs flushed instead of powering off.
 cd /tmp
 FAILS=0
 while : ; do
 	rm -f /tmp/next
-	"$M" > /tmp/minui.log 2>&1
+	"$M" > /mnt/log/minui-live.log 2>&1
 	RC=$?
 	if [ -f /tmp/next ]; then
 		FAILS=0
@@ -87,7 +91,7 @@ while : ; do
 	else
 		FAILS=$((FAILS+1))
 		log "minui exited rc=$RC (fail $FAILS); tail:"
-		tail -20 /tmp/minui.log >> "$LOG" 2>/dev/null
+		tail -20 /mnt/log/minui-live.log >> "$LOG" 2>/dev/null
 		sync
 		if [ $FAILS -ge 3 ]; then
 			log "minui failing repeatedly — parking with logs flushed (pull the card to read p2)"
