@@ -53,6 +53,16 @@ const GovProfile GOV_P_8BIT    = {  400000, 1200000 }; // GB/GBC/NES/SMS/GG/PCE 
 const GovProfile GOV_P_16BIT   = {  600000, 1200000 }; // SNES/Genesis/GBA/VB
 const GovProfile GOV_P_PS1     = { 1000000, 1200000 }; // PS1 is clock-bound on a dual-A7
 const GovProfile GOV_P_DEFAULT = {  600000, 1200000 };
+#elif defined(GOV_PLATFORM_H700)
+// h700 / Allwinner H700 (RG35XX Plus/H). OPP table READ from the device 2026-08-06:
+//   480 720 936 1008 1104 1200 1320 1416 1512 MHz (1512 = cpuinfo_max_freq, the stock cap; no OC).
+// schedutil available, so the commanded value is a CEILING and schedutil idles beneath it. f_max
+// gives the closed loop room; f_min is a real floor. The ACTUAL floor each system reaches is
+// discovered on-device by the loop (sink while frames hold, restore on slip) — not guessed here.
+const GovProfile GOV_P_8BIT    = {  480000, 1008000 }; // GB/GBC/NES/SMS/GG/PCE — sink toward 480
+const GovProfile GOV_P_16BIT   = {  480000, 1416000 }; // SNES/Genesis/GBA/VB
+const GovProfile GOV_P_PS1     = {  720000, 1512000 }; // PS1 heaviest — full stock cap available
+const GovProfile GOV_P_DEFAULT = {  480000, 1512000 };
 #else
 const GovProfile GOV_P_8BIT   = { 1008000, 1008000 }; // schedutil still idles below this; the ceiling preserves short GLES bursts
 const GovProfile GOV_P_16BIT  = {  600000, 1416000 }; // MEASURED: 1416 is a real OPP (1320 was not)
