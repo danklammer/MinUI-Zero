@@ -29,7 +29,10 @@ echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/nu
 log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
 
 mkdir -p /mnt/mmc
-mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null && log "p6 mounted" || log "p6 MOUNT FAILED"
+# p6 is FAT32 (readable on any PC): try vfat explicitly, fall back to auto
+mount -t vfat -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null \
+	|| mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null
+mountpoint -q /mnt/mmc && log "p6 mounted (fat)" || log "p6 MOUNT FAILED"
 
 # poweroff the RG the way muOS does: AXP PMIC register (plain poweroff just REBOOTS on this board)
 power_off() {

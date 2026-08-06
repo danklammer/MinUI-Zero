@@ -33,7 +33,7 @@ P5_FIRST=319488
 P5_SECTORS=131072       # 64MB rootfs partition
 P5_LAST=$((P5_FIRST + P5_SECTORS - 1))
 P6_FIRST=$((P5_LAST + 1))
-P6_SECTORS=262144       # 128MB roms partition (boot-test size; first-boot expansion is v2)
+P6_SECTORS=524288       # 256MB roms partition (FAT32; first-boot expansion to fill card is v2)
 P6_LAST=$((P6_FIRST + P6_SECTORS - 1))
 TOTAL=$((P6_LAST + 40)) # + backup GPT tail
 
@@ -102,15 +102,28 @@ echo "== filesystems (container: mke2fs -d, no loop mounts) =="
 # generated during archiving, so --exclude alone cannot catch them (first build shipped ._init)
 COPYFILE_DISABLE=1 tar c -C "$STAGE/rootfs" --exclude '.DS_Store' --exclude '._*' . > "$OUT_DIR/rootfs.tar"
 COPYFILE_DISABLE=1 tar c -C "$STAGE/card"   --exclude '.DS_Store' --exclude '._*' . > "$OUT_DIR/card.tar"
+# p5 (rootfs) stays ext4 — Linux root needs symlinks/perms/devnodes FAT cannot hold.
 docker run --rm --platform linux/amd64 -v "$ASSETS:/a" tg5040-toolchain /bin/bash -c "
 	set -e
-	mkdir -p /tmp/rootfs /tmp/card
+	mkdir -p /tmp/rootfs
 	tar x -C /tmp/rootfs -f /a/out/rootfs.tar
-	tar x -C /tmp/card   -f /a/out/card.tar
 	mke2fs -q -F -t ext4 -d /tmp/rootfs -L rootfs /a/out/p5.img $((P5_SECTORS / 2))k
-	mke2fs -q -F -t ext4 -d /tmp/card   -L roms   /a/out/p6.img $(( (P6_LAST - P6_FIRST + 1) / 2 ))k
 "
-rm -f "$OUT_DIR/rootfs.tar" "$OUT_DIR/card.tar"
+rm -f "$OUT_DIR/rootfs.tar"
+
+# p6 (ROMS + logs) is FAT32 via mtools — no mount, no privileges — so the card reads on any PC:
+# logs become visible by just inserting the card (no dd), and ROMs are addable from a computer,
+# which a shippable firmware needs. mtools populates a raw image file directly (mcopy -s tree).
+MT=/opt/homebrew/bin
+rm -f "$ASSETS/out/p6.img"
+dd if=/dev/zero of="$ASSETS/out/p6.img" bs=512 count=$P6_SECTORS status=none
+"$MT/mformat" -i "$ASSETS/out/p6.img" -F -v ROMS ::
+# copy each top-level entry of the staged card into the FAT root (mcopy -s = recursive)
+for entry in "$STAGE/card"/* "$STAGE/card"/.[!.]*; do
+	[ -e "$entry" ] || continue
+	COPYFILE_DISABLE=1 "$MT/mcopy" -i "$ASSETS/out/p6.img" -s -Q "$entry" :: 2>/dev/null || \
+		"$MT/mcopy" -i "$ASSETS/out/p6.img" -s "$entry" ::
+done
 
 echo "== assemble =="
 rm -f "$IMG"
