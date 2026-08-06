@@ -50,6 +50,10 @@ export BIOS_PATH=/mnt/mmc/Bios
 export CORES_PATH=/mnt/mmc/.system/h700/cores
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
 export SDL_AUDIODRIVER=alsa
+# dummy video: our present path is the DE layer, SDL video is unused — and SDL real video
+# drivers dlopen libudev (absent on this rootfs) and SEGFAULT (flash test 2 breadcrumbs,
+# rc=139 with "Failed loading libudev.so.0"). The dummy driver needs nothing and crashes never.
+export SDL_VIDEODRIVER=dummy
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui"
 
 M="$SYSTEM_PATH/bin/minui.elf"
