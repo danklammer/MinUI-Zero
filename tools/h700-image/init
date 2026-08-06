@@ -3,6 +3,11 @@
 # The muOS-derived ramdisk switch_roots here after mounting p5 (see the extracted ramdisk init:
 # `[ -x /mnt/init ] && exec switch_root /mnt /init`). /dev arrives populated (moved from the
 # ramdisk's devtmpfs).
+#
+# DEBUGGABILITY RULES (v2, after the first flash test powered straight off and took its logs
+# with it): every step breadcrumbs to p2 — the FAT partition a Mac can read — and failure NEVER
+# powers off; it parks with the logs flushed. v1's "minui exited => poweroff" made a boot
+# failure indistinguishable from a power fault.
 
 /bin/busybox --install -s /bin 2>/dev/null
 
@@ -13,14 +18,26 @@ mount -t devpts devpts /dev/pts 2>/dev/null
 mount -t tmpfs tmpfs /tmp 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
 
-echo "MinUI Zero h700" > /dev/kmsg 2>/dev/null
+# breadcrumb log on the Mac-readable FAT partition
+mkdir -p /mnt/log
+mount /dev/mmcblk0p2 /mnt/log 2>/dev/null
+LOG=/mnt/log/minui-zero-boot.log
+log() {
+	echo "[$(cut -d" " -f1 /proc/uptime 2>/dev/null)] $*" >> "$LOG" 2>/dev/null
+	sync
+}
+: > "$LOG" 2>/dev/null
+log "MinUI Zero h700 init"
 
-# THE THESIS, NOW REAL: schedutil under our ceiling writer (no host to defer to)
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
+log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
 
-# ROM/data partition (p6, ext4 in v1 — see PLAN.md; FAT/exFAT arrives with proper tooling)
 mkdir -p /mnt/mmc
-mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null
+if mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null; then
+	log "p6 mounted"
+else
+	log "p6 MOUNT FAILED"
+fi
 
 export PLATFORM=h700
 export SDCARD_PATH=/mnt/mmc
@@ -33,27 +50,45 @@ export BIOS_PATH=/mnt/mmc/Bios
 export CORES_PATH=/mnt/mmc/.system/h700/cores
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
 export SDL_AUDIODRIVER=alsa
-# no pipewire on this image: alsa-lib "default" goes to the codec directly
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui"
 
-# ssh (our dropbear, host keys generated on first boot) — wifi itself is v2
+M="$SYSTEM_PATH/bin/minui.elf"
+if [ -x "$M" ]; then
+	log "minui present: $(ls -la "$M" 2>/dev/null)"
+	log "loader check: $(LD_TRACE_LOADED_OBJECTS=1 "$M" 2>&1 | grep "not found" | tr "\n" ";")"
+else
+	log "minui MISSING at $M; p6 root: $(ls /mnt/mmc 2>/dev/null | tr "\n" " ")"
+fi
+
 if [ -x /usr/sbin/dropbearmulti ]; then
 	mkdir -p /etc/dropbear
 	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
 	/usr/sbin/dropbearmulti dropbear -R 2>/dev/null
+	log "dropbear started"
 fi
 
-# the launch loop IS the OS
+# the launch loop IS the OS. Crashes and quits both land back in minui; a broken minui parks
+# with logs flushed instead of powering off.
 cd /tmp
+FAILS=0
 while : ; do
 	rm -f /tmp/next
-	"$SYSTEM_PATH/bin/minui.elf" > /tmp/minui.log 2>&1
+	"$M" > /tmp/minui.log 2>&1
+	RC=$?
 	if [ -f /tmp/next ]; then
+		FAILS=0
 		CMD=$(cat /tmp/next)
+		log "launch: $CMD"
 		sh -c "$CMD"
 	else
-		# minui asked to power off (or crashed): sync and shut down cleanly
+		FAILS=$((FAILS+1))
+		log "minui exited rc=$RC (fail $FAILS); tail:"
+		tail -20 /tmp/minui.log >> "$LOG" 2>/dev/null
 		sync
-		poweroff -f
+		if [ $FAILS -ge 3 ]; then
+			log "minui failing repeatedly — parking with logs flushed (pull the card to read p2)"
+			while : ; do sleep 60; done
+		fi
+		sleep 2
 	fi
 done
