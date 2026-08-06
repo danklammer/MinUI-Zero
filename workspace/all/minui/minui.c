@@ -1674,15 +1674,20 @@ int main (int argc, char *argv[]) {
 			
 			if (show_version) {
 				if (!version) {
-					char release[256];
+					char release[256] = {0};
 					getFile(ROOT_SYSTEM_PATH "/version.txt", release, 256);
-					
-					char *tmp,*commit;
-					commit = strrchr(release, '\n');
-					commit[0] = '\0';
-					commit = strrchr(release, '\n')+1;
-					tmp = strchr(release, '\n');
-					tmp[0] = '\0';
+
+					char *commit;
+					// version.txt is "release\ncommit\n". A MISSING or malformed file (no newline)
+					// made strrchr return NULL and the next deref crashed minui — pressing MENU on
+					// the home screen looked like a no-op because minui died + respawned (h700, no
+					// version.txt shipped, 2026-08-06). Guard every strrchr/strchr.
+					char* nl = strrchr(release, '\n'); // trailing newline
+					if (!nl) { strcpy(release, "unknown\n?\n"); nl = strrchr(release, '\n'); }
+					nl[0] = '\0';                      // strip the trailing newline
+					char* mid = strrchr(release, '\n');// the newline between release and commit
+					commit = mid ? mid + 1 : "?";      // commit = the second line
+					if (mid) mid[0] = '\0';            // strip -> release = the first line
 					
 					// TODO: not sure if I want bare PLAT_* calls here
 					char* extra_key = "Model";

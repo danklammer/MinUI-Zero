@@ -91,6 +91,9 @@ cp "$REPO/workspace/h700/libmsettings/libmsettings.so"  "$STAGE/.system/h700/lib
 cp "$REPO"/workspace/tg5040/cores/output/*.so           "$STAGE/.system/h700/cores/"
 cp "$REPO"/skeleton/SYSTEM/res/*                        "$STAGE/.system/res/"
 cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/paks"
+# version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
+# file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
+printf 'MinUI Zero (%s)\n%s\n' "$(date +%Y%m%d)" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
 [ -n "$H700_TEST_ROM" ] && [ -f "$H700_TEST_ROM" ] && cp "$H700_TEST_ROM" "$STAGE/Roms/Game Boy Color (GBC)/"
 
 cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
