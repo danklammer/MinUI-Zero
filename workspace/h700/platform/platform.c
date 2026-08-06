@@ -402,6 +402,18 @@ static int disp_open(void) {
 		if (vid.ionmmap[i] == MAP_FAILED) { LOG_info("disp: ION mmap %d failed\n", i); return -1; }
 		memset(vid.ionmmap[i], 0, vid.ion_bytes);
 	}
+	// On a VIRGIN boot (our own image) nobody has bound the display engine to the LCD yet —
+	// commits go nowhere and the U-Boot logo just stays (flash test 4 receipts: minui ran
+	// perfectly, screen never changed). muOS had always done this before we ran as a guest.
+	// MyMinUI (image-native) makes exactly this call at init. Guests must NOT: the switch
+	// bounces the host pipeline.
+	if (!exists("/opt/muos")) {
+		unsigned long sw[4] = { 0, DISP_OUTPUT_TYPE_LCD, 0, 0 };
+		if (ioctl(vid.dispfd, DISP_DEVICE_SWITCH, &sw) < 0)
+			LOG_info("disp: DEVICE_SWITCH to LCD failed (%s)\n", strerror(errno));
+		else
+			LOG_info("disp: output switched to LCD (image boot)\n");
+	}
 	disp_layer_off(); // clear any stale layer a crashed predecessor left behind
 	return 0;
 }
