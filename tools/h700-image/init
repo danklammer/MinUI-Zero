@@ -1,0 +1,59 @@
+#!/bin/sh
+# MinUI Zero h700 — PID 1. The whole OS: mount, governor, then the launch loop.
+# The muOS-derived ramdisk switch_roots here after mounting p5 (see the extracted ramdisk init:
+# `[ -x /mnt/init ] && exec switch_root /mnt /init`). /dev arrives populated (moved from the
+# ramdisk's devtmpfs).
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null   # dispdbg brightness lives here
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /tmp 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+
+echo "MinUI Zero h700" > /dev/kmsg 2>/dev/null
+
+# THE THESIS, NOW REAL: schedutil under our ceiling writer (no host to defer to)
+echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
+
+# ROM/data partition (p6, ext4 in v1 — see PLAN.md; FAT/exFAT arrives with proper tooling)
+mkdir -p /mnt/mmc
+mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null
+
+export PLATFORM=h700
+export SDCARD_PATH=/mnt/mmc
+export SYSTEM_PATH=/mnt/mmc/.system/h700
+export USERDATA_PATH=/mnt/mmc/.userdata/h700
+export LOGS_PATH=/mnt/mmc/.userdata/h700/logs
+export SHARED_USERDATA_PATH=/mnt/mmc/.userdata/shared
+export SAVES_PATH=/mnt/mmc/Saves
+export BIOS_PATH=/mnt/mmc/Bios
+export CORES_PATH=/mnt/mmc/.system/h700/cores
+export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
+export SDL_AUDIODRIVER=alsa
+# no pipewire on this image: alsa-lib "default" goes to the codec directly
+mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui"
+
+# ssh (our dropbear, host keys generated on first boot) — wifi itself is v2
+if [ -x /usr/sbin/dropbearmulti ]; then
+	mkdir -p /etc/dropbear
+	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
+	/usr/sbin/dropbearmulti dropbear -R 2>/dev/null
+fi
+
+# the launch loop IS the OS
+cd /tmp
+while : ; do
+	rm -f /tmp/next
+	"$SYSTEM_PATH/bin/minui.elf" > /tmp/minui.log 2>&1
+	if [ -f /tmp/next ]; then
+		CMD=$(cat /tmp/next)
+		sh -c "$CMD"
+	else
+		# minui asked to power off (or crashed): sync and shut down cleanly
+		sync
+		poweroff -f
+	fi
+done
