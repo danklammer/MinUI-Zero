@@ -1,0 +1,11 @@
+#!/bin/sh
+# minimal busybox udhcpc binder
+case "$1" in
+	bound|renew)
+		ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+		[ -n "$router" ] && route add default gw $router dev "$interface" 2>/dev/null
+		[ -n "$dns" ] && { for d in $dns; do echo "nameserver $d"; done > /etc/resolv.conf; }
+		;;
+	deconfig) ifconfig "$interface" 0.0.0.0 ;;
+esac
+exit 0

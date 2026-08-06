@@ -57,6 +57,13 @@ tar xzf "$ASSETS/alsa-wifi-ssh.tar.gz" -C "$R"            # /usr/share/alsa + wp
 tar xzf "$ASSETS/wifi-libs.tar.gz" -C "$R"                # libnl/ssl/crypto for wpa_supplicant
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti" "$R/usr/sbin/dropbearmulti"
 cp "$REPO/tools/h700-image/init" "$R/init"
+cp "$REPO/tools/h700-image/udhcpc.script" "$R/etc/udhcpc.script"
+chmod +x "$R/etc/udhcpc.script"
+# WiFi credentials: OPTIONAL, never in git — drop a wpa_supplicant.conf in the assets dir
+if [ -f "$ASSETS/wifi.conf" ]; then
+	cp "$ASSETS/wifi.conf" "$R/etc/wpa_supplicant.conf"
+	echo "   wifi config aboard"
+fi
 chmod +x "$R/init" "$R/usr/sbin/dropbearmulti" "$R/bin/busybox" 2>/dev/null || true
 ln -sf busybox "$R/bin/sh"
 echo "root::0:0:root:/:/bin/sh" > "$R/etc/passwd"   # empty password, dropbear -R accepts

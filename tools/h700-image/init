@@ -66,6 +66,18 @@ else
 	log "minui MISSING at $M; p6 root: $(ls /mnt/mmc 2>/dev/null | tr "\n" " ")"
 fi
 
+# WiFi: driver-level power-save OFF via module params — the RTL8821CS drops inbound unicast
+# under powersave (the whole muOS-era deafness saga); rtw_power_mgnt=0 kills it at the source
+if [ -f /etc/wpa_supplicant.conf ]; then
+	insmod /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko rtw_power_mgnt=0 rtw_ips_mode=0 2>/dev/null
+	( sleep 2
+	  /usr/sbin/wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf >/dev/null 2>&1
+	  udhcpc -i wlan0 -s /etc/udhcpc.script -b -q >/dev/null 2>&1
+	  log "wifi: $(ip addr show wlan0 2>/dev/null | grep "inet " | tr -s " ")"
+	) &
+	log "wifi bring-up started"
+fi
+
 if [ -x /usr/sbin/dropbearmulti ]; then
 	mkdir -p /etc/dropbear
 	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
@@ -108,6 +120,12 @@ while : ; do
 		# game logs live on p6 (ext4, Mac-unreadable) — mirror them to the FAT for debugging
 		cp "$LOGS_PATH"/*.txt /mnt/log/ 2>/dev/null
 		sync
+	elif [ "$RC" = "0" ]; then
+		# clean exit with no queued game = the user chose Power Off (PLAT_powerOff is exit 0).
+		# Flash test 8: "Powering off..." bounced back to the menu because init restarted it.
+		log "clean exit — powering off"
+		sync
+		poweroff -f
 	else
 		FAILS=$((FAILS+1))
 		log "minui exited rc=$RC (fail $FAILS); tail:"
