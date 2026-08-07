@@ -17,19 +17,21 @@ export SAVES_PATH=/mnt/mmc/Saves
 export BIOS_PATH=/mnt/mmc/Bios
 export CORES_PATH=/mnt/mmc/.system/h700/cores
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
-# audio: muOS's pipewire is still running (kept), so the pak launchers' pipewire env applies —
-# the exact working path from the hosted-dev loop.
+# audio: pipewire is REMOVED (build-h700-stripped.sh). startup.sh's trimmed pipewire.sh does the
+# codec init (alsactl restore) at boot; ALSA routes default->hw directly (asound.conf); minui and
+# the emu paks use SDL_AUDIODRIVER=alsa. Nothing audio-related to do here.
 export SDL_VIDEODRIVER=dummy
 
 LOG=/mnt/mmc/minui-zero.log
 : > "$LOG" 2>/dev/null
 echo "MinUI Zero frontend $(date 2>/dev/null)" >> "$LOG"
 
-# EFFICIENCY: kill muOS UI daemons that just loop + burn idle wakeups (against the thesis).
-# minui owns input/battery/power itself; these were part of the frontend/theme stack we stripped.
-for svc in lowpower.sh keepalive.sh muhotkey activity.sh; do
-	for pid in $(ps | grep "[/ ]$svc" | awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
-done
+# NOTE: an "efficiency" kill of muOS idle daemons (lowpower/keepalive/muhotkey/activity) lived here
+# but was removed (2026-08-06). It was an UNMEASURED optimization — the thesis is "earn it by
+# measurement," and this was vibes ("loops burn wakeups") without a wakeup receipt or a per-service
+# safety check. keepalive.sh in particular is a plausible network keepalive, and a device that boots
+# then drops wifi (seen live) is a far worse outcome than a few shell-loop wakeups. Revisit only with
+# a measured per-service wakeup cost + a proven-safe-to-kill check, one service at a time.
 
 # THE THESIS: own the governor. schedutil + our minui/minarch write the ceiling on top.
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
