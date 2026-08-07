@@ -1,10 +1,10 @@
-// h700 msettings — HOSTED-DEV GUEST stubs (moved verbatim from platform.c when the makefile
-// wiring landed; the shared minui/minarch makefiles link -lmsettings on every platform).
+// h700 msettings — device settings (moved verbatim from platform.c when the makefile wiring
+// landed; the shared minui/minarch makefiles link -lmsettings on every platform).
 //
-// muOS owns audio and brightness while we run as a guest: its pipewire holds the volume, so
-// SetVolume is a no-op until we own the image (or talk to pipewire ourselves — see
-// README-BRINGUP.md "Order of work"). Brightness passes through the backlight sysfs when present.
-// This library is standalone by design (no utils.c), so it carries its own tiny sysfs helpers.
+// On the MinUI Zero image we OWN the codec and panel: volume drives the ALSA 'digital volume'
+// mixer directly (amixer, see SetRawVolume — pipewire is removed), brightness the Allwinner
+// dispdbg debugfs. This library is standalone by design (no utils.c), so it carries its own
+// tiny sysfs/mixer helpers.
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -32,21 +32,30 @@ static void dispdbg_cmd(const char* cmd, const char* param) {
 	putStr(DISPDBG "start", "1");
 }
 
-// Volume goes through pipewire's default sink — EXACTLY the mechanism muOS itself uses
-// (/opt/muos/script/system/pipewire.sh: `wpctl set-volume @DEFAULT_AUDIO_SINK@ N%`). As a guest
-// this is the polite lane: wireplumber owns the codec mixer; poking amixer under it invites the
-// Brick's digital-volume-table saga (D33: Allwinner codec dB tables are garbage — 'digital
-// volume' here reports 41214.60dB). The env is embedded because minui runs from session.sh,
-// which does not carry the pipewire socket vars the pak launchers export.
-#define WPCTL_ENV "XDG_RUNTIME_DIR=/run PIPEWIRE_RUNTIME_DIR=/run "
+// Volume drives the codec's 'digital volume' mixer directly via amixer (raw 0-63). MinUI Zero
+// removes pipewire — a headless rootfs can't autolaunch its D-Bus session bus so it never starts,
+// and it is 9.5MB of idle weight against the thesis — so the old wpctl-on-the-sink path is gone.
+// We OWN the codec now, so poking amixer is the right lane, not the D33 hazard it was under
+// wireplumber. This control's dB TLV is garbage (D33: reports tens of thousands of dB), so we
+// IGNORE it and map the RAW integer, which is linear and higher=louder (MEASURED 2026-08-06 on
+// this H700 codec: raw 40 = 63%, raw 10 = 16% — NOT reversed like the A133P Brick).
+#define VOL_CTL "digital volume"
+#define VOL_RAW_MAX 63
 
 static int cur_vol = -1; // 0-20 UI scale; -1 = not yet read
 
 void InitSettings(void) {
-	FILE* p = popen(WPCTL_ENV "wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
+	// Read the codec's current raw level (set at boot by pipewire.sh's alsactl restore) back to UI.
+	FILE* p = popen("amixer -c 0 sget '" VOL_CTL "' 2>/dev/null", "r");
 	if (p) {
-		float v = 0;
-		if (fscanf(p, "Volume: %f", &v) == 1) cur_vol = (int)(v * 20.0f + 0.5f);
+		char line[256];
+		while (fgets(line, sizeof(line), p)) {
+			int raw = 0;
+			if (sscanf(line, " Mono: %d", &raw) == 1) {
+				cur_vol = (raw * 20 + VOL_RAW_MAX / 2) / VOL_RAW_MAX;
+				break;
+			}
+		}
 		pclose(p);
 	}
 	if (cur_vol < 0) cur_vol = 10;
@@ -73,16 +82,16 @@ void SetRawBrightness(int value) { // 0-255
 	snprintf(buf, sizeof(buf), "%d", value);
 	dispdbg_cmd("setbl", buf);
 }
-void SetRawVolume(int value) { // 0-100 percent of the sink
+void SetRawVolume(int value) { // 0-100 (SetVolume passes UI*5); MUTE_VOLUME_RAW (0) mutes
 	// Backgrounded: SetVolume runs on the EMULATION thread (the input hook), and a synchronous
 	// system() forks-and-waits ~tens of ms — at ramp rate (~9 calls/s held) that starved the
 	// audio ring audibly (Dan: "glitchy sounding" while adjusting, 2026-08-05). The shell exits
-	// as soon as wpctl is spawned; last-writer-wins ordering is fine for a volume ramp.
-	// unmute + set, the same pairing muOS pipewire.sh uses: its own restore paths can leave
-	// the sink MUTED (found live 2026-08-05 — "I do not hear audio": sink at 15% muted), and a
-	// volume button that cannot recover from mute is a support ticket
-	char cmd[220];
-	snprintf(cmd, sizeof(cmd), WPCTL_ENV "sh -c 'wpctl set-mute @DEFAULT_AUDIO_SINK@ 0; wpctl set-volume @DEFAULT_AUDIO_SINK@ %d%%' >/dev/null 2>&1 &", value);
+	// as soon as amixer is spawned; last-writer-wins ordering is fine for a volume ramp.
+	if (value < 0) value = 0;
+	if (value > 100) value = 100;
+	int raw = (value * VOL_RAW_MAX + 50) / 100; // 0-100 -> 0-63 raw, rounded
+	char cmd[160];
+	snprintf(cmd, sizeof(cmd), "amixer -c 0 sset '" VOL_CTL "' %d >/dev/null 2>&1 &", raw);
 	system(cmd);
 }
 

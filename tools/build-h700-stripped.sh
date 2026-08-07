@@ -59,8 +59,16 @@ rm -f "$R/usr/lib/libmali.so"
 rm -f "$R/usr/lib/libicudata.so."* "$R/usr/lib/libicui18n.so."* "$R/usr/lib/libicuuc.so."*
 rm -f "$R/usr/lib/libMagickCore-"* "$R/usr/lib/libMagickWand-"* "$R/usr/bin/magick"* "$R/usr/bin/convert" 2>/dev/null || true
 rm -f "$R/usr/lib/libzmusic.so."* "$R/usr/lib/liblcf.so."*
+# Audio daemon (9.5MB): pipewire/wireplumber cannot autolaunch a D-Bus session bus on this headless
+# rootfs (no X11/DISPLAY) so they never start, and stripping /opt/muos/share below removes their
+# config anyway. MinUI Zero routes ALSA straight to the codec instead (asound.conf, added below).
+# Only the pipewire tools themselves link libpipewire, and SDL uses the alsa driver — VERIFIED safe.
+rm -rf "$R/usr/bin/pipewire"* "$R/usr/bin/wireplumber" "$R/usr/bin/pw-"* \
+       "$R/usr/lib/libpipewire-0.3.so."* "$R/usr/lib/libwireplumber-0.4.so."* \
+       "$R/usr/lib/spa-0.2" "$R/usr/lib/pipewire-0.3" "$R/usr/lib/wireplumber-0.4" \
+       "$R/usr/lib/alsa-lib/libasound_module_pcm_pipewire.so" 2>/dev/null || true
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
-#       udev, wifi stack, openssh, SDL, kernel modules, libmali (SDL may dlopen it)
+#       udev, wifi stack, openssh, SDL, kernel modules, alsa-utils (amixer/alsactl for audio)
 
 echo "  swapping FRONTEND -> minui in startup.sh..."
 SU="$R/opt/muos/script/system/startup.sh"
@@ -81,6 +89,34 @@ chmod 644 "$R/opt/openssh/etc/ssh_host_"*_key.pub 2>/dev/null || true
 mkdir -p "$R/root/.ssh"
 cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
 chmod 700 "$R/root/.ssh" 2>/dev/null || true
+
+echo "  wiring ALSA-direct audio (pipewire removed)..."
+# Route the default ALSA PCM straight to the codec (plug = auto rate/format/channel convert),
+# replacing the muOS default->pipewire routing. Survives boot: pipewire.sh RESTORE_CONF copies
+# from /opt/muos/share/conf (stripped), finds no source, and leaves this file untouched.
+cat > "$R/etc/asound.conf" <<"ASOUND"
+pcm.!default {
+    type plug
+    slave.pcm "hw:0,0"
+}
+ctl.!default {
+    type hw
+    card 0
+}
+ASOUND
+# Trim pipewire.sh (startup.sh still runs it at boot) to the ONE thing still needed: restoring the
+# codec mixer state (unmute + output routing) from asound.state under /opt/muos/device (kept).
+# Drops the pipewire daemon start and the wpctl finalise, whose ~6-9s of timeouts would otherwise
+# stall every boot now. minui volume then drives the digital-volume mixer directly (libmsettings).
+cat > "$R/opt/muos/script/system/pipewire.sh" <<"PWSH"
+#!/bin/sh
+# MinUI Zero: pipewire removed; keep only the codec init startup.sh needs at boot.
+case "$1" in
+start) alsactl -U -f /opt/muos/device/control/asound.state restore 2>/dev/null ;;
+esac
+exit 0
+PWSH
+chmod +x "$R/opt/muos/script/system/pipewire.sh"
 
 echo "  stripped rootfs size: $(du -sh $R | cut -f1)"
 echo "  building lean p5 (${P5_KB}k)..."

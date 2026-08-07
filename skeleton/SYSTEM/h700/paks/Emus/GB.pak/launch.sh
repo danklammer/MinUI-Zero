@@ -1,5 +1,5 @@
 #!/bin/sh
-# h700 GB/GBC pak — hosted-dev. minarch + gambatte, measured panel rate, pipewire audio route.
+# h700 GB/GBC pak — hosted-dev. minarch + gambatte, measured panel rate, ALSA-direct audio.
 EMU_TAG=$(basename "$(dirname "$0")" .pak)
 ROM="$1"
 
@@ -16,11 +16,9 @@ export CORES_PATH="$SYSTEM_PATH/cores"
 export LD_LIBRARY_PATH="$SYSTEM_PATH/lib:$LD_LIBRARY_PATH"
 # Panel measured 59.9777 Hz (panelprobe 2026-08-04)
 export MINARCH_PANEL_FPS=59.9777
-# muOS's pipewire owns the audio hardware; ALSA "default" routes to it via the pipewire plugin,
-# which needs the socket dir. Without these SDL_OpenAudio fails "Host is down". Verified working
-# 2026-08-05 (32768Hz stream opened).
-export XDG_RUNTIME_DIR=/run
-export PIPEWIRE_RUNTIME_DIR=/run
+# ALSA-direct audio (pipewire removed): SDL's alsa backend opens "default", which asound.conf
+# routes straight to the codec (plug -> hw:0,0). The codec is unmuted/routed at boot by the
+# trimmed pipewire.sh (alsactl restore); minui drives the digital-volume mixer.
 export SDL_AUDIODRIVER=alsa
 
 mkdir -p "$LOGS_PATH" "$SAVES_PATH/$EMU_TAG" "$SHARED_USERDATA_PATH/.minui"
