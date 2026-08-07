@@ -62,12 +62,11 @@ WIFI_TXT=/mnt/mmc/wifi.txt
 			printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n\tscan_ssid=1\n\tfreq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472\n}\n' "$SSID" "$PSK" > /etc/wpa_supplicant.conf
 			ifconfig wlan0 up 2>/dev/null
 			iw dev wlan0 set power_save off 2>/dev/null
-			# The RTL8821CS drops the link ~20s after boot when idle: rtw_ips_mode (Inactivity
-			# Power Save) powers the radio down, and `iw power_save off` only touches 802.11 LPS,
-			# not IPS. Disable IPS + LPS at the driver (writable at runtime, VERIFIED 2026-08-07;
-			# guarded 2>/dev/null so it's a no-op on units with a different wifi chip).
-			echo 0 > /sys/module/8821cs/parameters/rtw_ips_mode 2>/dev/null
-			echo 0 > /sys/module/8821cs/parameters/rtw_lps_level 2>/dev/null
+			# NOTE: the RTL8821CS drops idle links after ~20s (driver IPS). We deliberately do NOT
+			# fight that here — forcing the radio always-on (keepalive traffic or rtw_ips_mode=0)
+			# burns idle battery, which is exactly backwards for this fork, and this device is
+			# offline-first anyway (wifi is opt-in via wifi.txt). Reliable ssh is a DEV concern, so
+			# a dev keeps a host-side keepalive during a session; the shipped image stays efficient.
 			killall wpa_supplicant 2>/dev/null; sleep 1
 			mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
 			wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
