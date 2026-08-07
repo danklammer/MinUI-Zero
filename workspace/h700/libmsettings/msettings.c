@@ -7,6 +7,7 @@
 // tiny sysfs/mixer helpers.
 #include <stdio.h>
 #include <stdlib.h>
+#include <alsa/asoundlib.h>
 
 #include "msettings.h"
 
@@ -32,36 +33,58 @@ static void dispdbg_cmd(const char* cmd, const char* param) {
 	putStr(DISPDBG "start", "1");
 }
 
-// Volume drives the codec's 'digital volume' mixer directly via amixer (raw 0-63). MinUI Zero
-// removes pipewire — a headless rootfs can't autolaunch its D-Bus session bus so it never starts,
-// and it is 9.5MB of idle weight against the thesis — so the old wpctl-on-the-sink path is gone.
-// We OWN the codec now, so poking amixer is the right lane, not the D33 hazard it was under
-// wireplumber. This control's dB TLV is garbage (D33: reports tens of thousands of dB), so we
-// IGNORE it and map the RAW integer, which is linear and higher=louder (MEASURED 2026-08-06 on
-// this H700 codec: raw 40 = 63%, raw 10 = 16% — NOT reversed like the A133P Brick).
+// Volume drives the codec's 'digital volume' mixer via libasound in-process (snd_mixer), NOT a
+// forked amixer. MinUI Zero removes pipewire — a headless rootfs can't autolaunch its D-Bus session
+// bus so it never starts, and it is 9.5MB of idle weight against the thesis — so the old
+// wpctl-on-the-sink path is gone. We OWN the codec now. An earlier version shelled out to `amixer &`
+// per keypress; that forked ~9x/s on a held ramp with no ordering guarantee (Codex-confirmed race:
+// a late-completing process could leave the level a step off). In-process is synchronous, ordered,
+// and fork-free — no race and no audio-ring stall. This control's dB TLV is garbage (D33: reports
+// tens of thousands of dB), so we map the RAW integer over the control's queried range, which is
+// linear and higher=louder (MEASURED 2026-08-06 on this H700 codec: raw 0-63, 40 = 63% — NOT
+// reversed like the A133P Brick).
 #define VOL_CTL "digital volume"
-#define VOL_RAW_MAX 63
 
 static int cur_vol = -1; // 0-20 UI scale; -1 = not yet read
+static snd_mixer_t*      vol_mixer = NULL;
+static snd_mixer_elem_t* vol_elem  = NULL;
+static long vol_min = 0, vol_max = 63; // 'digital volume' raw range, queried at open
+
+// Open the codec mixer once and cache the 'digital volume' element for the process lifetime.
+static void vol_open(void) {
+	if (vol_mixer) return;
+	if (snd_mixer_open(&vol_mixer, 0) < 0) { vol_mixer = NULL; return; }
+	snd_mixer_selem_id_t* sid;
+	snd_mixer_selem_id_alloca(&sid);
+	snd_mixer_selem_id_set_index(sid, 0);
+	snd_mixer_selem_id_set_name(sid, VOL_CTL);
+	if (snd_mixer_attach(vol_mixer, "hw:0") < 0 ||
+	    snd_mixer_selem_register(vol_mixer, NULL, NULL) < 0 ||
+	    snd_mixer_load(vol_mixer) < 0 ||
+	    !(vol_elem = snd_mixer_find_selem(vol_mixer, sid))) {
+		snd_mixer_close(vol_mixer);
+		vol_mixer = NULL; vol_elem = NULL;
+		return;
+	}
+	if (snd_mixer_selem_get_playback_volume_range(vol_elem, &vol_min, &vol_max) < 0 || vol_max <= vol_min) {
+		vol_min = 0; vol_max = 63;
+	}
+}
 
 void InitSettings(void) {
-	// Read the codec's current raw level (set at boot by pipewire.sh's alsactl restore) back to UI.
-	FILE* p = popen("amixer -c 0 sget '" VOL_CTL "' 2>/dev/null", "r");
-	if (p) {
-		char line[256];
-		while (fgets(line, sizeof(line), p)) {
-			int raw = 0;
-			if (sscanf(line, " Mono: %d", &raw) == 1) {
-				cur_vol = (raw * 20 + VOL_RAW_MAX / 2) / VOL_RAW_MAX;
-				break;
-			}
-		}
-		pclose(p);
+	// Read the codec's current raw level (set at boot by the frontend's alsactl restore) back to UI.
+	vol_open();
+	if (vol_elem) {
+		long v = vol_min, range = vol_max - vol_min;
+		if (snd_mixer_selem_get_playback_volume(vol_elem, SND_MIXER_SCHN_MONO, &v) >= 0)
+			cur_vol = (int)(((v - vol_min) * 20 + range / 2) / range);
 	}
 	if (cur_vol < 0) cur_vol = 10;
 	if (cur_vol > 20) cur_vol = 20;
 }
-void QuitSettings(void){}
+void QuitSettings(void) {
+	if (vol_mixer) { snd_mixer_close(vol_mixer); vol_mixer = NULL; vol_elem = NULL; }
+}
 
 int GetBrightness(void) { // 0-10 UI, read back from the panel itself
 	int raw = -1;
@@ -83,16 +106,16 @@ void SetRawBrightness(int value) { // 0-255
 	dispdbg_cmd("setbl", buf);
 }
 void SetRawVolume(int value) { // 0-100 (SetVolume passes UI*5); MUTE_VOLUME_RAW (0) mutes
-	// Backgrounded: SetVolume runs on the EMULATION thread (the input hook), and a synchronous
-	// system() forks-and-waits ~tens of ms — at ramp rate (~9 calls/s held) that starved the
-	// audio ring audibly (Dan: "glitchy sounding" while adjusting, 2026-08-05). The shell exits
-	// as soon as amixer is spawned; last-writer-wins ordering is fine for a volume ramp.
+	// In-process snd_mixer write: a single mixer ioctl (microseconds), synchronous and ordered.
+	// SetVolume runs on the emulation thread (the input hook) and this fires ~9x/s on a held ramp —
+	// no fork means no ordering race and no fork+wait stall of the audio ring (the old `amixer &`
+	// path had both). value 0 -> raw vol_min = mute; value 100 -> raw vol_max.
 	if (value < 0) value = 0;
 	if (value > 100) value = 100;
-	int raw = (value * VOL_RAW_MAX + 50) / 100; // 0-100 -> 0-63 raw, rounded
-	char cmd[160];
-	snprintf(cmd, sizeof(cmd), "amixer -c 0 sset '" VOL_CTL "' %d >/dev/null 2>&1 &", raw);
-	system(cmd);
+	if (!vol_elem) vol_open();
+	if (!vol_elem) return;
+	long raw = vol_min + ((long)value * (vol_max - vol_min) + 50) / 100;
+	(void)snd_mixer_selem_set_playback_volume_all(vol_elem, raw);
 }
 
 void SetBrightness(int value) { // 0-10 UI
