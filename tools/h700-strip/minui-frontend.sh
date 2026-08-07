@@ -33,6 +33,14 @@ echo "MinUI Zero frontend $(date 2>/dev/null)" >> "$LOG"
 # then drops wifi (seen live) is a far worse outcome than a few shell-loop wakeups. Revisit only with
 # a measured per-service wakeup cost + a proven-safe-to-kill check, one service at a time.
 
+# CODEC INIT (audio): restore the mixer state (unmute + digital volume 24) SYNCHRONOUSLY before
+# minui starts. startup.sh's line-63 `pipewire.sh start &` also does this, but BACKGROUNDED, so it
+# races minui's InitSettings (which reads the codec volume ONCE at launch). Losing that race left
+# digital volume at the power-on 0 = dead silent (found live 2026-08-06). Doing it here, blocking,
+# guarantees the codec is unmuted and at its 24 baseline before minui ever reads it.
+alsactl -U -f /opt/muos/device/control/asound.state restore 2>/dev/null
+echo "audio: digital volume $(amixer -c 0 sget 'digital volume' 2>/dev/null | grep -oE '[0-9]+ \[' | tr -d ' [')" >> "$LOG"
+
 # THE THESIS: own the governor. schedutil + our minui/minarch write the ceiling on top.
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
 echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)" >> "$LOG"
