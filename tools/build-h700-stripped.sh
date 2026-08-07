@@ -51,6 +51,14 @@ rm -rf "$R/opt/muos/share" "$R/opt/muos/frontend" "$R/opt/muos/bin" "$R/opt/muos
 rm -rf "$R/opt/java" "$R/opt/zulu" "$R/opt/sftpgo" "$R/opt/fish" "$R/opt/micro"
 rm -f  "$R/usr/bin/retroarch" "$R/usr/lib/libavcodec."* "$R/usr/lib/libavformat."* "$R/usr/lib/libavfilter."* "$R/usr/lib/libavdevice."*
 rm -rf "$R/usr/lib/python3.11" "$R/usr/bin/python3."* "$R/usr/lib/libpython3."*   # muOS scripts are POSIX sh, not python
+# Unused libraries (VERIFIED on-device 2026-08-06: minui+minarch launch cleanly without them,
+# linker resolves every dependency): GPU (we render via the DE layer, no GL), ICU unicode data
+# (was for ImageMagick/heavy apps), ImageMagick (muOS theme rendering), and the EasyRPG game
+# engine libs. ~87MB.
+rm -f "$R/usr/lib/libmali.so"
+rm -f "$R/usr/lib/libicudata.so."* "$R/usr/lib/libicui18n.so."* "$R/usr/lib/libicuuc.so."*
+rm -f "$R/usr/lib/libMagickCore-"* "$R/usr/lib/libMagickWand-"* "$R/usr/bin/magick"* "$R/usr/bin/convert" 2>/dev/null || true
+rm -f "$R/usr/lib/libzmusic.so."* "$R/usr/lib/liblcf.so."*
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
 #       udev, wifi stack, openssh, SDL, kernel modules, libmali (SDL may dlopen it)
 

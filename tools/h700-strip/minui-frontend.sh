@@ -25,6 +25,12 @@ LOG=/mnt/mmc/minui-zero.log
 : > "$LOG" 2>/dev/null
 echo "MinUI Zero frontend $(date 2>/dev/null)" >> "$LOG"
 
+# EFFICIENCY: kill muOS UI daemons that just loop + burn idle wakeups (against the thesis).
+# minui owns input/battery/power itself; these were part of the frontend/theme stack we stripped.
+for svc in lowpower.sh keepalive.sh muhotkey activity.sh; do
+	for pid in $(ps | grep "[/ ]$svc" | awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
+done
+
 # THE THESIS: own the governor. schedutil + our minui/minarch write the ceiling on top.
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
 echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)" >> "$LOG"
