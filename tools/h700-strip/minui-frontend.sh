@@ -29,21 +29,29 @@ echo "MinUI Zero frontend $(date 2>/dev/null)" >> "$LOG"
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
 echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)" >> "$LOG"
 
-# WiFi + SSH bring-up. IDEMPOTENT: if wlan0 already has an IP we touch nothing — a frontend
-# restart must never drop a live link (that dropped the dev ssh mid-session, 2026-08-06). Our
-# wpa config carries freq_list=2.4GHz-only (the RTL8821CS can't hold a usable 5GHz link even with
-# power_save off) + power_save off. SSH: the build resets openssh host-key perms to world-readable
-# and sshd then refuses to start ("no hostkeys available"), so fix perms + start it here.
-( if [ -f /etc/wpa_supplicant.conf ] && ! ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; then
-	for _ in 1 2 3 4 5 6 7 8; do [ -e /sys/class/net/wlan0 ] && break; sleep 2; done
-	if [ -e /sys/class/net/wlan0 ]; then
-		ifconfig wlan0 up 2>/dev/null
-		iw dev wlan0 set power_save off 2>/dev/null
-		killall wpa_supplicant 2>/dev/null; sleep 1
-		mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
-		sleep 3
-		dhcpcd -t 25 wlan0 2>/dev/null
+# WiFi + SSH bring-up. Credentials are USER-SUPPLIED (never baked into the image): the MinUI
+# convention is a wifi.txt at the SD-card root, "SSID:password" per line, '#' comments. We use the
+# first network. No wifi.txt = offline (MinUI is offline-by-default anyway). We generate the wpa
+# config with freq_list=2.4GHz-only (the RTL8821CS can't hold a usable 5GHz link) + power_save off.
+# IDEMPOTENT: if wlan0 already has an IP we touch nothing (a frontend restart must never drop the
+# link). SSH: the build resets openssh host-key perms to world-readable and sshd then refuses to
+# start ("no hostkeys available"), so fix perms + start it here.
+WIFI_TXT=/mnt/mmc/wifi.txt
+( if [ -f "$WIFI_TXT" ] && ! ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; then
+	LINE=$(sed '/^#/d;/^[[:space:]]*$/d' "$WIFI_TXT" | head -1)
+	SSID=${LINE%%:*}; PSK=${LINE#*:}
+	if [ -n "$SSID" ] && [ "$SSID" != "$LINE" ]; then
+		for _ in 1 2 3 4 5 6 7 8; do [ -e /sys/class/net/wlan0 ] && break; sleep 2; done
+		if [ -e /sys/class/net/wlan0 ]; then
+			printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n\tscan_ssid=1\n\tfreq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472\n}\n' "$SSID" "$PSK" > /etc/wpa_supplicant.conf
+			ifconfig wlan0 up 2>/dev/null
+			iw dev wlan0 set power_save off 2>/dev/null
+			killall wpa_supplicant 2>/dev/null; sleep 1
+			mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
+			wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
+			sleep 3
+			dhcpcd -t 25 wlan0 2>/dev/null
+		fi
 	fi
   fi
   chmod 700 /opt/openssh /opt/openssh/etc 2>/dev/null

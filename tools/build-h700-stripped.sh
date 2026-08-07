@@ -62,8 +62,8 @@ sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
-# our wifi creds (the ROMS partition muOS kept them on is replaced by our fresh one)
-cp /a/wifi.conf "$R/etc/wpa_supplicant.conf" 2>/dev/null && echo "  wifi config baked"
+# NO wifi credentials baked into the image (privacy): the frontend reads a USER-SUPPLIED
+# wifi.txt ("SSID:password") from the SD-card root at boot, MinUI-style. Ship a commented example.
 # FIX the ssh host-key perms: debugfs rdump + mke2fs -d reset them to 0755, and sshd refuses
 # world-readable private keys ("no hostkeys available -- exiting"). 600 = sshd starts on boot.
 chmod 700 "$R/opt/openssh" "$R/opt/openssh/etc" 2>/dev/null || true
@@ -95,6 +95,8 @@ cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/pak
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
 printf 'MinUI Zero (%s)\n%s\n' "$(date +%Y%m%d)" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
 [ -n "$H700_TEST_ROM" ] && [ -f "$H700_TEST_ROM" ] && cp "$H700_TEST_ROM" "$STAGE/Roms/Game Boy Color (GBC)/"
+# example wifi.txt at the card root (commented out; user adds their own "SSID:password")
+printf '# WiFi: one network per line as SSID:password (# comments ignored). Example:\n# MyNetwork:mypassword\n' > "$STAGE/wifi.txt.example"
 
 cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
 rm -f "$OUT_DIR/p6.img"
