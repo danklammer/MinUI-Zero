@@ -41,6 +41,10 @@
 
 #include "scaler.h"
 
+// Forward decl: zero_owns_os() is defined lower (with the governor code) but gates owned-OS-only
+// behaviour used earlier in the file (PLAT_isToppingUp, PLAT_powerOff).
+static int zero_owns_os(void);
+
 ///////////////////////////////
 // msettings lives in ../libmsettings (guest stubs: muOS owns audio/brightness) — the shared
 // minui/minarch makefiles link -lmsettings on every platform.
@@ -196,6 +200,24 @@ void PLAT_pollInput(void) {
 		if (pad.is_pressed & BTN_MENU) SetBrightness(GetBrightness() + delta); // clamps 0-10
 		else SetVolume(GetVolume() + delta);                                   // clamps 0-20
 	}
+}
+
+// WAKE from faux-sleep. The shared PLAT_shouldWake (api.c) only reads SDL events — but SDL is DEAD
+// on this device (the whole reason PLAT_pollInput above reads raw evdev), so the wake press was
+// never seen and a slept device could NEVER wake (found live 2026-08-07: "Entering hybrid sleep",
+// dark + muted, no exit). PWR_waitForWake calls this in a loop while PAD_poll is NOT running, so we
+// read the evdev fds directly and wake on a POWER-key (code 116) RELEASE — matching the shared
+// path's KEYUP semantics, and draining all queued events so a stale press can't false-wake.
+int PLAT_shouldWake(void) {
+	struct raw_input_event ev;
+	int wake = 0;
+	for (int i = 0; i < EVDEV_COUNT; i++) {
+		if (ev_fds[i] < 0) continue;
+		while (read(ev_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
+			if (ev.type == 1 && ev.code == 116 && ev.value == 0) wake = 1; // KEY_POWER release
+		}
+	}
+	return wake;
 }
 
 ///////////////////////////////
@@ -750,21 +772,45 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 // Charging inhibits autosleep (same behaviour as the Brick). Crucial in hosted dev: the 30s
 // autosleep was ending input sessions before anyone pressed a button.
 int PLAT_isToppingUp(void) {
-	// HOSTED-DEV: report always-topping-up so autosleep never fires. Twice tonight the 30s
-	// autosleep ate an input session (screen slept, the wake tap fell into the power-off flow).
-	// The real charging read returns with the image build, where sleep policy matters.
-	return 1;
+	// GUEST (hosted-dev inside muOS): report always-topping-up so autosleep never fires — twice a
+	// 30s autosleep ate an ssh input session. But on the OWNED MinUI Zero image, sleep policy is
+	// ours and this stub disabled autosleep FOREVER (audit 2026-08-07). Report whether the cell is
+	// actively FILLING (status "Charging"), not merely whether a cable is attached, so a full-but-
+	// plugged device may still autosleep (PWR_preventAutosleep, api.c). Fall back to cable-present
+	// if the status node is unreadable (never sleep mid-charge; coarser but safe).
+	if (!zero_owns_os()) return 1;
+	char status[16] = {0};
+	FILE* f = fopen("/sys/class/power_supply/axp2202-battery/status", "r");
+	if (f) {
+		char* got = fgets(status, sizeof(status), f);
+		fclose(f);
+		if (got) return strncmp(status, "Charging", 8) == 0;
+	}
+	return getInt("/sys/class/power_supply/axp2202-usb/online");
 }
 
 void PLAT_enableBacklight(int enable) {
-	// TODO: find the true backlight node on this device; guarded so a wrong path is a no-op
-	if (exists("/sys/class/backlight/backlight/bl_power"))
-		putInt("/sys/class/backlight/backlight/bl_power", enable ? 0 : 4);
+	// This device has NO /sys/class/backlight; brightness is the Allwinner dispdbg path (libmsettings
+	// SetRawBrightness -> dispdbg setbl). Off = raw 0 (fully dark); on = restore the user's level.
+	// GetBrightness reads the panel LIVE, so it would read back 0 after we dim — cache the UI level
+	// across the off/on pair. Used by the sleep path (faux-sleep dim + deep-sleep resume).
+	static int saved_ui = -1;
+	if (enable) {
+		if (saved_ui >= 0) { SetBrightness(saved_ui); saved_ui = -1; }
+		else SetBrightness(GetBrightness());
+	}
+	else {
+		if (saved_ui < 0) saved_ui = GetBrightness();
+		SetRawBrightness(0);
+	}
 }
 
 void PLAT_powerOff(void) {
-	// GUEST MODE: we are a visitor inside muOS. Exiting hands the console back to the host
-	// frontend; powering off the host from a dev harness would be hostile.
+	// On the OWNED MinUI Zero image, signal the frontend launch loop to actually power the device
+	// off (it can't otherwise tell a poweroff request from a normal game/menu exit — an in-game
+	// poweroff re-launched the same game; audit 2026-08-07). As a GUEST inside muOS we must NOT
+	// power off the host, and there's no frontend loop watching — just exit and hand the console back.
+	if (zero_owns_os()) putInt("/tmp/poweroff", 1);
 	SND_quit();
 	VIB_quit();
 	PWR_quit();
@@ -805,6 +851,20 @@ void PLAT_setCPUMaxFreq(int khz) {
 
 void PLAT_setRumble(int strength) {
 	// no rumble hardware reported in recon
+}
+
+int PLAT_supportsDeepSleep(void) {
+	// Suspend-to-RAM: the kernel exposes /sys/power/state "mem", and the AXP2202 power key
+	// (i2c 5-0034, wakeup=enabled) + RTC are registered wake sources — same PMIC as the Brick,
+	// and spruceOS ships real `echo mem` suspend on this H700 family. The choreography (mixer
+	// save/restore, radio teardown, the `echo mem` write) lives in ${BIN_PATH}/suspend, invoked
+	// by PWR_deepSleep(). Owned-OS only: never suspend the host while running as a guest in muOS.
+	//
+	// DEFERRED (2026-08-07): kept OFF until FAUX-sleep-wake is validated on-device. Deep sleep is
+	// the 2-minute escalation *past* faux-sleep, so it can only be trusted once the wake path
+	// (PLAT_shouldWake, below) is proven — enabling it earlier stacked `echo mem` on a sleep that
+	// could not wake. Flip to `zero_owns_os()` after the supervised faux-sleep-wake test passes.
+	return 0;
 }
 
 int PLAT_pickSampleRate(int requested, int max) {

@@ -95,22 +95,29 @@ power_off() {
 cd /tmp
 FAILS=0
 while : ; do
-	rm -f /tmp/next
+	rm -f /tmp/next /tmp/poweroff
 	"$SYSTEM_PATH/bin/minui.elf" >> "$LOG" 2>&1
 	RC=$?
+	# PLAT_powerOff (owned OS) drops /tmp/poweroff so the loop can tell a real poweroff request from
+	# a normal game/menu exit — without it an in-game poweroff looked like a quit and re-launched the
+	# same game (audit 2026-08-07).
+	[ -f /tmp/poweroff ] && { echo "poweroff requested" >> "$LOG"; power_off; }
 	if [ -f /tmp/next ]; then
 		FAILS=0
 		CMD=$(cat /tmp/next)
 		echo "launch: $CMD" >> "$LOG"
 		sh -c "$CMD"
 		echo "game exited rc=$?" >> "$LOG"
+		[ -f /tmp/poweroff ] && { echo "poweroff requested (in-game)" >> "$LOG"; power_off; }
 	elif [ "$RC" = "0" ]; then
 		echo "clean exit — power off" >> "$LOG"
 		power_off
 	else
 		FAILS=$((FAILS+1))
 		echo "minui exited rc=$RC (fail $FAILS)" >> "$LOG"
-		[ $FAILS -ge 3 ] && { echo "parking" >> "$LOG"; while : ; do sleep 60; done; }
+		# Retry so transient faults self-heal; persistent failure powers OFF rather than the old
+		# infinite `sleep 60` park, which left a black, draining, unrecoverable device (audit).
+		[ $FAILS -ge 5 ] && { echo "$FAILS consecutive fails — powering off" >> "$LOG"; power_off; }
 		sleep 2
 	fi
 done
