@@ -67,8 +67,30 @@ rm -rf "$R/usr/bin/pipewire"* "$R/usr/bin/wireplumber" "$R/usr/bin/pw-"* \
        "$R/usr/lib/libpipewire-0.3.so."* "$R/usr/lib/libwireplumber-0.4.so."* \
        "$R/usr/lib/spa-0.2" "$R/usr/lib/pipewire-0.3" "$R/usr/lib/wireplumber-0.4" \
        "$R/usr/lib/alsa-lib/libasound_module_pcm_pipewire.so" 2>/dev/null || true
+# AGGRESSIVE LEAN (2026-08-08 audit): the muOS base carries a whole 32-bit userland + a full app
+# toolkit we never run. VERIFIED offline: arch-scanned EVERY retained ELF (all aarch64, ZERO 32-bit)
+# and grepped the retained boot scripts (no refs to anything below). Takes the rootfs 669MB -> ~230MB.
+# 281MB: the orphaned 32-bit (armhf) compat tree — muOS ships it for 32-bit RetroArch cores we omit.
+rm -rf "$R/usr/lib32" "$R/lib32" "$R/lib/ld-linux-armhf.so.3" 2>/dev/null || true
+# ~120MB of assets nothing on our boot/wifi/audio/display/minui path uses:
+# (2>/dev/null || true on each: a few vim test files carry the immutable attr and EPERM on rm would
+#  otherwise abort the whole build under `set -e`; the tiny remnant is harmless.)
+rm -rf "$R/usr/share/fonts/truetype/noto" 2>/dev/null || true   # 63MB CJK fonts (minui ships its own font)
+rm -rf "$R/usr/share/soundfonts" 2>/dev/null || true            # 31MB MIDI soundfont
+rm -rf "$R/usr/share/vim" "$R/usr/bin/vim" 2>/dev/null || true  # 18MB editor
+rm -f  "$R/usr/share/misc/magic.mgc" 2>/dev/null || true        # 8MB file(1) magic db
+# dev/util binaries + their app-only libs (none on the boot path; grep-verified):
+rm -f "$R/usr/bin/btop" "$R/usr/bin/htop" "$R/usr/bin/dust" "$R/usr/bin/mpv" "$R/usr/bin/7zr" \
+      "$R/usr/bin/ld" "$R/usr/bin/ld.bfd" "$R/usr/bin/as" "$R/usr/bin/readelf" "$R/usr/bin/objdump" \
+      "$R/usr/bin/bsdunzip" "$R/usr/bin/get_disto" \
+      "$R/usr/bin/img2webp" "$R/usr/bin/cwebp" "$R/usr/bin/dwebp" "$R/usr/bin/gif2webp" "$R/usr/bin/webpmux" \
+      "$R/usr/bin/webpinfo" "$R/usr/bin/webp_quality" "$R/usr/bin/vwebp" "$R/usr/bin/anim_dump" "$R/usr/bin/anim_diff" 2>/dev/null || true
+rm -f "$R/usr/lib/libmpv.so."* "$R/usr/lib/libtcl8.6.so."* "$R/usr/lib/libvpx.so."* \
+      "$R/usr/lib/libjanet.so."* "$R/usr/lib/libzmusiclite.so."* 2>/dev/null || true
+rm -rf "$R/usr/share/tcltk" 2>/dev/null || true
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
-#       udev, wifi stack, openssh, SDL, kernel modules, alsa-utils (amixer/alsactl for audio)
+#       udev, wifi stack, openssh, SDL, kernel modules, alsa-utils (amixer/alsactl for audio),
+#       gl4es/libopenal/libsamplerate/embiggen-disk (possible SDL/runtime deps — not worth the risk)
 
 echo "  swapping FRONTEND -> minui in startup.sh..."
 SU="$R/opt/muos/script/system/startup.sh"
