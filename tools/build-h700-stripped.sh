@@ -111,8 +111,13 @@ rm -f "$R/usr/bin/ffmpeg" "$R/usr/bin/ffplay" "$R/usr/bin/ffprobe" \
       "$R/usr/bin/flac" "$R/usr/bin/metaflac" "$R/usr/bin/lame" "$R/usr/bin/ogg123" "$R/usr/bin/oggenc" "$R/usr/bin/opusenc" "$R/usr/bin/playsound" "$R/usr/bin/playsound_simple" \
       "$R/usr/bin/avahi-"* "$R/usr/bin/expect" "$R/usr/bin/icuexportdata" "$R/usr/bin/pkgdata" "$R/usr/bin/lcf2xml" "$R/usr/bin/lcfstrings" "$R/usr/bin/wpctl" "$R/usr/bin/wpexec" 2>/dev/null || true
 rm -f "$R/usr/lib/libSDL_sound-1.0.so."* "$R/usr/lib/libsndfile.so."* "$R/usr/lib/libpostproc.so."* "$R/usr/lib/libswresample.so."* "$R/usr/lib/libswscale.so."* "$R/usr/lib/libexslt.so."* "$R/usr/lib/libxslt.so."* "$R/usr/lib/libavahi-"* 2>/dev/null || true
+# openssh (32MB): we ship dropbearmulti instead (~250KB aarch64, launched by the frontend) — the
+# same ssh path the Smart Pro uses. And /etc/udev/hwdb.bin (9.3MB): udev autoloads modules by
+# MODALIAS (not hwdb) and h700 input is raw evdev, so the hardware database has no consumer here.
+rm -rf "$R/opt/openssh" 2>/dev/null || true
+rm -f "$R/etc/udev/hwdb.bin" 2>/dev/null || true
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
-#       udev, wifi stack, openssh, SDL, kernel modules, alsa-utils (amixer/alsactl for audio),
+#       udev, wifi stack, dropbearmulti (ssh), SDL, kernel modules, alsa-utils (amixer/alsactl),
 #       gl4es/libopenal/libsamplerate/embiggen-disk (possible SDL/runtime deps — not worth the risk)
 
 echo "  swapping FRONTEND -> minui in startup.sh..."
@@ -125,12 +130,8 @@ cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
 # NO wifi credentials baked into the image (privacy): the frontend reads a USER-SUPPLIED
 # wifi.txt ("SSID:password") from the SD-card root at boot, MinUI-style. Ship a commented example.
-# FIX the ssh host-key perms: debugfs rdump + mke2fs -d reset them to 0755, and sshd refuses
-# world-readable private keys ("no hostkeys available -- exiting"). 600 = sshd starts on boot.
-chmod 700 "$R/opt/openssh" "$R/opt/openssh/etc" 2>/dev/null || true
-chmod 600 "$R/opt/openssh/etc/ssh_host_"*_key 2>/dev/null || true
-chmod 644 "$R/opt/openssh/etc/ssh_host_"*_key.pub 2>/dev/null || true
-# ssh key for our access (muOS keeps its openssh sshd; drop our authorized_keys in root)
+# ssh access: dropbear (the frontend launches dropbearmulti) reads /root/.ssh/authorized_keys for
+# key auth. openssh is stripped, so its host-key perm dance is gone with it.
 mkdir -p "$R/root/.ssh"
 cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
 chmod 700 "$R/root/.ssh" 2>/dev/null || true
@@ -177,6 +178,8 @@ mkdir -p "$STAGE/.system/h700/bin" "$STAGE/.system/h700/lib" "$STAGE/.system/h70
 cp "$REPO/workspace/all/minui/build/h700/minui.elf"     "$STAGE/.system/h700/bin/"
 cp "$REPO/workspace/all/minarch/build/h700/minarch.elf" "$STAGE/.system/h700/bin/"
 cp "$REPO/workspace/h700/libmsettings/libmsettings.so"  "$STAGE/.system/h700/lib/"
+cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti"     "$STAGE/.system/h700/bin/dropbearmulti"  # ssh (openssh stripped); aarch64, shared with tg5040
+chmod +x "$STAGE/.system/h700/bin/dropbearmulti"
 cp "$REPO"/workspace/tg5040/cores/output/*.so           "$STAGE/.system/h700/cores/"
 cp "$REPO"/skeleton/SYSTEM/res/*                        "$STAGE/.system/res/"
 cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/paks"

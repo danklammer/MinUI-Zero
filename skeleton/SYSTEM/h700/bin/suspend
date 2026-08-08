@@ -1,0 +1,57 @@
+#!/bin/sh
+# h700 (Anbernic RG35XX) suspend-to-RAM choreography, invoked by PWR_deepSleep() when the hybrid
+# sleep escalates past faux-sleep. Adapted from tg5040/zhaofengli (community fork scene).
+#
+# Wake source: the AXP2202 power key (i2c 5-0034, power/wakeup=enabled) — same PMIC as the Brick;
+# the RTC is also a registered wake source. spruceOS ships real `echo mem` suspend on this H700
+# family, and /sys/power/state lists "mem" here (VERIFIED 2026-08-07).
+#
+# Why the dance around `echo mem`:
+#  - a wifi config present with no AP in range makes the kernel REFUSE suspend (EBUSY), so we tear
+#    down wpa_supplicant / wlan0 first;
+#  - the ALSA codec (routing + mute state) glitches on resume unless restored — we re-init it from
+#    the boot baseline, exactly as the frontend does at boot. The C side re-applies the user volume.
+set -eu
+exec 0<&-
+
+wpa_running=
+
+before() {
+	>&2 echo "Preparing for suspend..."
+	if pgrep wpa_supplicant >/dev/null 2>&1; then
+		wpa_running=1
+		killall -9 wpa_supplicant 2>/dev/null || true
+	fi
+	ifconfig wlan0 down 2>/dev/null || true
+}
+
+after() {
+	>&2 echo "Resumed from suspend."
+	# Re-init the codec (unmute + output routing) from the boot baseline; PWR_exitSleep's
+	# SetVolume(GetVolume()) then re-applies the user's actual level.
+	alsactl -U -f /opt/muos/device/control/asound.state restore 2>/dev/null || true
+	# Bring wifi back only if it was up before (the frontend only runs its bring-up at boot).
+	if [ -n "$wpa_running" ] && [ -f /etc/wpa_supplicant.conf ]; then
+		ifconfig wlan0 up 2>/dev/null || true
+		iw dev wlan0 set power_save off 2>/dev/null || true
+		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null || true
+		( dhcpcd -t 25 wlan0 2>/dev/null & )
+	fi
+}
+
+before
+>&2 echo "Suspending..."
+# Under `set -e` the suspend write needs care (idea: NextUI #632): if it returns nonzero, -e would
+# kill the script HERE and `after` would never run, leaving radios/audio torn down. The A133P/H700
+# kernel can return nonzero even when the device DID suspend, so a >=5s absence = success.
+T0=$(date +%s)
+set +e
+echo mem >/sys/power/state
+rc=$?
+set -e
+T1=$(date +%s)
+if [ "$rc" -ne 0 ] && [ $((T1 - T0)) -ge 5 ]; then rc=0; fi
+
+# Resume services in the background to cut UI latency — ALWAYS, even on a failed suspend.
+( after & )
+exit "$rc"

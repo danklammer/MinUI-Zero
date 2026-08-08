@@ -75,11 +75,18 @@ WIFI_TXT=/mnt/mmc/wifi.txt
 		fi
 	fi
   fi
-  chmod 700 /opt/openssh /opt/openssh/etc 2>/dev/null
-  chmod 600 /opt/openssh/etc/ssh_host_*_key 2>/dev/null
+  # SSH via dropbear (we ship dropbearmulti, ~250KB; muOS's 32MB openssh is stripped). Key-auth
+  # only, reading /root/.ssh/authorized_keys; the ed25519 host key lives on the card so the
+  # fingerprint stays stable across boots. Same pattern the Smart Pro uses (skeleton .../dev-net.sh).
   chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null
-  pidof sshd >/dev/null || /opt/openssh/sbin/sshd 2>/dev/null
-  echo "wifi: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}') ssh=$(pidof sshd >/dev/null && echo up || echo down)" >> "$LOG"
+  DBM="$SYSTEM_PATH/bin/dropbearmulti"
+  DBKEY="$USERDATA_PATH/dropbear_ed25519_host_key"
+  if [ -x "$DBM" ] && ! pgrep dropbearmulti >/dev/null 2>&1; then
+    mkdir -p "$USERDATA_PATH" 2>/dev/null
+    [ -f "$DBKEY" ] || "$DBM" dropbearkey -t ed25519 -f "$DBKEY" 2>/dev/null
+    "$DBM" dropbear -r "$DBKEY" -p 22 2>/dev/null
+  fi
+  echo "wifi: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}') ssh=$(pgrep dropbearmulti >/dev/null && echo up || echo down)" >> "$LOG"
 ) &
 
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui" 2>/dev/null
