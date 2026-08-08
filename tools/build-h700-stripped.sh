@@ -88,6 +88,29 @@ rm -f "$R/usr/bin/btop" "$R/usr/bin/htop" "$R/usr/bin/dust" "$R/usr/bin/mpv" "$R
 rm -f "$R/usr/lib/libmpv.so."* "$R/usr/lib/libtcl8.6.so."* "$R/usr/lib/libvpx.so."* \
       "$R/usr/lib/libjanet.so."* "$R/usr/lib/libzmusiclite.so."* 2>/dev/null || true
 rm -rf "$R/usr/share/tcltk" 2>/dev/null || true
+# Orphaned 64-bit app libraries (dependency-closure analysis 2026-08-08: seeded with all 458
+# retained binaries + our minui/minarch/cores; these are referenced by NONE — leftovers from the
+# muOS app suite). ~20MB. Names are explicit for the SDL families so the SDL2 core/image/ttf we use
+# survive; we also KEEP the dlopen-prone glibc name-resolution libs (nss/resolv/nsl), the image
+# codecs SDL2_image may dlopen (jpeg/tiff/webp), and libsamplerate/libopenal/libarchive.
+rm -f "$R/usr/lib/libboost_"* 2>/dev/null || true
+rm -f "$R/usr/lib/libSDL-1.2.so."* "$R/usr/lib/libSDL_mixer-1.2.so."* "$R/usr/lib/libSDL_image-1.2.so."* "$R/usr/lib/libSDL_gfx.so."* "$R/usr/lib/libSDL_net-1.2.so."* "$R/usr/lib/libSDL_ttf-2.0.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libSDL2_mixer-2.0.so."* "$R/usr/lib/libSDL2_net-2.0.so."* "$R/usr/lib/libSDL2_gfx-1.0.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libpulse"* "$R/usr/lib/libasyncns.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libgnutls.so."* "$R/usr/lib/libp11-kit.so."* "$R/usr/lib/libtasn1.so."* "$R/usr/lib/libidn2.so."* "$R/usr/lib/libgmp.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libdrm_intel.so."* "$R/usr/lib/libdrm_radeon.so."* "$R/usr/lib/libdrm_nouveau.so."* "$R/usr/lib/libdrm_freedreno.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libtheora"* "$R/usr/lib/libFLAC"* "$R/usr/lib/libfaad"* "$R/usr/lib/libass.so."* "$R/usr/lib/libWildMidi.so."* "$R/usr/lib/libxmp.so."* "$R/usr/lib/libsidplay2.so."* "$R/usr/lib/libresid"* "$R/usr/lib/libsidutils.so."* "$R/usr/lib/libhardsid"* "$R/usr/lib/libsbc.so."* "$R/usr/lib/libportmidi.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libmoonlight-common.so."* "$R/usr/lib/libgamestream.so."* "$R/usr/lib/libenet.so."* "$R/usr/lib/libcec.so."* "$R/usr/lib/libcapsimage.so."* "$R/usr/lib/libm3g.so" "$R/usr/lib/libjq.so."* 2>/dev/null || true
+rm -f "$R/usr/lib/libopcodes-"* "$R/usr/lib/libctf"* "$R/usr/lib/libdw-"* "$R/usr/lib/libelf-"* "$R/usr/lib/libasm-"* 2>/dev/null || true
+rm -f "$R/usr/lib/libevent"* "$R/usr/lib/libwrap.so."* "$R/usr/lib/libwpa_client.so" "$R/usr/lib/libnghttp2.so."* "$R/usr/lib/libfmt.so."* "$R/usr/lib/libatopology.so."* "$R/usr/lib/libnl-xfrm-3.so."* "$R/usr/lib/libapparmor.so."* "$R/usr/lib/libbluetooth.so."* "$R/usr/lib/libserial"* "$R/usr/lib/libusb-1.0.so."* "$R/usr/lib/libparted-fs-resize.so."* 2>/dev/null || true
+# Leftover app-tool BINARIES + their libs (ffmpeg/flac/lame/ogg encoders, avahi mDNS, expect, the
+# icu/lcf/pipewire tools). Several were ALREADY broken by the base strip; the orphaned-lib cut above
+# finished the rest. None are on the boot/wifi/audio/display/minui path. Removing the binaries too
+# clears the dangling deps and trims a bit more.
+rm -f "$R/usr/bin/ffmpeg" "$R/usr/bin/ffplay" "$R/usr/bin/ffprobe" \
+      "$R/usr/bin/flac" "$R/usr/bin/metaflac" "$R/usr/bin/lame" "$R/usr/bin/ogg123" "$R/usr/bin/oggenc" "$R/usr/bin/opusenc" "$R/usr/bin/playsound" "$R/usr/bin/playsound_simple" \
+      "$R/usr/bin/avahi-"* "$R/usr/bin/expect" "$R/usr/bin/icuexportdata" "$R/usr/bin/pkgdata" "$R/usr/bin/lcf2xml" "$R/usr/bin/lcfstrings" "$R/usr/bin/wpctl" "$R/usr/bin/wpexec" 2>/dev/null || true
+rm -f "$R/usr/lib/libSDL_sound-1.0.so."* "$R/usr/lib/libsndfile.so."* "$R/usr/lib/libpostproc.so."* "$R/usr/lib/libswresample.so."* "$R/usr/lib/libswscale.so."* "$R/usr/lib/libexslt.so."* "$R/usr/lib/libxslt.so."* "$R/usr/lib/libavahi-"* 2>/dev/null || true
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
 #       udev, wifi stack, openssh, SDL, kernel modules, alsa-utils (amixer/alsactl for audio),
 #       gl4es/libopenal/libsamplerate/embiggen-disk (possible SDL/runtime deps — not worth the risk)
