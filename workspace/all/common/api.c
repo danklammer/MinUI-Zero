@@ -2450,6 +2450,14 @@ static void PWR_enterSleep(void) {
 }
 static void PWR_exitSleep(void) {
 	system("killall -CONT keymon.elf");
+	// Reopen the audio device BEFORE re-applying volume. SND_resume() can do a full device open, and
+	// opening the PCM can perturb the codec's volume register (DAPM power-up on h700) — so setting
+	// volume first would be silently undone, leaving audio dead after wake (audit 2026-08-07). This
+	// mirrors boot (SND_init THEN InitSettings applies volume), and it is ONE SetVolume, not two, so
+	// platforms whose SetVolume persists to SD + sync/fsync (tg5040, miyoomini) do not eat an extra
+	// flush on every wake (Codex debate 2026-08-08). SND_resume never reads saved volume, so the
+	// reorder is safe on all platforms.
+	SND_resume();
 	if (GetHDMI()) {
 		// buh
 	}
@@ -2457,12 +2465,6 @@ static void PWR_exitSleep(void) {
 		PLAT_enableBacklight(1);
 		SetVolume(GetVolume());
 	}
-	SND_resume();
-	// Re-assert volume AFTER the device is reopened. SND_resume() can do a full device open, and
-	// opening the PCM can perturb the codec's volume register (DAPM power-up), silently undoing the
-	// SetVolume above — leaving audio dead after wake (h700 audit 2026-08-07). Boot proves the right
-	// order (SND_init THEN apply volume); this makes resume match it. Idempotent where unaffected.
-	if (!GetHDMI()) SetVolume(GetVolume());
 	// no sync() here: nothing was written during sleep, it only stalled resume
 	// (the enter-sleep sync() already flushed everything before suspend)
 }
