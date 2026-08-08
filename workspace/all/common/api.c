@@ -2458,6 +2458,11 @@ static void PWR_exitSleep(void) {
 		SetVolume(GetVolume());
 	}
 	SND_resume();
+	// Re-assert volume AFTER the device is reopened. SND_resume() can do a full device open, and
+	// opening the PCM can perturb the codec's volume register (DAPM power-up), silently undoing the
+	// SetVolume above — leaving audio dead after wake (h700 audit 2026-08-07). Boot proves the right
+	// order (SND_init THEN apply volume); this makes resume match it. Idempotent where unaffected.
+	if (!GetHDMI()) SetVolume(GetVolume());
 	// no sync() here: nothing was written during sleep, it only stalled resume
 	// (the enter-sleep sync() already flushed everything before suspend)
 }
