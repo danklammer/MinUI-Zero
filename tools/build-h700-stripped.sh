@@ -128,8 +128,13 @@ sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
-# NO wifi credentials baked into the image (privacy): the frontend reads a USER-SUPPLIED
-# wifi.txt ("SSID:password") from the SD-card root at boot, MinUI-style. Ship a commented example.
+# NO wifi credentials baked into the image (privacy): WIPE muOS saved creds from the rdumped rootfs.
+# It bakes the builder network at /opt/muos/config/network/{ssid,pass} (net.sh no-ops on empty SSID),
+# so after this wifi is driven SOLELY by the USER-SUPPLIED wifi.txt (SSID:password) at the SD-card
+# root at boot, MinUI-style. Ship a commented example.
+: > "$R/opt/muos/config/network/ssid" 2>/dev/null || true
+: > "$R/opt/muos/config/network/pass" 2>/dev/null || true
+rm -f "$R/etc/wpa_supplicant.conf" 2>/dev/null || true
 # ssh access: dropbear (the frontend launches dropbearmulti) reads /root/.ssh/authorized_keys for
 # key auth. openssh is stripped, so its host-key perm dance is gone with it.
 mkdir -p "$R/root/.ssh"

@@ -47,33 +47,67 @@ echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/d
 
 # WiFi + SSH bring-up. Credentials are USER-SUPPLIED (never baked into the image): the MinUI
 # convention is a wifi.txt at the SD-card root, "SSID:password" per line, '#' comments. We use the
-# first network. No wifi.txt = offline (MinUI is offline-by-default anyway). We generate the wpa
-# config with freq_list=2.4GHz-only (the RTL8821CS can't hold a usable 5GHz link) + power_save off.
-# IDEMPOTENT: if wlan0 already has an IP we touch nothing (a frontend restart must never drop the
-# link). SSH: the build resets openssh host-key perms to world-readable and sshd then refuses to
-# start ("no hostkeys available"), so fix perms + start it here.
+# first network. No wifi.txt = offline (MinUI is offline-by-default anyway) and this whole block
+# stays quiet, so the efficient default is untouched.
+#
+# The RTL8821CS here has two quirks we work around:
+#   1. Useless on 5GHz — it associates but the link is ~16bps/ssh-dead. So the wpa config is
+#      freq_list=2.4GHz-only, and any non-2.4GHz link (e.g. a leftover/stock 5GHz auto-connect that
+#      beat us to boot) is torn down and replaced. A healthy 2.4GHz link is left alone (restart-safe).
+#   2. Drops idle links in ~10-15s and never reconnects itself. muOS's keepalive.sh (credit
+#      johnnyonflame) does echo 0 > .../8821cs/parameters/rtw_power_mgnt to disable the driver idle
+#      power-mgmt; we do that in wifi_up_2ghz BEFORE associating so the driver honours it. On this AP
+#      that alone still drops, so we add a ~10s keepalive ping (device-originated traffic) that holds
+#      the link, and re-associate if it is ever lost. Radio-awake cost applies only when wifi is
+#      opted-in via wifi.txt (Dan 2026-08-08, revisiting the earlier "don't fight IPS" call).
+# SSH: dropbear (we ship dropbearmulti; muOS's openssh is stripped), started once below.
 WIFI_TXT=/mnt/mmc/wifi.txt
-( if [ -f "$WIFI_TXT" ] && ! ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; then
-	LINE=$(sed '/^#/d;/^[[:space:]]*$/d' "$WIFI_TXT" | head -1)
-	SSID=${LINE%%:*}; PSK=${LINE#*:}
-	if [ -n "$SSID" ] && [ "$SSID" != "$LINE" ]; then
-		for _ in 1 2 3 4 5 6 7 8; do [ -e /sys/class/net/wlan0 ] && break; sleep 2; done
-		if [ -e /sys/class/net/wlan0 ]; then
-			printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n\tscan_ssid=1\n\tfreq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472\n}\n' "$SSID" "$PSK" > /etc/wpa_supplicant.conf
-			ifconfig wlan0 up 2>/dev/null
-			iw dev wlan0 set power_save off 2>/dev/null
-			# NOTE: the RTL8821CS drops idle links after ~20s (driver IPS). We deliberately do NOT
-			# fight that here — forcing the radio always-on (keepalive traffic or rtw_ips_mode=0)
-			# burns idle battery, which is exactly backwards for this fork, and this device is
-			# offline-first anyway (wifi is opt-in via wifi.txt). Reliable ssh is a DEV concern, so
-			# a dev keeps a host-side keepalive during a session; the shipped image stays efficient.
-			killall wpa_supplicant 2>/dev/null; sleep 1
-			mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
-			wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
-			sleep 3
-			dhcpcd -t 25 wlan0 2>/dev/null
+
+# healthy iff associated on a 2.4GHz channel (freq 24xx) AND holding an IPv4 lease
+wifi_ok() { iw dev wlan0 link 2>/dev/null | grep -qE "freq: 24[0-9][0-9]" && ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; }
+# (re)associate on 2.4GHz-only using the wifi.txt credentials
+wifi_up_2ghz() {
+	_line=$(sed '/^#/d;/^[[:space:]]*$/d' "$WIFI_TXT" | head -1)
+	_ssid=${_line%%:*}; _psk=${_line#*:}
+	[ -n "$_ssid" ] && [ "$_ssid" != "$_line" ] || return
+	[ -e /sys/class/net/wlan0 ] || return
+	printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n\tscan_ssid=1\n\tfreq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472\n}\n' "$_ssid" "$_psk" > /etc/wpa_supplicant.conf
+	ifconfig wlan0 up 2>/dev/null
+	iw dev wlan0 set power_save off 2>/dev/null
+	# ROOT-CAUSE fix for the ~20s idle drop: disable the 8821cs driver idle power management. This is
+	# muOS's own fix (keepalive.sh, credit johnnyonflame) — the link then holds without a ping loop.
+	echo 0 > /sys/module/8821cs/parameters/rtw_power_mgnt 2>/dev/null
+	killall wpa_supplicant 2>/dev/null; sleep 1
+	mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
+	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
+	sleep 3
+	dhcpcd -t 25 wlan0 2>/dev/null
+}
+# keepalive ping target: gateway, else .1 of wlan0's subnet, else public DNS. A bare default-route
+# lookup can come back empty (it did — the link then never got pinged and dropped); this can't.
+ka_target() {
+	_t=$(ip route 2>/dev/null | awk '/default/{print $3; exit}')
+	case "$_t" in *.*.*.*) echo "$_t"; return ;; esac
+	_p=$(ip -4 -o addr show wlan0 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.' | head -1)
+	[ -n "$_p" ] && { echo "${_p}1"; return; }
+	echo 8.8.8.8
+}
+( if [ -f "$WIFI_TXT" ]; then
+	for _ in 1 2 3 4 5 6 7 8; do [ -e /sys/class/net/wlan0 ] && break; sleep 2; done
+	wifi_ok || wifi_up_2ghz
+	# Keep the opt-in link up. rtw_power_mgnt=0 (set in wifi_up_2ghz BEFORE association) helps, but a
+	# ~12s keepalive ping (device-originated traffic to ka_target) is what reliably holds the radio;
+	# re-associate if the link is genuinely lost. Only runs when wifi.txt is present.
+	( T=$(ka_target)
+	  while : ; do
+		if wifi_ok; then
+			ping -c1 -W2 "$T" >/dev/null 2>&1
+		else
+			wifi_up_2ghz
+			T=$(ka_target)
 		fi
-	fi
+		sleep 12
+	  done ) &
   fi
   # SSH via dropbear (we ship dropbearmulti, ~250KB; muOS's 32MB openssh is stripped). Key-auth
   # only, reading /root/.ssh/authorized_keys; the ed25519 host key lives on the card so the
