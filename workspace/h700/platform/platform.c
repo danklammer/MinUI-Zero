@@ -318,6 +318,7 @@ static struct VID_Context {
 	// minarch keeps the surface DEVICE-sized and centers the game (fit path, dst_x/dst_y);
 	// the layer CROPS this rect and the hardware scales it to screen_win.
 	int crop_x, crop_y, crop_w, crop_h;
+	int last_present_ui; // last flip was a UI frame -> PLAT_vsync must pace (see PLAT_vsync)
 } vid;
 
 // aspect-fit w x h into the panel, centered — the hardware scaler's output window
@@ -447,8 +448,14 @@ static int disp_open(void) {
 		unsigned long sw[4] = { 0, DISP_OUTPUT_TYPE_LCD, 0, 0 };
 		if (ioctl(vid.dispfd, DISP_DEVICE_SWITCH, &sw) < 0)
 			LOG_info("disp: DEVICE_SWITCH to LCD failed (%s)\n", strerror(errno));
-		else
+		else {
 			LOG_info("disp: output switched to LCD (owned OS)\n");
+			// Let the mode-set LATCH before anyone commits: a commit issued while the switch is
+			// still settling is silently eaten, and the static menu draws exactly once — so the
+			// u-boot logo stayed up until a button forced a redraw ("logo until A" RETURNED on
+			// the 20260810 image; the switch alone had only fixed it by timing luck). ~5 vsyncs.
+			usleep(80000);
+		}
 	}
 	disp_layer_off(); // clear any stale layer a crashed predecessor left behind
 	return 0;
@@ -618,9 +625,13 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int p) {
 		if ((size_t)w * h * 2 > vid.ion_bytes)
 			LOG_info("resizeVideo %dx%d exceeds ION buffer - refusing\n", w, h);
 		else {
+			// Reconfigure the shadow geometry ONLY — do NOT clear the ION pages. The old memsets
+			// blanked BOTH pages including the one the panel was scanning at that instant, so
+			// every menu open/close (game<->UI resize) flashed black + popped geometry mid-scan
+			// ("jittery, like it was being resized", Dan 2026-08-10). Nothing stale can ever be
+			// scanned without them: the new shape only takes effect at the next disp_commit, and
+			// that commit always carries a freshly drawn frame at the new geometry.
 			disp_shape_rect(0, 0, w, h);
-			memset(vid.ionmmap[0], 0, vid.ion_bytes);
-			memset(vid.ionmmap[1], 0, vid.ion_bytes);
 		}
 	}
 	// geometry changed: scrub both fb pages so old borders do not linger (fbdev path)
@@ -633,13 +644,19 @@ void PLAT_setNearestNeighbor(int enabled) {}
 void PLAT_setSharpness(int sharpness) {}
 
 void PLAT_vsync(int remaining) {
-	// NO-OP: the DE-layer flip is vblank-SYNCHRONOUS (disp_wait_latch blocks a full refresh), so
-	// it IS the pacer. GFX_sync would ALSO sleep here to hit the frame budget — a SECOND pace on
-	// top of the flip's. That double-pace sleep lands inside the governor's frame-work window
-	// (startFrame->flip), inflating "work" to ~15ms for a Game Boy game and pinning the ceiling
-	// at max (the governor never sank — gov-gate p95=15402us/16672us BUSY, 2026-08-06). With the
-	// flip pacing and this a no-op, the work window is real CPU work and the closed loop can sink.
-	(void)remaining;
+	// GAME frames: NO-OP. The DE-layer flip is vblank-SYNCHRONOUS (disp_wait_latch blocks a full
+	// refresh), so it IS the pacer. Sleeping here too would be a SECOND pace on top of the flip's,
+	// landing inside the governor's frame-work window (startFrame->flip) and inflating "work" to
+	// ~15ms for a Game Boy game, pinning the ceiling at max (gov-gate p95=15402us/16672us BUSY,
+	// 2026-08-06). With the flip pacing and this a no-op, the closed loop can sink.
+	//
+	// UI frames: MUST SLEEP. A menu frame that changes nothing never reaches the flip — GFX_sync
+	// is then the ONLY pacer, and with this a blanket no-op the menu loop spun free: MEASURED
+	// 1,806,300 frames at avg=0ms (thousands of fps) instead of 60. That burns a core and lands
+	// redraws at random scanout phase, which is the "jittery, not smooth" in-game menu (Dan
+	// 2026-08-10). Every other platform sleeps here (tg5040: SDL_Delay(remaining)). Gate on the
+	// last present's kind so gameplay keeps the no-op and only the UI gets paced.
+	if (remaining > 0 && vid.last_present_ui) SDL_Delay(remaining);
 }
 
 // Integer scaling + centering, the MMP pattern exactly: minarch computes the scale and dst rect;
@@ -685,7 +702,14 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
+	vid.last_present_ui = !fullframe;
 	if (vid.use_disp) {
+		// UI frames must honor the same latch invariant as the game path (PLAT_blitRenderer):
+		// without this wait the menu's commits were unpaced — writes landed in a page the panel
+		// was still scanning and back-to-back commits raced the shadow registers, which read as
+		// "jittery, like it was being resized" (Dan 2026-08-10). The game path waits in
+		// blitRenderer, so this only adds pacing where none existed: the in-game menu.
+		if (!fullframe) disp_wait_latch();
 		{
 			// stream the live rect from the cached surface into the back ION page.
 			// UI = full surface; game = just the crop rect (416KB for GBC at 3x, one
@@ -708,6 +732,15 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		disp_commit(vid.page);
 		int shown = vid.page;
 		vid.page = !vid.page;
+		// Suspenders for the settle race above: re-commit the first frames after a vsync-plus.
+		// If the initial commit was eaten mid-mode-set, this one lands and replaces the boot
+		// logo; once the pipeline is warm it is two no-op ioctls and the counter never rearms.
+		static int settle_commits = 2;
+		if (settle_commits > 0) {
+			settle_commits--;
+			usleep(20000);
+			disp_commit(shown);
+		}
 		if (!fullframe) {
 			// keep pages coherent for partial UI redraws (same reasoning as the fbdev path)
 			memcpy(vid.ionmmap[vid.page], vid.ionmmap[shown], (size_t)vid.height * vid.width * FIXED_BPP);
@@ -815,6 +848,14 @@ void PLAT_enableBacklight(int enable) {
 }
 
 void PLAT_powerOff(void) {
+	// The "Powering off" message was on screen for ONE FRAME: the teardown below drops the DE
+	// layer the instant it runs, unlike platforms whose slower shutdown leaves the panel scanning
+	// the message ("way too quick", Dan 2026-08-10). Hold the frame readable and buzz like the
+	// other systems do — muOS's own halt.sh runs a 0.3s shutdown rumble on this hardware.
+	PLAT_setRumble(1);
+	usleep(300000);              // 0.3s buzz, muOS-matched
+	PLAT_setRumble(0);
+	usleep(1200000);             // message stays readable (~1.5s total with the buzz)
 	// On the OWNED MinUI Zero image, signal the frontend launch loop to actually power the device
 	// off (it can't otherwise tell a poweroff request from a normal game/menu exit — an in-game
 	// poweroff re-launched the same game; audit 2026-08-07). As a GUEST inside muOS we must NOT
@@ -859,7 +900,11 @@ void PLAT_setCPUMaxFreq(int khz) {
 }
 
 void PLAT_setRumble(int strength) {
-	// no rumble hardware reported in recon
+	// The motor is PMIC-driven: /sys/class/power_supply/axp2202-battery/moto, binary on/off
+	// (echo 1 / echo 0 — muOS func.sh RUMBLE, default case). The old "no rumble hardware
+	// reported in recon" was WRONG: recon missed it because it lives under power_supply, not
+	// pwm/input. Ear/hand-confirmed live 2026-08-10. Binary motor: any nonzero strength = on.
+	putInt("/sys/class/power_supply/axp2202-battery/moto", strength ? 1 : 0);
 }
 
 int PLAT_supportsDeepSleep(void) {
@@ -892,7 +937,22 @@ int PLAT_pickSampleRate(int requested, int max) {
 void PLAT_setEffect(int effect) {} // no scanline/DMG effects on the fbdev path yet
 void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {} // HUD later
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
-	// v0 presents full-screen 640x480; refine when scaling modes land
+	// The rect the PANEL actually shows (the contract every caller relies on: menu backdrop via
+	// Menu_scale's PLAT_PRESENT_SCALER hook, HUD alignment). On the DE path the hardware scaler
+	// aspect-fits the rendered crop to the panel (disp_screen_win), so the on-screen rect is NOT
+	// the render-space crop — a GBC 3x renders 480x432 but the panel shows 533x480. Returning the
+	// raw crop made the in-game menu backdrop visibly smaller than the live game (Dan 2026-08-10).
+	if (vid.use_disp && vid.crop_w > 0 && vid.crop_h > 0) {
+		struct disp_rect win;
+		disp_screen_win(vid.crop_w, vid.crop_h, &win);
+		if (x) *x = win.x; if (y) *y = win.y; if (w) *w = win.width; if (h) *h = win.height;
+		return;
+	}
+	// fbdev fallback: render surface == panel, the crop rect is the truth
+	if (vid.crop_w > 0 && vid.crop_h > 0) {
+		if (x) *x = vid.crop_x; if (y) *y = vid.crop_y; if (w) *w = vid.crop_w; if (h) *h = vid.crop_h;
+		return;
+	}
 	if (x) *x = 0; if (y) *y = 0; if (w) *w = FIXED_WIDTH; if (h) *h = FIXED_HEIGHT;
 }
 

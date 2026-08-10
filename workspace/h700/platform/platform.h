@@ -122,6 +122,12 @@
 // Panel: 640x480 MEASURED at 59.9777 Hz (see workspace/h700/README-BRINGUP.md). The render
 // surface is RGB565 like every other platform; the fb is ARGB8888 and platform.c converts on flip.
 
+// This platform presents through a HARDWARE scaler (the Allwinner DE aspect-fits the rendered
+// crop to the panel), so render-space geometry is NOT what the panel shows. Shared code that
+// reconstructs the on-screen game rect from renderer values (minarch Menu_scale backdrop) must
+// instead ask PLAT_getGameRect, which mirrors the DE math. Only define on hw-scaler platforms.
+#define PLAT_PRESENT_SCALER 1
+
 // @2x UI assets, matching the miyoomini — the SAME 640x480 panel geometry. At 1 the whole
 // launcher rendered half-size ("the resolution is off, everything is tiny", Dan 2026-08-05).
 #define FIXED_SCALE		2

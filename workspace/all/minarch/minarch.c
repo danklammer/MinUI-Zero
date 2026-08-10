@@ -5615,6 +5615,21 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		}
 	}
 	
+#ifdef PLAT_PRESENT_SCALER
+	// On a hardware-scaler platform the render-space rect computed above is NOT what the panel
+	// shows — the display engine aspect-fits the crop after us (h700: GBC 3x renders 480x432,
+	// panel shows 533x480). The platform mirrors that math in PLAT_getGameRect; use its answer
+	// so the menu backdrop matches the live game exactly (was visibly smaller, Dan 2026-08-10).
+	// dst is DEVICE-sized here except the halved thumbnail path, which scales down uniformly.
+	if (scaling==SCALE_NATIVE || scaling==SCALE_CROPPED) {
+		int px, py, pw_, ph_;
+		PLAT_getGameRect(&px, &py, &pw_, &ph_);
+		if (pw_ > 0 && ph_ > 0) {
+			rx = px; ry = py; rw = pw_; rh = ph_;
+			if (dw==DEVICE_WIDTH/2) { rx /= 2; ry /= 2; rw /= 2; rh /= 2; }
+		}
+	}
+#endif
 	if (scaling==SCALE_ASPECT || rw>dw || rh>dh) {
 		// LOG_info("aspect\n");
 		double fixed_aspect_ratio = ((double)DEVICE_WIDTH) / DEVICE_HEIGHT;
@@ -6202,7 +6217,7 @@ static void Menu_loop(void) {
 					else GFX_blitAsset(ASSET_DOT, NULL, screen, &(SDL_Rect){ox+SCALE1(i*15)+4,oy+SCALE1(2)});
 				}
 			}
-	
+
 			GFX_flip(screen);
 			dirty = 0;
 		}
