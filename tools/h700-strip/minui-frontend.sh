@@ -50,64 +50,56 @@ echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/d
 # first network. No wifi.txt = offline (MinUI is offline-by-default anyway) and this whole block
 # stays quiet, so the efficient default is untouched.
 #
-# The RTL8821CS here has two quirks we work around:
-#   1. Useless on 5GHz — it associates but the link is ~16bps/ssh-dead. So the wpa config is
-#      freq_list=2.4GHz-only, and any non-2.4GHz link (e.g. a leftover/stock 5GHz auto-connect that
-#      beat us to boot) is torn down and replaced. A healthy 2.4GHz link is left alone (restart-safe).
-#   2. Drops idle links in ~10-15s and never reconnects itself. muOS's keepalive.sh (credit
-#      johnnyonflame) does echo 0 > .../8821cs/parameters/rtw_power_mgnt to disable the driver idle
-#      power-mgmt; we do that in wifi_up_2ghz BEFORE associating so the driver honours it. On this AP
-#      that alone still drops, so we add a ~10s keepalive ping (device-originated traffic) that holds
-#      the link, and re-associate if it is ever lost. Radio-awake cost applies only when wifi is
-#      opted-in via wifi.txt (Dan 2026-08-08, revisiting the earlier "don't fight IPS" call).
+# WiFi is delegated ENTIRELY to muOS's own net.sh connect — the exact flow that already connects
+# reliably on this chip. Hand-rolling it (our own wpa/dhcp/keepalive) is what broke it repeatedly, so
+# we stop and reference the fork: repopulate muOS's config from the user's wifi.txt and call
+# `network.sh connect`, which runs the whole proven bring-up — loads 8821cs off the SDIO controller
+# (device network.sh LOAD_NETWORK; a boot never loads it on its own), scans, builds the wpa config with
+# wpa_passphrase (password.sh), DHCPs, validates, then starts keepalive.sh: muOS's own rtw_power_mgnt=0
+# idle-drop fix (credit johnnyonflame) plus a reconnect monitor. Verified the image's device config has
+# what the flow reads: board/name=rg35xx-plus (driver-load path), network/type=nl80211 (wpa starts),
+# network/iface=wlan0. Ref: net.sh / password.sh / keepalive.sh under /opt/muos/script.
 # SSH: dropbear (we ship dropbearmulti; muOS's openssh is stripped), started once below.
 WIFI_TXT=/mnt/mmc/wifi.txt
 
-# healthy iff associated on a 2.4GHz channel (freq 24xx) AND holding an IPv4 lease
-wifi_ok() { iw dev wlan0 link 2>/dev/null | grep -qE "freq: 24[0-9][0-9]" && ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; }
-# (re)associate on 2.4GHz-only using the wifi.txt credentials
-wifi_up_2ghz() {
+( if [ -f "$WIFI_TXT" ]; then
+	# wifi.txt: "SSID:password" per line, '#' comments; first network wins. Creds are written to muOS's
+	# config at RUNTIME (never baked into the image — the build wipes them) and consumed by net.sh
+	# connect below. SSID must be BROADCAST: muOS's scan-based SSID_PRESENT + password.sh (normal-length
+	# passphrase) don't set scan_ssid, so a hidden SSID fails here exactly as it would on stock muOS.
 	_line=$(sed '/^#/d;/^[[:space:]]*$/d' "$WIFI_TXT" | head -1)
 	_ssid=${_line%%:*}; _psk=${_line#*:}
-	[ -n "$_ssid" ] && [ "$_ssid" != "$_line" ] || return
-	[ -e /sys/class/net/wlan0 ] || return
-	printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n\tscan_ssid=1\n\tfreq_list=2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472\n}\n' "$_ssid" "$_psk" > /etc/wpa_supplicant.conf
-	ifconfig wlan0 up 2>/dev/null
-	iw dev wlan0 set power_save off 2>/dev/null
-	# ROOT-CAUSE fix for the ~20s idle drop: disable the 8821cs driver idle power management. This is
-	# muOS's own fix (keepalive.sh, credit johnnyonflame) — the link then holds without a ping loop.
-	echo 0 > /sys/module/8821cs/parameters/rtw_power_mgnt 2>/dev/null
-	killall wpa_supplicant 2>/dev/null; sleep 1
-	mkdir -p /var/run/wpa_supplicant /var/db/dhcpcd /run
-	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null
-	sleep 3
-	dhcpcd -t 25 wlan0 2>/dev/null
-}
-# keepalive ping target: gateway, else .1 of wlan0's subnet, else public DNS. A bare default-route
-# lookup can come back empty (it did — the link then never got pinged and dropped); this can't.
-ka_target() {
-	_t=$(ip route 2>/dev/null | awk '/default/{print $3; exit}')
-	case "$_t" in *.*.*.*) echo "$_t"; return ;; esac
-	_p=$(ip -4 -o addr show wlan0 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.' | head -1)
-	[ -n "$_p" ] && { echo "${_p}1"; return; }
-	echo 8.8.8.8
-}
-( if [ -f "$WIFI_TXT" ]; then
-	for _ in 1 2 3 4 5 6 7 8; do [ -e /sys/class/net/wlan0 ] && break; sleep 2; done
-	wifi_ok || wifi_up_2ghz
-	# Keep the opt-in link up. rtw_power_mgnt=0 (set in wifi_up_2ghz BEFORE association) helps, but a
-	# ~12s keepalive ping (device-originated traffic to ka_target) is what reliably holds the radio;
-	# re-associate if the link is genuinely lost. Only runs when wifi.txt is present.
-	( T=$(ka_target)
-	  while : ; do
-		if wifi_ok; then
-			ping -c1 -W2 "$T" >/dev/null 2>&1
-		else
-			wifi_up_2ghz
-			T=$(ka_target)
-		fi
-		sleep 12
-	  done ) &
+	if [ -n "$_ssid" ] && [ "$_ssid" != "$_line" ] && [ -f /opt/muos/script/var/func.sh ]; then
+		# sub-subshell so whatever func.sh defines/sets stays contained (never touches the SSH block)
+		( . /opt/muos/script/var/func.sh
+		  SET_VAR "config" "network/ssid"   "$_ssid"
+		  SET_VAR "config" "network/pass"   "$_psk"
+		  SET_VAR "config" "network/hidden" "0"
+		  SET_VAR "config" "network/type"   "0"
+		  SET_VAR "config" "settings/network/con_retry"  "3"
+		  SET_VAR "config" "settings/network/compat"     "1"
+		  SET_VAR "config" "settings/network/wait_timer" "10"
+		  SET_VAR "config" "settings/network/monitor"    "1" )
+		# muOS's own proven bring-up: driver load + scan + wpa_passphrase + dhcp + validate + keepalive.
+		/opt/muos/script/system/network.sh connect >> "$LOG" 2>&1 &
+		# RECONNECT MONITOR: the boot-time connect is ONE-SHOT — net.sh exits for good after its 3
+		# retries, so one bad roll (SDIO/scan race on early boot; the known line-67 IAID error) left
+		# the device offline until the next reboot (seen live 2026-08-10). While wifi.txt is present,
+		# re-run the whole proven connect whenever wlan0 has no IPv4 on two checks in a row (~90s
+		# cadence; a connect takes ~30s, so checks never overlap a run in progress).
+		( _down=0
+		  while : ; do
+			sleep 45
+			[ -f "$WIFI_TXT" ] || continue
+			if ip -4 -o addr show wlan0 2>/dev/null | grep -q inet; then _down=0; continue; fi
+			_down=$((_down+1))
+			if [ $_down -ge 2 ]; then
+				echo "wifi monitor: offline, re-running connect" >> "$LOG"
+				/opt/muos/script/system/network.sh connect >> "$LOG" 2>&1
+				_down=0
+			fi
+		  done ) &
+	fi
   fi
   # SSH via dropbear (we ship dropbearmulti, ~250KB; muOS's 32MB openssh is stripped). Key-auth
   # only, reading /root/.ssh/authorized_keys; the ed25519 host key lives on the card so the
@@ -119,6 +111,37 @@ ka_target() {
     mkdir -p "$USERDATA_PATH" 2>/dev/null
     [ -f "$DBKEY" ] || "$DBM" dropbearkey -t ed25519 -f "$DBKEY" 2>/dev/null
     "$DBM" dropbear -r "$DBKEY" -p 22 2>/dev/null
+  fi
+  # DEVMODE-ONLY ssh hardening (2026-08-10, after a night of dropped sessions). Two failure modes:
+  #   1. The RTL8821CS dozes between muOS keepalive.sh's 60s pings, so the first packets of any new
+  #      connection die (ssh "no answer" until a ping warms the radio). A 10s gateway ping keeps the
+  #      radio hot continuously.
+  #   2. dropbear wedges when rapid aborted connection attempts exhaust its half-open slots — port
+  #      accepts but no session ever starts, and only a restart clears it. A 30s banner probe
+  #      (an ssh server must greet with "SSH-") restarts dropbear after 2 consecutive silent probes.
+  # Gated on devmode.txt: this is dev-loop plumbing and idle-power weight; never in a release.
+  if [ -f "$SDCARD_PATH/devmode.txt" ] && [ -x "$DBM" ]; then
+    ( while : ; do
+        _gw=$(ip route 2>/dev/null | awk '/default/{print $3; exit}')
+        ping -c1 -W2 "${_gw:-192.168.1.1}" >/dev/null 2>&1
+        sleep 10
+      done ) &
+    # watchdog needs busybox nc for the banner probe; without it, a probe that can never succeed
+    # would restart dropbear every 60s forever — so only arm the watchdog when nc exists.
+    busybox 2>/dev/null | grep -qw nc && \
+    ( _pf=0
+      while : ; do
+        sleep 30
+        _b=$(echo | busybox nc -w 3 127.0.0.1 22 2>/dev/null | head -c 4)
+        if [ "$_b" = "SSH-" ]; then _pf=0; continue; fi
+        _pf=$((_pf+1))
+        if [ $_pf -ge 2 ]; then
+          echo "devmode: dropbear unresponsive, restarting" >> "$LOG"
+          killall dropbearmulti 2>/dev/null; sleep 1
+          "$DBM" dropbear -r "$DBKEY" -p 22 2>/dev/null
+          _pf=0
+        fi
+      done ) &
   fi
   echo "wifi: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}') ssh=$(pgrep dropbearmulti >/dev/null && echo up || echo down)" >> "$LOG"
 ) &
