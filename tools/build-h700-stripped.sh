@@ -195,6 +195,24 @@ ctl.!default {
     card 0
 }
 ASOUND
+# CHARGE MODE: muOS runs /opt/muos/script/device/charge.sh when the device is powered on by the
+# charger (battery/boot_mode==1). It drops the governor to powersave and hands the screen to
+# `muxcharge` — which lives in /opt/muos/frontend and is REMOVED by the strip above. The call then
+# fails, the following integer test on a missing /tmp/charger_exit throws, and boot continues by
+# accident rather than by design. Make it deliberate: skip the block so charge mode boots straight
+# to MinUI, whose own ChargingScreen draws a filled battery AND the live percentage
+# (PLAT_getChargePercent) instead of a static logo that can never show status
+# (Dan 2026-08-10: the static logo "is wrong and does not show status").
+CHG="$R/opt/muos/script/device/charge.sh"
+if [ -f "$CHG" ]; then
+	{
+		echo "#!/bin/sh"
+		echo "# MinUI Zero: muxcharge is stripped; MinUI renders the charge screen itself."
+		echo "exit 0"
+	} > "$CHG"
+	chmod +x "$CHG"
+fi
+
 # Trim pipewire.sh (startup.sh still runs it at boot) to the ONE thing still needed: restoring the
 # codec mixer state (unmute + output routing) from asound.state under /opt/muos/device (kept).
 # Drops the pipewire daemon start and the wpctl finalise, whose ~6-9s of timeouts would otherwise
