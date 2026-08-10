@@ -37,6 +37,7 @@ mkdir -p "$OUT_DIR"
 # ---- p5: extract muOS rootfs, strip, inject our launcher, rebuild (all in the container) ----
 echo "== extracting + stripping muOS rootfs (this takes a few minutes) =="
 cp "$REPO/tools/h700-strip/minui-frontend.sh" "$ASSETS/minui-frontend.sh"
+cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
 docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e P5_KB=$((P5_SECTORS / 2)) tg5040-toolchain /bin/bash -c '
 set -e
 R=/work/root
@@ -167,6 +168,8 @@ sed -i "s|^FRONTEND start|sh /opt/minui-zero/minui-frontend.sh \&|" "$SU"
 sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
+cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
+chmod +x "$R/opt/minui-zero/expand-roms.sh"
 chmod +x "$R/opt/minui-zero/minui-frontend.sh"
 # NO wifi credentials baked into the image (privacy): WIPE muOS saved creds from the rdumped rootfs.
 # It bakes the builder network at /opt/muos/config/network/{ssid,pass} (net.sh no-ops on empty SSID),
