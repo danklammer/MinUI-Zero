@@ -246,6 +246,16 @@ chmod +x "$STAGE/.system/h700/bin/dropbearmulti"
 cp "$REPO"/workspace/tg5040/cores/output/*.so           "$STAGE/.system/h700/cores/"
 cp "$REPO"/skeleton/SYSTEM/res/*                        "$STAGE/.system/res/"
 cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/paks"
+# Tools paks live at the CARD ROOT (Tools/<platform>/), not in .system — that is where minui scans
+# (minui.c: SDCARD_PATH "/Tools/" PLATFORM) and where users drop community tools. h700 shipped none
+# at all while the Brick ships five; Clock is the first (parity audit 2026-08-10). clock.elf is the
+# shared workspace/all/clock binary, already built for this platform by `make h700-build`.
+if [ -d "$REPO/skeleton/EXTRAS/Tools/h700" ]; then
+	mkdir -p "$STAGE/Tools/h700"
+	cp -R "$REPO"/skeleton/EXTRAS/Tools/h700/* "$STAGE/Tools/h700/"
+	[ -f "$REPO/workspace/all/clock/build/h700/clock.elf" ] && \
+		cp "$REPO/workspace/all/clock/build/h700/clock.elf" "$STAGE/Tools/h700/Clock.pak/"
+fi
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
 printf 'MinUI Zero (%s)\n%s\n' "$(date +%Y%m%d)" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
