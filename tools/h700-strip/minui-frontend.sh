@@ -46,6 +46,24 @@ echo "MinUI Zero frontend $(date 2>/dev/null)" >> "$LOG"
 # digital volume at the power-on 0 = dead silent (found live 2026-08-06). Doing it here, blocking,
 # guarantees the codec is unmuted and at its 24 baseline before minui ever reads it.
 alsactl -U -f /opt/muos/device/control/asound.state restore 2>/dev/null
+
+# Re-assert the USER's volume over that baseline, and again at every process boundary below.
+# Why this exists: the only muter is PWR_enterSleep (api.c SetRawVolume(MUTE_VOLUME_RAW) -> raw 0),
+# and the matching un-mute lives in PWR_exitSleep *inside the same process*. If that process is
+# replaced while muted — faux-sleep then a relaunch, a crash, or a dev deploy that restarts minui —
+# nobody ever writes the level back and the codec stays at 0 through the next game launch, which is
+# the "audio way lowered when starting a new game" report (captured live 2026-08-10: screen on,
+# game running, raw=0, saved level still 16). libmsettings persists the UI level to $VOL_FILE;
+# applying it here makes the codec match the saved level at every boundary, whoever muted it.
+VOL_FILE="$USERDATA_PATH/volume"   # UI 0-20, written by libmsettings SetVolume
+apply_volume() {
+	[ -f "$VOL_FILE" ] || return 0
+	_ui=$(cat "$VOL_FILE" 2>/dev/null)
+	case "$_ui" in ''|*[!0-9]*) return 0 ;; esac   # ignore a garbage/partial file
+	[ "$_ui" -gt 20 ] && _ui=20
+	amixer -c 0 sset 'digital volume' $(( _ui * 63 / 20 )) >/dev/null 2>&1   # UI 0-20 -> raw 0-63
+}
+apply_volume
 echo "audio: digital volume $(amixer -c 0 sget 'digital volume' 2>/dev/null | grep -oE '[0-9]+ \[' | tr -d ' [')" >> "$LOG"
 
 # THE THESIS: own the governor. schedutil + our minui/minarch write the ceiling on top.
@@ -184,8 +202,10 @@ while : ; do
 		FAILS=0
 		CMD=$(cat /tmp/next)
 		echo "launch: $CMD" >> "$LOG"
+		apply_volume   # a mute left behind by the menu process must not follow us into the game
 		sh -c "$CMD"
 		echo "game exited rc=$?" >> "$LOG"
+		apply_volume   # ...nor back into the menu if the game was killed while muted
 		[ -f /tmp/poweroff ] && { echo "poweroff requested (in-game)" >> "$LOG"; power_off; }
 	elif [ "$RC" = "0" ]; then
 		echo "clean exit — power off" >> "$LOG"

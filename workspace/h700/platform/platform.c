@@ -811,6 +811,25 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	online = prefixMatch("up", status);
 }
 
+// Fine-grained charge level. The AXP2202 here is the Brick exact PMIC with identical sysfs
+// paths (verified on-device 2026-08-04), so this is the tg5040 implementation verbatim, including
+// its honest-100% rule: the gauge rounds up before the charger actually terminates, so hold at 99%
+// until the kernel says Full. Without this the UI fell back to PLAT_getBatteryStatus 20% buckets.
+// Gap found by tools/check-plat-surface.sh (2026-08-10).
+int PLAT_getChargePercent(void) {
+	int pct = -1;
+	FILE* bf = fopen("/sys/class/power_supply/axp2202-battery/capacity", "r");
+	if (bf) { if (fscanf(bf, "%d", &pct) != 1) pct = -1; fclose(bf); }
+	if (pct < 0) return -1;
+	if (pct >= 100) {
+		char st[16] = "";
+		FILE* sf = fopen("/sys/class/power_supply/axp2202-battery/status", "r");
+		if (sf) { if (!fgets(st, sizeof(st), sf)) st[0] = 0; fclose(sf); }
+		if (strncmp(st, "Full", 4) != 0) pct = 99;
+	}
+	return pct;
+}
+
 // Charging inhibits autosleep (same behaviour as the Brick). Crucial in hosted dev: the 30s
 // autosleep was ending input sessions before anyone pressed a button.
 int PLAT_isToppingUp(void) {

@@ -70,6 +70,7 @@ test-cfg-migrate:
 	sh ./workspace/all/common/run-cfg-migrate-tests.sh
 check-parity:
 	sh ./tools/check-parity.sh
+	sh ./tools/check-plat-surface.sh
 test-telemetry:
 	sh ./workspace/all/common/run-telemetry-tests.sh
 test-save-io:

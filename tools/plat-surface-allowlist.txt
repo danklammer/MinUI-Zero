@@ -1,0 +1,44 @@
+# Declared PLAT_* gaps — tools/check-plat-surface.sh fails anything not listed.
+# Format: <platform>:<PLAT_symbol>. Every entry needs a reason. A stale entry (the platform
+# implements it now) also fails, so this file cannot rot into a rubber stamp.
+
+# ---- Undervolt suite: TCS4838 PMIC, tg5040 hardware only ----
+# Not a missing feature elsewhere — the silicon is not there. Never port these.
+miyoomini:PLAT_setUndervolt
+miyoomini:PLAT_supportsUndervolt
+miyoomini:PLAT_setCPUVoltForCeil
+miyoomini:PLAT_restoreCPUVolt
+miyoomini:PLAT_emergencyRestoreCPUVolt
+miyoomini:PLAT_uvReassert
+h700:PLAT_setUndervolt
+h700:PLAT_supportsUndervolt
+h700:PLAT_setCPUVoltForCeil
+h700:PLAT_restoreCPUVolt
+h700:PLAT_emergencyRestoreCPUVolt
+h700:PLAT_uvReassert
+
+# ---- GPU-dark menu (software present to fb0 so the GPU domain suspends) ----
+# Brick-ONLY: the Smart Pro panel scans the GLES layer, not fb0 (D-logged). The MMP has no GPU
+# domain to dark, and the h700 presents through the DE layer where the same trick does not apply.
+miyoomini:PLAT_flipFB
+miyoomini:PLAT_flipFB_game
+h700:PLAT_flipFB
+h700:PLAT_flipFB_game
+
+# ---- Deep sleep ----
+# MMP: PROVEN impossible on that SoC (suspend-to-RAM never returns). The h700 DOES implement the
+# entry point (currently returning 0 while faux-sleep wake is validated), so it is not listed.
+miyoomini:PLAT_supportsDeepSleep
+
+# ---- Colour effects ----
+# Both peers implement PLAT_setEffect but not the colour variant; effects on these platforms are
+# still stubs pending a present-path design (h700: DE layer; MMP: one scaler family). Revisit when
+# effects land — this entry is a TODO with a name, not an excuse.
+miyoomini:PLAT_setEffectColor
+h700:PLAT_setEffectColor
+
+# ---- System rumble ----
+# The system-level rumble hook (distinct from PLAT_setRumble, which the h700 now implements against
+# the AXP2202 moto node). Not yet wired on either peer; port with the Tools/Settings work.
+miyoomini:PLAT_setSystemRumble
+h700:PLAT_setSystemRumble
