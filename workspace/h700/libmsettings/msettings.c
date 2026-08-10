@@ -71,16 +71,44 @@ static void vol_open(void) {
 	}
 }
 
+// Persisted UI volume. The codec register is NOT a reliable source of truth: opening a PCM powers
+// the DAPM path up and ZEROES 'digital volume', so a process that only READS the register at start
+// (what this did) adopts 0 and plays the whole game silent — the "no audio on first launch" bug
+// (Dan, fixed 2026-08-10). tg5040 has the same read-then-WRITE contract via its own persistence
+// (msettings.c: InitSettings ends with SetVolume(GetVolume())); this is that, file-backed.
+#define VOL_FILE "/mnt/mmc/.userdata/h700/volume"
+static void vol_persist(int ui) {
+	FILE* f = fopen(VOL_FILE, "w");
+	if (!f) return;
+	fprintf(f, "%d\n", ui);
+	fclose(f);
+}
+static int vol_restore(void) { // -1 = no saved value
+	FILE* f = fopen(VOL_FILE, "r");
+	if (!f) return -1;
+	int ui = -1;
+	if (fscanf(f, "%d", &ui) != 1) ui = -1;
+	fclose(f);
+	if (ui < 0 || ui > 20) return -1;
+	return ui;
+}
+
 void InitSettings(void) {
-	// Read the codec's current raw level (set at boot by the frontend's alsactl restore) back to UI.
 	vol_open();
-	if (vol_elem) {
+	// Saved level wins. Only when there is none do we adopt the codec's current level (first boot
+	// after a flash: the frontend's alsactl restore has set the baseline and nothing has opened a
+	// PCM yet, so the register is still meaningful).
+	int ui = vol_restore();
+	if (ui < 0 && vol_elem) {
 		long v = vol_min, range = vol_max - vol_min;
-		if (snd_mixer_selem_get_playback_volume(vol_elem, SND_MIXER_SCHN_MONO, &v) >= 0)
-			cur_vol = (int)(((v - vol_min) * 20 + range / 2) / range);
+		if (range > 0 && snd_mixer_selem_get_playback_volume(vol_elem, SND_MIXER_SCHN_MONO, &v) >= 0)
+			ui = (int)(((v - vol_min) * 20 + range / 2) / range);
 	}
-	if (cur_vol < 0) cur_vol = 10;
-	if (cur_vol > 20) cur_vol = 20;
+	if (ui < 0) ui = 10;
+	if (ui > 20) ui = 20;
+	// WRITE it back, always: minarch calls InitSettings AFTER SND_init (minarch.c "after we
+	// initialize audio"), so this is what undoes the PCM-open zeroing for every game launch.
+	SetVolume(ui);
 }
 void QuitSettings(void) {
 	if (vol_mixer) { snd_mixer_close(vol_mixer); vol_mixer = NULL; vol_elem = NULL; }
@@ -127,8 +155,12 @@ void SetBrightness(int value) { // 0-10 UI
 void SetVolume(int value) { // 0-20 UI
 	if (value < 0) value = 0;
 	if (value > 20) value = 20;
+	int changed = (value != cur_vol);
 	cur_vol = value;
 	SetRawVolume(value * 5);
+	// Persist only on a real change: this runs ~9x/s on a held volume ramp, and the point is to
+	// survive a process boundary, not to log every step.
+	if (changed) vol_persist(value);
 }
 
 int GetJack(void) { return 0; }
