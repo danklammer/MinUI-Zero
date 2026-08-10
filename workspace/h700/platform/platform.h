@@ -128,6 +128,12 @@
 // instead ask PLAT_getGameRect, which mirrors the DE math. Only define on hw-scaler platforms.
 #define PLAT_PRESENT_SCALER 1
 
+// Platform folder name the wider pak scene publishes under for this hardware. MinUI/NextUI pak
+// authors have shipped "rg35xxplus" paks for years; our internal name is h700 (upstream-merge
+// cleanliness — internal identifiers are never renamed for branding). Honouring both means those
+// paks install drop-in. See getEmuPath (utils.c) and hasEmu/Tools scan (minui.c).
+#define PLATFORM_ALIAS "rg35xxplus"
+
 // @2x UI assets, matching the miyoomini — the SAME 640x480 panel geometry. At 1 the whole
 // launcher rendered half-size ("the resolution is off, everything is tiny", Dan 2026-08-05).
 #define FIXED_SCALE		2

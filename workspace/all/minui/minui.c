@@ -481,7 +481,13 @@ static int hasEmu(char* emu_name) {
 	if (exists(pak_path)) return 1;
 
 	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM, emu_name);
-	return exists(pak_path);
+	if (exists(pak_path)) return 1;
+#ifdef PLATFORM_ALIAS
+	// see getEmuPath (utils.c): also honour the platform folder name the community publishes under
+	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM_ALIAS, emu_name);
+	if (exists(pak_path)) return 1;
+#endif
+	return 0;
 }
 static int hasCue(char* dir_path, char* cue_path) { // NOTE: dir_path not rom_path
 	char* tmp = strrchr(dir_path, '/') + 1; // folder name
@@ -751,6 +757,11 @@ static Array* getRoot(void) {
 	
 	char* tools_path = SDCARD_PATH "/Tools/" PLATFORM;
 	if (exists(tools_path) && !simple_mode) Array_push(root, Entry_new(tools_path, ENTRY_DIR));
+#ifdef PLATFORM_ALIAS
+	// community Tools paks publish under the scene's platform name (see getEmuPath, utils.c)
+	char* tools_alias_path = SDCARD_PATH "/Tools/" PLATFORM_ALIAS;
+	if (exists(tools_alias_path) && !simple_mode) Array_push(root, Entry_new(tools_alias_path, ENTRY_DIR));
+#endif
 	
 	return root;
 }

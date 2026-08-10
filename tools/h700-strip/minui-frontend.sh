@@ -16,6 +16,13 @@ export SHARED_USERDATA_PATH=/mnt/mmc/.userdata/shared
 export SAVES_PATH=/mnt/mmc/Saves
 export BIOS_PATH=/mnt/mmc/Bios
 export CORES_PATH=/mnt/mmc/.system/h700/cores
+# Pak-contract env the wider scene expects (NextUI PAKS.md; MinUI heritage). CHEATS_PATH is part of
+# every pak's boilerplate and DEVICE is minarch's sub-device discriminator (config.device_tag) —
+# neither was exported here, so third-party paks that use them got empty paths. Community paks are
+# the opt-in feature rail (Dan 2026-08-10), so the contract has to be complete.
+export CHEATS_PATH=/mnt/mmc/Cheats
+# plus vs h (near-twins; muOS resolves the board for us). Consumed by paks and minarch alike.
+export DEVICE=$(sed 's/^rg35xx-//' /opt/muos/device/config/board/name 2>/dev/null || echo plus)
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
 # audio: pipewire is REMOVED (build-h700-stripped.sh). startup.sh's trimmed pipewire.sh does the
 # codec init (alsactl restore) at boot; ALSA routes default->hw directly (asound.conf); minui and
