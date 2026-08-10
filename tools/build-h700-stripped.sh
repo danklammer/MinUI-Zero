@@ -116,6 +116,46 @@ rm -f "$R/usr/lib/libSDL_sound-1.0.so."* "$R/usr/lib/libsndfile.so."* "$R/usr/li
 # MODALIAS (not hwdb) and h700 input is raw evdev, so the hardware database has no consumer here.
 rm -rf "$R/opt/openssh" 2>/dev/null || true
 rm -f "$R/etc/udev/hwdb.bin" 2>/dev/null || true
+
+# ---- Deeper lean pass (2026-08-08): drop libs/tools a readelf NEEDED-closure proves have no live
+# ---- consumer, trim single-language/single-timezone data, and strip kernel-module debug symbols.
+# ---- KEEP note: text rendering is load-bearing on libSDL2_ttf -> libharfbuzz -> libglib, so ALL of
+# ---- those (and libfreetype) stay. Everything removed below was verified consumer-free.
+# Tier 3 - dependency-verified orphans + their tool-only consumers (X11/cairo island, sqlite,
+# samplerate/openal/archive, harfbuzz-subset, xml2, the GLib CLI tools, dead fluidsynth/minimodem):
+rm -f "$R/usr/lib/libX11.so."* "$R/usr/lib/libXext.so."* "$R/usr/lib/libXrender.so."* \
+      "$R/usr/lib/libcairo.so."* "$R/usr/lib/libpixman-1.so."* "$R/usr/bin/modetest" \
+      "$R/usr/lib/libsqlite3.so."* "$R/usr/bin/sqlite3" \
+      "$R/usr/lib/libsamplerate.so."* "$R/usr/lib/libopenal.so."* "$R/usr/lib/libarchive.so."* \
+      "$R/usr/lib/libharfbuzz-subset.so."* "$R/usr/bin/hb-info" "$R/usr/bin/hb-shape" \
+      "$R/usr/bin/hb-subset" "$R/usr/bin/hb-ot-shape-closure" \
+      "$R/usr/lib/libxml2.so."* "$R/usr/bin/xml" "$R/usr/bin/xmlcatalog" "$R/usr/bin/xmllint" \
+      "$R/usr/lib/libMagick++"* \
+      "$R/usr/bin/gio" "$R/usr/bin/gsettings" "$R/usr/bin/gdbus" "$R/usr/bin/gresource" \
+      "$R/usr/bin/gapplication" "$R/usr/bin/gio-querymodules" "$R/usr/bin/dbus-binding-tool" \
+      "$R/usr/bin/fluidsynth" "$R/usr/lib/libfluidsynth.so."* \
+      "$R/usr/lib/libicu"*.so* "$R/usr/lib/libharfbuzz-icu.so."* \
+      "$R/usr/bin/minimodem" "$R/usr/bin/spa-resample" 2>/dev/null || true
+# Dead ALSA pipewire routing plugins (we route ALSA direct to hw via asound.conf, never via pipewire):
+find "$R/usr/lib" -name "libasound_module_*pipewire*" -delete 2>/dev/null || true
+# Tier 1 - single-timezone (drop posix/ dup + right/ leap-second trees), single-language (keep C.*):
+rm -rf "$R/usr/share/zoneinfo/posix" "$R/usr/share/zoneinfo/right" 2>/dev/null || true
+find "$R/usr/lib/locale" -mindepth 1 -maxdepth 1 ! -name "C.*" -exec rm -rf {} + 2>/dev/null || true
+rm -f "$R/usr/lib/locale/locale-archive" 2>/dev/null || true
+# gconv: keep the UTF/ASCII/Latin-1 converters + the module map; drop exotic charset .so files.
+if [ -d "$R/usr/lib/gconv" ]; then
+  find "$R/usr/lib/gconv" -maxdepth 1 -name "*.so" \
+    ! -name "UTF-16.so" ! -name "UTF-32.so" ! -name "UTF-7.so" ! -name "UNICODE.so" \
+    ! -name "ANSI_X3.4.so" ! -name "ISO8859-1.so" ! -name "ISO8859-15.so" ! -name "CP1252.so" \
+    -delete 2>/dev/null || true
+fi
+# Tier 2 - strip debug symbols from the (vendor-unstripped) kernel modules. MUST use the aarch64
+# strip: the host x86 strip cannot read aarch64 .ko. This alone reclaims ~23MB (single modules go
+# from ~17MB to ~0.7MB), so it dwarfs everything else in this pass.
+_msz=$(du -sh "$R/lib/modules" 2>/dev/null | cut -f1)
+KOSTRIP=$(command -v aarch64-linux-gnu-strip 2>/dev/null || echo /opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-strip)
+find "$R/lib/modules" -name "*.ko" -exec "$KOSTRIP" --strip-debug {} + 2>/dev/null || true
+echo "  kernel modules: $_msz -> $(du -sh "$R/lib/modules" 2>/dev/null | cut -f1) after .ko debug-strip"
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
 #       udev, wifi stack, dropbearmulti (ssh), SDL, kernel modules, alsa-utils (amixer/alsactl),
 #       gl4es/libopenal/libsamplerate/embiggen-disk (possible SDL/runtime deps — not worth the risk)
@@ -194,6 +234,12 @@ printf 'MinUI Zero (%s)\n%s\n' "$(date +%Y%m%d)" "$(cd "$REPO" && git rev-parse 
 [ -n "$H700_TEST_ROM" ] && [ -f "$H700_TEST_ROM" ] && cp "$H700_TEST_ROM" "$STAGE/Roms/Game Boy Color (GBC)/"
 # example wifi.txt at the card root (commented out; user adds their own "SSID:password")
 printf '# WiFi: one network per line as SSID:password (# comments ignored). Example:\n# MyNetwork:mypassword\n' > "$STAGE/wifi.txt.example"
+# devmode.txt — DEV CARD FLAG (api.c PWR_init arms /tmp/stay_awake at every startup when present).
+# Without it an idle h700 POWERS ITSELF OFF after ~2.5min: 30s -> faux-sleep, then the 2-minute deep
+# sleep escalation finds PLAT_supportsDeepSleep()==0 and falls through to PWR_powerOff() (api.c:2506).
+# That killed every remote debug session on 2026-08-09. Delete this file to restore stock power
+# behaviour (autosleep + idle power-off) — it costs idle battery, so it must NOT ship in a release.
+printf 'MinUI Zero dev flag: keeps the device awake (no autosleep, no idle power-off) so SSH sessions\nsurvive. Delete this file for stock power behaviour / best battery life.\n' > "$STAGE/devmode.txt"
 
 cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
 rm -f "$OUT_DIR/p6.img"
@@ -207,6 +253,11 @@ done
 # ---- assemble ----
 echo "== assembling image =="
 rm -f "$IMG"
+# NOTE: raw-36mb carries the Allwinner boot chain INCLUDING the kernel DTB, which is PATCHED
+# (2026-08-10, .notes/.../patch_pollinterval.py): gpio_keys poll-interval 20ms -> 5ms + recomputed
+# toc1 checksum. That is the all-systems input-lag fix (buttons are kernel-POLLED on this BSP;
+# mainline uses interrupts). A re-dumped part from a stock card would silently regress to 20ms —
+# re-run the patch script against any fresh dump (offsets + verified algorithm inside it).
 gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"
 gunzip -c "$ASSETS/parts/p2-boot.img.gz"   | dd of="$IMG" bs=512 seek=90112  conv=notrunc status=none
 gunzip -c "$ASSETS/parts/p3-env.img.gz"    | dd of="$IMG" bs=512 seek=155648 conv=notrunc status=none
