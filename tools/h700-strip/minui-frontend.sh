@@ -155,6 +155,13 @@ WIFI_TXT=/mnt/mmc/wifi.txt
 
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui" 2>/dev/null
 
+# COMMUNITY PAK COMPAT: the scene's canonical card mount is /mnt/SDCARD and paks hardcode it
+# constantly (NextUI HOOKS.md documents that literal path), but muOS mounts ours at /mnt/mmc, so
+# a hardcoded pak would write into a nonexistent tree and silently do nothing. A symlink costs one
+# inode and makes both spellings the same place. Only when the real mount exists and the name is
+# free — never clobber a real /mnt/SDCARD on a device that has one. See docs/pak-compatibility.md.
+[ -d "$SDCARD_PATH" ] && [ ! -e /mnt/SDCARD ] && ln -s "$SDCARD_PATH" /mnt/SDCARD 2>/dev/null
+
 # power-off the muOS way (AXP register; plain poweroff reboots) — reused from halt.sh
 power_off() {
 	sync
