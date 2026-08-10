@@ -93,8 +93,11 @@ void PLAT_quitInput(void) {
 // code -> (btn, id). MEASURED 2026-08-05: counted-press session on the RG35XX Plus (each button
 // pressed a distinct number of times, decoded from count + temporal order). The canonical evdev
 // names are WRONG on this hardware — 315 "BTN_START" is R2, 314 "BTN_SELECT" is L2, 310 "BTN_TL"
-// is Select — so this table is receipts, not <input-event-codes.h>. The MENU key emits 312 AND 354
-// together; both map to BTN_MENU (same bit, harmless).
+// is Select — so this table is receipts, not <input-event-codes.h>. MENU is special (captured
+// on-device 2026-08-09): one physical press emits 312 (the REAL button — down on press, up on
+// release, duration tracks the hold) then a FIXED ~180ms 354 pulse at release (312-up and 354-down
+// arrive simultaneously). Map ONLY 312. Mapping 354 too made the release pulse a SECOND BTN_MENU
+// press one poll later, so the About screen opened then instantly closed ("finicky"). 354 -> BTN_NONE.
 // The dpad is an ANALOG HAT (EV_ABS codes 16/17), handled separately in PLAT_pollInput.
 static void ev_translate(uint16_t code, int* btn, int* id) {
 	switch (code) {
@@ -108,8 +111,7 @@ static void ev_translate(uint16_t code, int* btn, int* id) {
 	case 315: *btn = BTN_R2;     *id = BTN_ID_R2;     break;
 	case 311: *btn = BTN_START;  *id = BTN_ID_START;  break;
 	case 310: *btn = BTN_SELECT; *id = BTN_ID_SELECT; break;
-	case 354: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break;
-	case 312: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break; // MENU companion code
+	case 312: *btn = BTN_MENU;   *id = BTN_ID_MENU;   break; // MENU (real button; the 354 release-pulse is dropped)
 	case 116: *btn = BTN_POWER;  *id = BTN_ID_POWER;  break; // KEY_POWER (event0, axp2202-pek)
 	case 115: *btn = BTN_PLUS;   *id = BTN_ID_PLUS;   break; // KEY_VOLUMEUP
 	case 114: *btn = BTN_MINUS;  *id = BTN_ID_MINUS;  break; // KEY_VOLUMEDOWN
@@ -165,10 +167,9 @@ void PLAT_pollInput(void) {
 			int btn, id;
 			ev_translate(ev.code, &btn, &id);
 			if (btn == BTN_NONE) continue;
-			// DEBOUNCE dual-code keys: MENU emits 354 AND 312 for one physical press. When the
-			// pair splits across polls, an unguarded handler set just_pressed twice — so closing
-			// the in-game menu instantly REOPENED it ("menu never closes", Dan 2026-08-05).
-			// Only a real edge (state actually changing) may set the just_* flags.
+			// Edge guard: only a REAL state change may set the just_* flags. MENU's double-fire is
+			// now fixed at the source (ev_translate maps only the real 312 button, drops the 354
+			// release-pulse), but this guard still protects every key from a repeated same-state event.
 			if (ev.value) {
 				if (!(pad.is_pressed & btn)) {
 					pad.is_pressed    |= btn;
@@ -767,6 +768,14 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 	else if (i>20) *charge =  40;
 	else if (i>10) *charge =  20;
 	else           *charge =  10;
+
+	// wifi status, hooking into the regular PWR polling (same as tg5040 platform.c) — this is
+	// what feeds PLAT_isOnline and lights the menu wifi glyph (GFX_blitHardwareGroup ASSET_WIFI).
+	// `online` was declared but never SET here, so the icon could never appear (parity drift,
+	// caught 2026-08-10 when Dan asked for a wifi indicator that upstream already ships).
+	char status[16];
+	getFile("/sys/class/net/wlan0/operstate", status, 16);
+	online = prefixMatch("up", status);
 }
 
 // Charging inhibits autosleep (same behaviour as the Brick). Crucial in hosted dev: the 30s
