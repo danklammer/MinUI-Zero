@@ -255,6 +255,15 @@ if [ -d "$REPO/skeleton/EXTRAS/Tools/h700" ]; then
 	cp -R "$REPO"/skeleton/EXTRAS/Tools/h700/* "$STAGE/Tools/h700/"
 	[ -f "$REPO/workspace/all/clock/build/h700/clock.elf" ] && \
 		cp "$REPO/workspace/all/clock/build/h700/clock.elf" "$STAGE/Tools/h700/Clock.pak/"
+	[ -f "$REPO/workspace/all/minput/build/h700/minput.elf" ] && \
+		cp "$REPO/workspace/all/minput/build/h700/minput.elf" "$STAGE/Tools/h700/Input.pak/"
+	# Files ships the same aarch64 DinguxCommander the Brick uses (its libs resolve on the lean
+	# rootfs — checked on-device, not assumed). It needs its res/ tree alongside the binary.
+	DC="$REPO/workspace/tg5040/other/DinguxCommander-sdl2"
+	if [ -f "$DC/DinguxCommander" ] && [ -d "$STAGE/Tools/h700/Files.pak" ]; then
+		cp "$DC/DinguxCommander" "$STAGE/Tools/h700/Files.pak/"
+		cp -R "$DC/res" "$STAGE/Tools/h700/Files.pak/" 2>/dev/null || true
+	fi
 fi
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)

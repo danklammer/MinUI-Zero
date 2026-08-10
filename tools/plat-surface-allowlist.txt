@@ -42,3 +42,12 @@ h700:PLAT_setEffectColor
 # the AXP2202 moto node). Not yet wired on either peer; port with the Tools/Settings work.
 miyoomini:PLAT_setSystemRumble
 h700:PLAT_setSystemRumble
+
+# ---- Tools paks NOT ported to h700, and why (checked 2026-08-10) ----
+# These are not oversights; each depends on hardware or a feature this platform does not have.
+#   Deep Sleep   — PLAT_supportsDeepSleep() returns 0 here (deferred until faux-sleep wake is
+#                  validated). A toggle for a feature that is off would just mislead. Ship it with
+#                  deep sleep, not before.
+#   Optimize CPU — the undervolt harness drives the TCS4838 PMIC, tg5040 silicon only (same earned
+#                  divergence as the PLAT undervolt suite above).
+# (Comment only — the checker ignores non "<platform>:<symbol>" lines.)
