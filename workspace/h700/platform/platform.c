@@ -77,8 +77,21 @@ static const char* ev_paths[EVDEV_COUNT] = {
 
 static SDL_Joystick *joystick;
 void PLAT_initInput(void) {
-	SDL_InitSubSystem(SDL_INIT_JOYSTICK);
-	joystick = SDL_JoystickOpen(0);
+	// SDL's joystick subsystem is NOT our input source: PLAT_pollInput below reads the evdev nodes
+	// directly (muOS's SDL2 delivered zero events for these buttons, which is why this platform
+	// overrides polling at all), and PLAT_pollInput flushes the SDL event queue every frame.
+	// Opening it anyway cost 249ms of a 313ms launcher startup, MEASURED 2026-08-10, and every
+	// process pays it: the launcher on boot and after each game, and minarch on every launch.
+	// ZERO_SDL_JOYSTICK=1 restores the old behaviour if a device ever needs it.
+	uint64_t t0 = getMicroseconds();
+	const char* want_js = getenv("ZERO_SDL_JOYSTICK");
+	if (want_js && want_js[0] && want_js[0] != '0') {
+		SDL_InitSubSystem(SDL_INIT_JOYSTICK);
+		joystick = SDL_JoystickOpen(0);
+	}
+	LOG_info("input: sdl joystick %s (+%llums)\n",
+		(want_js && want_js[0] && want_js[0] != '0') ? "opened" : "skipped",
+		(unsigned long long)((getMicroseconds() - t0) / 1000));
 	for (int i = 0; i < EVDEV_COUNT; i++) {
 		ev_fds[i] = open(ev_paths[i], O_RDONLY | O_NONBLOCK);
 		LOG_info("evdev: %s -> fd %d\n", ev_paths[i], ev_fds[i]);
