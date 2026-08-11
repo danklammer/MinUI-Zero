@@ -46,6 +46,10 @@
 static int zero_owns_os(void);
 // Debug HUD compositor: defined with the other HUD code lower down, called from PLAT_flip above it.
 static void dbg_compose(void);
+// Screen-effect selection. Declared here because PLAT_getScaler and PLAT_blitRenderer (above the
+// effect code) both read it; PLAT_setEffect writes it from the menu.
+static int next_effect = EFFECT_NONE;
+static int effect_type = EFFECT_NONE;
 
 ///////////////////////////////
 // msettings lives in ../libmsettings (guest stubs: muOS owns audio/brightness) — the shared
@@ -684,6 +688,23 @@ void PLAT_vsync(int remaining) {
 // Integer scaling + centering, the MMP pattern exactly: minarch computes the scale and dst rect;
 // the platform honors both. (v0 ignored them — the first game ran 1:1 in the corner.)
 scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
+	// _c16 (portable C), never _n16: those are hand-written ARM 32-bit assembly and this is aarch64.
+	if (effect_type==EFFECT_LINE) {
+		switch (renderer->scale) {
+			case 4:  return scale4x_line;
+			case 3:  return scale3x_line;
+			case 2:  return scale2x_line;
+			case 1:  return scale1x_line;
+			default: break;   // no line variant at this factor: fall through to plain
+		}
+	}
+	else if (effect_type==EFFECT_GRID) {
+		switch (renderer->scale) {
+			case 3:  return scale3x_grid;
+			case 2:  return scale2x_grid;
+			default: break;   // grid only exists at 2x/3x
+		}
+	}
 	switch (renderer->scale) {
 		case 6:  return scale6x6_c16;
 		case 5:  return scale5x5_c16;
@@ -695,6 +716,12 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 }
 
 void PLAT_blitRenderer(GFX_Renderer* renderer) {
+	// The effect changes from the menu between frames; minarch caches the chosen scaler in
+	// renderer->blit, so re-resolve it when the selection moved (MMP pattern).
+	if (effect_type != next_effect) {
+		effect_type = next_effect;
+		renderer->blit = PLAT_getScaler(renderer);
+	}
 	vid.blit = renderer;
 	if (vid.use_disp) {
 		disp_wait_latch(); // the OTHER buffer may still be scanning until the last commit latches
@@ -976,7 +1003,15 @@ int PLAT_pickSampleRate(int requested, int max) {
 }
 
 // minarch-only surface, v0 stubs
-void PLAT_setEffect(int effect) {} // no scanline/DMG effects on the DE path yet (locked in system.cfg)
+// Screen effects (scanlines / grid). Implemented the way the MMP does it: NOT as a post-process
+// pass, but by swapping the SCALER so the effect is baked into the upscale that already happens
+// every frame. That is the only version that fits this fork: zero extra passes over the pixels,
+// zero extra memory, and the cost is identical to scaling without an effect.
+// The line/grid scalers only exist for some factors (line 1x-4x, grid 2x-3x); anything else falls
+// through to the plain scaler rather than pretending.
+void PLAT_setEffect(int effect) {
+	next_effect = effect;
+}
 
 // Debug HUD. minarch hands two RGB565 strips (top/bottom) generated at screen->w /
 // DBG_OVERLAY_SCALE and expects them presented SCALED so they span the panel. 0xF81F (magenta) is
