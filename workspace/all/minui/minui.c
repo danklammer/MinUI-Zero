@@ -1010,15 +1010,12 @@ static void prefetchCore(char* emu_name) {
 }
 static void queueNext(char* cmd) {
 	LOG_info("cmd: %s\n", cmd);
-	// Acknowledge the press immediately: clear the panel so the menu does not sit frozen while the
-	// game loads. This started out printing "Loading" as well, which was the right call when a
-	// launch took over a second; once the real cost was found and removed (the SDL joystick open,
-	// 249ms per process) the word only advertised a wait that is no longer there, so it is gone
-	// and the blank frame does the job on its own (Dan 2026-08-10).
-	if (ui_screen) {
-		GFX_clear(ui_screen);
-		GFX_flip(ui_screen);
-	}
+	// NOTE: no transition frame here on purpose. This briefly cleared the panel (and before that
+	// printed "Loading") to prove the button had registered, which was right when a launch cost
+	// over a second. Removing the real cost changed the answer: the launcher is now ~57ms and a
+	// game arrives in roughly half a second, so blanking the screen IS the artifact -- it reads as
+	// a flash between two frames that would otherwise follow each other closely (Dan 2026-08-10).
+	// Leave the menu on screen; the game's first frame replaces it.
 	putFile("/tmp/next", cmd);
 	quit = 1;
 }

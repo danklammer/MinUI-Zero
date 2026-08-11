@@ -6836,9 +6836,11 @@ int main(int argc , char* argv[]) {
 			goto finish;
 		}
 	}
+	TMARK("game_loaded");
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+	TMARK("cfg_read");
 #ifndef ZERO_DISABLE_FRONTEND_THREADING
 	int legacy_tv = 0; // pre-rename minarch_thread_video (v1.2 cfgs) — must read while user_cfg is alive
 	{
@@ -7570,14 +7572,10 @@ finish:
 		 && !atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire))
 			zero_ftv2_failures_clear();
 	#endif
-	// Clear the screen the moment the session ends, before the (unhurried) teardown below.
-	// Otherwise the last GAME frame stays on the panel through Core_close, config writes and
-	// the launcher relaunch, so quitting reads as a freeze (Dan 2026-08-10, the exit half of
-	// "opening and closing games feels slow"). The launcher paints over this a moment later.
-	if (screen) {
-		GFX_clear(screen);
-		GFX_flip(screen);
-	}
+	// NOTE: deliberately NOT clearing the panel here. Blanking on exit was worth it while the
+	// launcher took 313ms to draw its first frame; it now takes 57ms (the SDL joystick open was
+	// 249ms of that), so the clear only inserts a black flash between the last game frame and the
+	// menu. Let the last frame hold for those few milliseconds instead (Dan 2026-08-10).
 	Core_close();
 	
 	Config_quit();
