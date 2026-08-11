@@ -56,7 +56,14 @@ rm -rf "$R/usr/lib/python3.11" "$R/usr/bin/python3."* "$R/usr/lib/libpython3."* 
 # linker resolves every dependency): GPU (we render via the DE layer, no GL), ICU unicode data
 # (was for ImageMagick/heavy apps), ImageMagick (muOS theme rendering), and the EasyRPG game
 # engine libs. ~87MB.
-rm -f "$R/usr/lib/libmali.so"
+# KEEP libmali.so (42.5MB). MinUI never touches it: we present through the DE layer and SDL is
+# used only for input, which is why removing it looked free. But /usr/lib holds libEGL.so.1,
+# libGLESv2.so and friends as SYMLINKS TO IT, and this SDL2 build offers exactly one video
+# driver: "mali". Deleting the target left those symlinks dangling, so every third-party SDL
+# app segfaulted the moment it tried to open a window. The Files tool (DinguxCommander) is how
+# we found it (rc=139, 2026-08-10); every community tool pak and standalone emulator would hit
+# the same wall. It is dormant disk space, not runtime weight: nothing loads it unless an app
+# asks for it, so it costs no power, memory or boot time, which is what the thesis is about.
 rm -f "$R/usr/lib/libicudata.so."* "$R/usr/lib/libicui18n.so."* "$R/usr/lib/libicuuc.so."*
 rm -f "$R/usr/lib/libMagickCore-"* "$R/usr/lib/libMagickWand-"* "$R/usr/bin/magick"* "$R/usr/bin/convert" 2>/dev/null || true
 rm -f "$R/usr/lib/libzmusic.so."* "$R/usr/lib/liblcf.so."*
