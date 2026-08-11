@@ -171,10 +171,6 @@ WIFI_TXT=/mnt/mmc/wifi.txt
   echo "wifi: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}') ssh=$(pgrep dropbearmulti >/dev/null && echo up || echo down)" >> "$LOG"
 ) &
 
-# ONE-SHOT ROMS EXPANSION. Must happen HERE: it unmounts /mnt/mmc, which is impossible once minui
-# is running from there. Self-fencing and a no-op on every later boot (see the script).
-[ -x /opt/minui-zero/expand-roms.sh ] && LOG="$LOG" /opt/minui-zero/expand-roms.sh
-
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui" 2>/dev/null
 
 # COMMUNITY PAK COMPAT: the scene's canonical card mount is /mnt/SDCARD and paks hardcode it

@@ -1,122 +1,128 @@
 #!/bin/sh
-# One-shot ROMS expansion for the MinUI Zero h700 image.
+# One-shot ROMS expansion for the MinUI Zero h700 image. Runs from startup.sh BEFORE muOS mounts
+# the card (mount/start.sh) — that timing is the whole design, see WHY below.
 #
-# The flashed image is ~1.4GB, so on any larger card the space past the ROMS partition is simply
-# unreachable — a 32GB card shows 256MB of ROM space (measured on Dan's: 58,130,429 free sectors,
-# ~29GB, 2026-08-10).
+# The flashed image is ~1.4GB, so on a bigger card everything past the ROMS partition is
+# unreachable: a 32GB card shows 256MB of ROM space (measured on-device: 58,130,432 free sectors,
+# ~28GB, 2026-08-10).
 #
-# There is no in-place FAT32 grow available: this rootfs has parted/sfdisk/mkfs.vfat but NO
-# fatresize and NO resize2fs. muOS solves the same problem in its own factory reset
-# (/opt/muos/script/system/reset.sh) by resizing the PARTITION and then REFORMATTING — it can
-# afford to, because a factory reset restores its payload from an archive afterwards. We do the
-# same three steps and restore OUR payload from a copy we make first.
+# There is no in-place FAT32 grow here (parted/sfdisk/mkfs.vfat present; NO fatresize, NO
+# resize2fs), so this does what muOS's own factory reset does — resize the partition, reformat,
+# restore — except it restores OUR payload from a copy instead of an archive.
 #
-# This is the one genuinely destructive thing MinUI Zero does, so it is fenced:
-#   * runs only when the DONE marker is absent AND real free space exists past ROMS
-#   * runs only BEFORE minui starts (nothing may hold /mnt/mmc open — the frontend calls this
-#     before its launch loop; the frontend itself lives on the rootfs)
-#   * backs the whole card payload up to the rootfs and VERIFIES the copy before touching anything
-#   * refuses if the payload would not fit in rootfs free space with headroom
-#   * writes an ATTEMPT marker before the destructive step: if we ever boot and find an attempt
-#     without a done, we stop and leave it to a human rather than retry a half-finished disk
-# On any refusal it returns 0 and leaves the card exactly as it was — a small ROMS partition is a
-# nuisance, a corrupted one is a reflash.
+# WHY PRE-MOUNT (learned the hard way 2026-08-10): the first version ran from the frontend, after
+# the card was mounted. `umount -l` made /proc/mounts look clean while the filesystem was still
+# busy, so `parted resizepart` silently prompted "Partition is being used... Yes/No?" and did
+# NOTHING; mkfs then reformatted at the OLD size and the script declared success because it never
+# checked whether the partition actually grew. Data survived (the backup/restore path is sound),
+# but nothing was gained. Two rules came out of that:
+#   * do this while the card is UNMOUNTED and nothing can hold it — i.e. before mount/start.sh
+#   * never claim success without measuring the result
+#
+# Kernel table reload: with the rootfs mounted from the same disk the kernel will not re-read the
+# partition table, so growth lands in two phases across one automatic reboot (PHASE marker).
 set -u
 
-LOG="${LOG:-/mnt/mmc/minui-zero.log}"
 DEV=/dev/mmcblk0
 PART_NUM=6
 PART="${DEV}p${PART_NUM}"
 MOUNT=/mnt/mmc
 STATE=/opt/minui-zero
 DONE_MARK="$STATE/roms-expanded"
-ATTEMPT_MARK="$STATE/roms-expanding"
+PHASE2_MARK="$STATE/roms-resized"
+FAILED_MARK="$STATE/roms-expand-failed"
 BACKUP=/var/minui-zero-payload
+LOG=/var/minui-zero-expand.log   # rootfs: the card is not mounted while this runs
 
-say() { echo "expand: $*" >> "$LOG"; }
+say() { echo "$(date +%H:%M:%S) $*" >> "$LOG"; }
 
 [ -f "$DONE_MARK" ] && exit 0
-if [ -f "$ATTEMPT_MARK" ]; then
-	say "a previous attempt did not finish — refusing to retry, card needs a look (or a reflash)"
-	exit 0
-fi
+[ -f "$FAILED_MARK" ] && exit 0   # a previous run stopped somewhere unsafe: leave it to a human
 
-command -v parted >/dev/null 2>&1 || { say "no parted, skipping"; exit 0; }
-command -v mkfs.vfat >/dev/null 2>&1 || { say "no mkfs.vfat, skipping"; exit 0; }
-mountpoint -q "$MOUNT" 2>/dev/null || grep -q " $MOUNT " /proc/mounts || { say "$MOUNT not mounted, skipping"; exit 0; }
+command -v parted >/dev/null 2>&1 || exit 0
+command -v mkfs.vfat >/dev/null 2>&1 || exit 0
+[ -b "$PART" ] || exit 0
+grep -q " $MOUNT " /proc/mounts && { say "card already mounted — wrong hook point, skipping"; exit 0; }
 
-# --- is there anything to gain? (sectors past the end of ROMS) ---
 DISK_SECTORS=$(cat /sys/block/mmcblk0/size 2>/dev/null || echo 0)
 PART_START=$(cat /sys/block/mmcblk0/mmcblk0p6/start 2>/dev/null || echo 0)
 PART_SIZE=$(cat /sys/block/mmcblk0/mmcblk0p6/size 2>/dev/null || echo 0)
-[ "$DISK_SECTORS" -gt 0 ] && [ "$PART_SIZE" -gt 0 ] || { say "cannot read geometry, skipping"; exit 0; }
+[ "$DISK_SECTORS" -gt 0 ] && [ "$PART_SIZE" -gt 0 ] || exit 0
 FREE=$(( DISK_SECTORS - PART_START - PART_SIZE ))
-# less than ~1GB to reclaim is not worth a reformat
-[ "$FREE" -gt 2097152 ] || { say "only ${FREE}s free past ROMS, nothing worth doing"; exit 0; }
 
-# --- can the payload be parked safely? ---
+# ---------- PHASE 1: grow the partition entry, then reboot so the kernel re-reads it ----------
+if [ ! -f "$PHASE2_MARK" ]; then
+	[ "$FREE" -gt 2097152 ] || { say "only ${FREE}s free past ROMS — nothing to do"; touch "$DONE_MARK"; exit 0; }
+	say "phase 1: ${FREE}s (~$(( FREE / 2048 ))MB) to reclaim; resizing partition $PART_NUM"
+	printf "w\nw\n" | fdisk "$DEV" >> "$LOG" 2>&1
+	printf "Yes\n" | parted ---pretend-input-tty "$DEV" resizepart "$PART_NUM" 100% >> "$LOG" 2>&1
+	parted ---pretend-input-tty "$DEV" set "$PART_NUM" boot off    >> "$LOG" 2>&1
+	parted ---pretend-input-tty "$DEV" set "$PART_NUM" hidden off  >> "$LOG" 2>&1
+	parted ---pretend-input-tty "$DEV" set "$PART_NUM" msftdata on >> "$LOG" 2>&1
+	sync
+	# VERIFY the on-disk table actually changed before going any further
+	NEW_END=$(parted -s "$DEV" unit s print 2>/dev/null | awk -v n="$PART_NUM" '$1==n {gsub("s","",$3); print $3}')
+	if [ -z "$NEW_END" ] || [ "$NEW_END" -le $(( PART_START + PART_SIZE )) ]; then
+		say "phase 1 FAILED: table unchanged (end=$NEW_END) — leaving the card exactly as it was"
+		exit 0    # no marker: harmless to retry next boot
+	fi
+	say "phase 1 ok: partition now ends at ${NEW_END}s; rebooting so the kernel re-reads the table"
+	touch "$PHASE2_MARK"; sync
+	sleep 1
+	reboot -f
+	exit 0
+fi
+
+# ---------- PHASE 2: kernel now sees the big partition; reformat at full size + restore ----------
+say "phase 2: kernel sees ${PART_SIZE}s; formatting and restoring"
+mkdir -p "$MOUNT" 2>/dev/null
+if ! mount -t vfat -o rw,utf8,noatime,nofail "$PART" "$MOUNT" 2>>"$LOG"; then
+	say "phase 2: cannot mount the old filesystem to back it up — aborting"
+	touch "$FAILED_MARK"; exit 0
+fi
 PAYLOAD_KB=$(du -sk "$MOUNT" 2>/dev/null | cut -f1)
 ROOT_FREE_KB=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
-[ -n "$PAYLOAD_KB" ] && [ -n "$ROOT_FREE_KB" ] || { say "cannot size payload/rootfs, skipping"; exit 0; }
-# require the payload to fit twice over: the copy plus working room
-if [ "$ROOT_FREE_KB" -lt $(( PAYLOAD_KB * 2 + 65536 )) ]; then
-	say "payload ${PAYLOAD_KB}KB will not fit safely in ${ROOT_FREE_KB}KB of rootfs — skipping"
-	exit 0
+if [ -z "$PAYLOAD_KB" ] || [ -z "$ROOT_FREE_KB" ] || [ "$ROOT_FREE_KB" -lt $(( PAYLOAD_KB * 2 + 65536 )) ]; then
+	say "phase 2: payload ${PAYLOAD_KB}KB will not fit safely in ${ROOT_FREE_KB}KB rootfs — leaving card as is"
+	umount "$MOUNT" 2>/dev/null; exit 0
 fi
-
-say "expanding ROMS: ${FREE}s (~$(( FREE / 2048 ))MB) to reclaim; parking ${PAYLOAD_KB}KB"
-
-# --- 1. back up + verify BEFORE anything destructive ---
-rm -rf "$BACKUP"; mkdir -p "$BACKUP" || { say "cannot create backup dir"; exit 0; }
-if ! cp -a "$MOUNT"/. "$BACKUP"/ 2>/dev/null; then
-	say "backup copy failed — aborting, card untouched"
+rm -rf "$BACKUP"; mkdir -p "$BACKUP"
+if ! cp -a "$MOUNT"/. "$BACKUP"/ 2>>"$LOG"; then
+	say "phase 2: backup failed — card untouched"
+	rm -rf "$BACKUP"; umount "$MOUNT" 2>/dev/null; exit 0
+fi
+SRC=$(find "$MOUNT" | wc -l); BAK=$(find "$BACKUP" | wc -l)
+if [ "$SRC" != "$BAK" ]; then
+	say "phase 2: backup verify failed ($SRC vs $BAK) — card untouched"
+	rm -rf "$BACKUP"; umount "$MOUNT" 2>/dev/null; exit 0
+fi
+sync
+say "phase 2: backup verified ($BAK entries), reformatting"
+if ! umount "$MOUNT" 2>>"$LOG"; then
+	say "phase 2: real unmount failed — refusing to format a busy partition (this is the bug that bit us)"
 	rm -rf "$BACKUP"; exit 0
 fi
-SRC_FILES=$(find "$MOUNT" | wc -l)
-BAK_FILES=$(find "$BACKUP" | wc -l)
-if [ "$SRC_FILES" != "$BAK_FILES" ]; then
-	say "backup verify failed ($SRC_FILES vs $BAK_FILES entries) — aborting, card untouched"
-	rm -rf "$BACKUP"; exit 0
-fi
+mkfs.vfat -F 32 -n ROMS "$PART" >> "$LOG" 2>&1
 sync
-say "backup verified ($BAK_FILES entries)"
-
-# --- 2. the destructive part, in muOS's own order (reset.sh) ---
-touch "$ATTEMPT_MARK"; sync
-cd /
-umount "$MOUNT" 2>/dev/null || umount -l "$MOUNT" 2>/dev/null
-if grep -q " $MOUNT " /proc/mounts; then
-	say "could not unmount $MOUNT — aborting before any write; restoring nothing (card untouched)"
-	rm -f "$ATTEMPT_MARK"; rm -rf "$BACKUP"; exit 0
+if ! mount -t vfat -o rw,utf8,noatime,nofail "$PART" "$MOUNT" 2>>"$LOG"; then
+	say "phase 2: REMOUNT FAILED after format — payload is safe at $BACKUP"
+	touch "$FAILED_MARK"; exit 0
 fi
-
-printf "w\nw\n" | fdisk "$DEV" >/dev/null 2>&1          # rewrite the table so parted sees the disk end
-parted ---pretend-input-tty "$DEV" resizepart "$PART_NUM" 100% >/dev/null 2>&1
-parted ---pretend-input-tty "$DEV" set "$PART_NUM" boot off >/dev/null 2>&1
-parted ---pretend-input-tty "$DEV" set "$PART_NUM" hidden off >/dev/null 2>&1
-parted ---pretend-input-tty "$DEV" set "$PART_NUM" msftdata on >/dev/null 2>&1
-mkfs.vfat -F 32 -n ROMS "$PART" >/dev/null 2>&1
-sync
-
-# --- 3. remount + restore ---
-if ! mount -t vfat -o rw,utf8,noatime,nofail "$PART" "$MOUNT" 2>/dev/null; then
-	say "REMOUNT FAILED after reformat — payload is safe at $BACKUP, needs manual restore"
-	exit 0
+if ! cp -a "$BACKUP"/. "$MOUNT"/ 2>>"$LOG"; then
+	say "phase 2: restore failed — payload still at $BACKUP"
+	touch "$FAILED_MARK"; exit 0
 fi
-if ! cp -a "$BACKUP"/. "$MOUNT"/ 2>/dev/null; then
-	say "restore copy failed — payload still at $BACKUP, needs manual restore"
-	exit 0
+NEW=$(find "$MOUNT" | wc -l); sync
+if [ "$NEW" != "$BAK" ]; then
+	say "phase 2: restore verify mismatch ($NEW vs $BAK) — payload kept at $BACKUP"
+	touch "$FAILED_MARK"; exit 0
 fi
-NEW_FILES=$(find "$MOUNT" | wc -l)
-sync
-if [ "$NEW_FILES" != "$BAK_FILES" ]; then
-	say "restore verify mismatch ($NEW_FILES vs $BAK_FILES) — payload kept at $BACKUP"
-	exit 0
-fi
-
-rm -f "$ATTEMPT_MARK"
+# MEASURE the result: only now is this a success
+SIZE=$(df -k "$MOUNT" 2>/dev/null | awk 'NR==2 {print $2}')
+say "phase 2: done — ROMS is now $(( SIZE / 1024 ))MB with $NEW entries restored"
+umount "$MOUNT" 2>/dev/null    # hand a clean, unmounted card back to muOS's own mount step
+rm -f "$PHASE2_MARK"
 touch "$DONE_MARK"
 rm -rf "$BACKUP"
 sync
-say "done — ROMS is now $(df -h "$MOUNT" 2>/dev/null | awk 'NR==2 {print $2}')"
 exit 0

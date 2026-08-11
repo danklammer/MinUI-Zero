@@ -165,6 +165,12 @@ echo "  swapping FRONTEND -> minui in startup.sh..."
 SU="$R/opt/muos/script/system/startup.sh"
 # replace the frontend launch with our loop; skip the hotkey daemon (minui reads input directly)
 sed -i "s|^FRONTEND start|sh /opt/minui-zero/minui-frontend.sh \&|" "$SU"
+# ROMS expansion must run BEFORE muOS mounts the card: parted refuses to resize a partition that is
+# in use, and a lazy unmount is not enough (it reports success while the filesystem is still busy —
+# that is exactly how the first version silently did nothing). mount/start.sh is the mount step, so
+# hook immediately above it.
+sed -i "s|^/opt/muos/script/mount/start.sh &|[ -x /opt/minui-zero/expand-roms.sh ] \&\& /opt/minui-zero/expand-roms.sh\n/opt/muos/script/mount/start.sh \&|" "$SU"
+grep -q "expand-roms.sh" "$SU" && echo "  expand-roms hooked pre-mount in startup.sh" || echo "  WARNING: expand-roms hook NOT applied"
 sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
