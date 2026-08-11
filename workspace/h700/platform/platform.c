@@ -44,6 +44,8 @@
 // Forward decl: zero_owns_os() is defined lower (with the governor code) but gates owned-OS-only
 // behaviour used earlier in the file (PLAT_isToppingUp, PLAT_powerOff).
 static int zero_owns_os(void);
+// Debug HUD compositor: defined with the other HUD code lower down, called from PLAT_flip above it.
+static void dbg_compose(void);
 
 ///////////////////////////////
 // msettings lives in ../libmsettings (guest stubs: muOS owns audio/brightness) — the shared
@@ -723,6 +725,7 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
 	vid.last_present_ui = !fullframe;
+	dbg_compose();   // HUD rides the frame: composited before the copy, scaled by the DE with it
 	if (vid.use_disp) {
 		// UI frames must honor the same latch invariant as the game path (PLAT_blitRenderer):
 		// without this wait the menu's commits were unpaced — writes landed in a page the panel
@@ -973,8 +976,71 @@ int PLAT_pickSampleRate(int requested, int max) {
 }
 
 // minarch-only surface, v0 stubs
-void PLAT_setEffect(int effect) {} // no scanline/DMG effects on the fbdev path yet
-void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {} // HUD later
+void PLAT_setEffect(int effect) {} // no scanline/DMG effects on the DE path yet (locked in system.cfg)
+
+// Debug HUD. minarch hands two RGB565 strips (top/bottom) generated at screen->w /
+// DBG_OVERLAY_SCALE and expects them presented SCALED so they span the panel. 0xF81F (magenta) is
+// the transparency key. This was a no-op stub, so the Frontend menu offered a HUD that drew
+// nothing (Dan 2026-08-11: "missing some settings the Brick and Miyoo versions have").
+//
+// Our render surface is already RGB565 and the DE scaler stretches the WHOLE surface to the panel,
+// so we composite into vid.screen before the flip copies it out and the hardware does the scaling
+// for free. Sizing is relative to the render surface for exactly that reason: whatever fraction of
+// the surface the strip covers is the fraction of the panel it ends up covering.
+#define DBG_KEY 0xF81F
+static struct { uint16_t *top, *bottom; int w, h, stride; } dbg;
+static int dbg_was_on = 0;
+
+void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int stride) {
+	// Turning the HUD OFF leaves residue: the strips span the full width, so the part overhanging
+	// the game rect lands in the letterbox bands that the per-frame present never repaints. Scrub
+	// both ION pages once on the off transition (the MMP learned this the hard way, twice).
+	if (!top && dbg_was_on && vid.use_disp) {
+		if (vid.ionmmap[0] && vid.ionmmap[0] != MAP_FAILED) memset(vid.ionmmap[0], 0, vid.ion_bytes);
+		if (vid.ionmmap[1] && vid.ionmmap[1] != MAP_FAILED) memset(vid.ionmmap[1], 0, vid.ion_bytes);
+	}
+	dbg_was_on = (top != NULL);
+	dbg.top = top; dbg.bottom = bottom; dbg.w = w; dbg.h = h; dbg.stride = stride;
+}
+
+// Nearest upscale with a 16.16 accumulator: one add per pixel instead of a multiply AND divide,
+// which on a 640-wide strip is thousands of divides per frame in a fork whose whole point is not
+// spending cycles it does not have to. Step rounded up so the index stays inside the strip.
+static void dbg_blit_strip(uint16_t* strip, int dst_y, int dst_w, int dst_h) {
+	if (!strip || dst_w <= 0 || dst_h <= 0 || dbg.w <= 0 || dbg.h <= 0) return;
+	uint16_t* base = (uint16_t*)vid.screen->pixels;
+	int dpitch = vid.screen->pitch / 2;
+	const uint32_t xstep = (((uint32_t)dbg.w << 16) + (uint32_t)dst_w - 1) / (uint32_t)dst_w;
+	const uint32_t ystep = (((uint32_t)dbg.h << 16) + (uint32_t)dst_h - 1) / (uint32_t)dst_h;
+	int wlim = dst_w < vid.width ? dst_w : vid.width;
+	uint32_t yacc = 0;
+	for (int dy = 0; dy < dst_h; dy++, yacc += ystep) {
+		int y = dst_y + dy;
+		if (y < 0 || y >= vid.height) continue;
+		uint16_t* srow = strip + (size_t)(yacc >> 16) * dbg.stride;
+		uint16_t* drow = base + (size_t)y * dpitch;
+		uint32_t xacc = 0;
+		for (int dx = 0; dx < wlim; dx++, xacc += xstep) {
+			uint16_t px = srow[xacc >> 16];
+			if (px == DBG_KEY) continue;   // transparent
+			drow[dx] = px;
+		}
+	}
+}
+
+static void dbg_compose(void) {
+	if (!dbg.top || !vid.screen || !vid.screen->pixels) return;
+	const int S = DBG_OVERLAY_SCALE;
+	int dst_w = (dbg.w * S * vid.width  + FIXED_WIDTH  - 1) / FIXED_WIDTH;
+	int dst_h = (dbg.h * S * vid.height + FIXED_HEIGHT - 1) / FIXED_HEIGHT;
+	int margin = (S * vid.height + FIXED_HEIGHT - 1) / FIXED_HEIGHT;
+	if (dst_w > vid.width) dst_w = vid.width;
+	if (dst_h < 1) dst_h = 1;
+	if (margin < 1) margin = 1;
+	if (dst_h * 2 + margin * 2 > vid.height) return;   // no room: skip rather than overlap the game
+	dbg_blit_strip(dbg.top, margin, dst_w, dst_h);
+	dbg_blit_strip(dbg.bottom, vid.height - dst_h - margin, dst_w, dst_h);
+}
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
 	// The rect the PANEL actually shows (the contract every caller relies on: menu backdrop via
 	// Menu_scale's PLAT_PRESENT_SCALER hook, HUD alignment). On the DE path the hardware scaler
