@@ -279,6 +279,11 @@ chmod +x "$STAGE/.system/h700/bin/dropbearmulti"
 cp "$REPO"/workspace/tg5040/cores/output/*.so           "$STAGE/.system/h700/cores/"
 cp "$REPO"/skeleton/SYSTEM/res/*                        "$STAGE/.system/res/"
 cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/paks"
+# system.cfg: frontend defaults + the LOCKS that hide options whose PLAT_ hooks are still stubs on
+# this platform (effects, sharpness, tearing, debug HUD). Without it the in-game Options > Frontend
+# menu offered choices that silently did nothing (Dan 2026-08-11). minarch reads SYSTEM_PATH/system.cfg.
+[ -f "$REPO/skeleton/SYSTEM/h700/system.cfg" ] && \
+	cp "$REPO/skeleton/SYSTEM/h700/system.cfg" "$STAGE/.system/h700/system.cfg"
 # Tools paks live at the CARD ROOT (Tools/<platform>/), not in .system — that is where minui scans
 # (minui.c: SDCARD_PATH "/Tools/" PLATFORM) and where users drop community tools. h700 shipped none
 # at all while the Brick ships five; Clock is the first (parity audit 2026-08-10). clock.elf is the
