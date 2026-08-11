@@ -1607,9 +1607,15 @@ void SND_getStats(SND_Stats* out) {
 	out->queue_frames = (int)(uint32_t)ring;
 }
 void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
+	uint64_t t_snd0 = getMicroseconds();
+#define SNDMARK(what) do { const char* _e = getenv("ZERO_BOOT_TIMING"); \
+		if (_e && _e[0] && _e[0] != '0') LOG_info("snd-timing: %-12s +%llums\n", (what), \
+			(unsigned long long)((getMicroseconds()-t_snd0)/1000)); \
+	} while (0)
 	LOG_info("SND_init\n");
 	
 	SDL_InitSubSystem(SDL_INIT_AUDIO);
+	SNDMARK("subsystem");
 	
 #if defined(USE_SDL2)
 	LOG_info("Available audio drivers:\n");
@@ -1642,6 +1648,7 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	// On a cold boot the device really is disabled, the ioctl no-ops as before, and the post-open
 	// mute below still covers us.
 	PLAT_muteAudio(1);
+	SNDMARK("pre_open");
 
 	if (SDL_OpenAudio(&spec_in, &spec_out)<0) {
 		// no device: run silent but SAFE — spec_out is uninitialized on failure and the
@@ -1694,6 +1701,7 @@ audio_open_ok:
 	
 	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
 
+	SNDMARK("open_done");
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
 	snd.initialized = 1;
 	SND_publishOccupancy();

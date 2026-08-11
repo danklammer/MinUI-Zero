@@ -6622,7 +6622,13 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 
 int main(int argc , char* argv[]) {
 	uint64_t t_boot0 = getMicroseconds();
-#define TMARK(what) LOG_info("boot-timing: %-14s +%llums\n", (what), (unsigned long long)((getMicroseconds()-t_boot0)/1000))
+static int zero_boot_timing = -1;
+#define TMARK(what) do { \
+		if (zero_boot_timing < 0) { const char* _e = getenv("ZERO_BOOT_TIMING"); \
+			zero_boot_timing = (_e && _e[0] && _e[0] != '0'); } \
+		if (zero_boot_timing) LOG_info("boot-timing: %-14s +%llums\n", (what), \
+			(unsigned long long)((getMicroseconds()-t_boot0)/1000)); \
+	} while (0)
 	LOG_info("MinArch\n");
 
 	// PowerVR swap chain: 2 buffers instead of the default 3 = one frame less input

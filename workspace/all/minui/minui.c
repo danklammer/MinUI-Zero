@@ -1474,7 +1474,10 @@ static void ChargingScreen(SDL_Surface* screen) {
 
 int main (int argc, char *argv[]) {
 	uint64_t t_ui0 = getMicroseconds();
-#define UIMARK(what) LOG_info("ui-timing: %-12s +%llums\n", (what), (unsigned long long)((getMicroseconds()-t_ui0)/1000))
+#define UIMARK(what) do { const char* _e = getenv("ZERO_BOOT_TIMING"); \
+		if (_e && _e[0] && _e[0] != '0') LOG_info("ui-timing: %-12s +%llums\n", (what), \
+			(unsigned long long)((getMicroseconds()-t_ui0)/1000)); \
+	} while (0)
 	// OPT-IN boot timing (ZERO_BOOT_TIMING=1). These probes are shared with tg5040 and stdout is
 	// redirected to a file on the SD card by MinUI.pak/launch.sh, so shipping them enabled would
 	// add SD writes to every launch on the primary platform. Left available, not on.
