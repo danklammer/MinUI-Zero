@@ -7559,6 +7559,14 @@ finish:
 		 && !atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire))
 			zero_ftv2_failures_clear();
 	#endif
+	// Clear the screen the moment the session ends, before the (unhurried) teardown below.
+	// Otherwise the last GAME frame stays on the panel through Core_close, config writes and
+	// the launcher relaunch, so quitting reads as a freeze (Dan 2026-08-10, the exit half of
+	// "opening and closing games feels slow"). The launcher paints over this a moment later.
+	if (screen) {
+		GFX_clear(screen);
+		GFX_flip(screen);
+	}
 	Core_close();
 	
 	Config_quit();

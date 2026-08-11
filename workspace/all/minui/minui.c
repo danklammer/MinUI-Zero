@@ -957,8 +957,21 @@ static Array* getEntries(char* path){
 
 ///////////////////////////////////////
 
+// Set once in main() after GFX_init. queueNext lives far from main and still needs to put a
+// frame on the panel before the process hands over to the emulator.
+static SDL_Surface* ui_screen = NULL;
 static void queueNext(char* cmd) {
 	LOG_info("cmd: %s\n", cmd);
+	// Acknowledge the press IMMEDIATELY. Nothing else redraws between here and the game first
+	// frame, so the launcher used to sit on its last menu frame for the whole core+ROM load,
+	// which reads as "the button did nothing" (Dan 2026-08-10: "opening and closing games feels
+	// slow... even if the game takes a minute to load it should change screens"). One cleared
+	// frame with a word on it costs a single flip and turns dead air into visible progress.
+	if (ui_screen) {
+		GFX_clear(ui_screen);
+		GFX_blitMessage(font.large, "Loading", ui_screen, &(SDL_Rect){0,0,ui_screen->w,ui_screen->h});
+		GFX_flip(ui_screen);
+	}
 	putFile("/tmp/next", cmd);
 	quit = 1;
 }
@@ -1429,6 +1442,7 @@ int main (int argc, char *argv[]) {
 	InitSettings();
 	
 	SDL_Surface* screen = GFX_init(MODE_MAIN);
+	ui_screen = screen;
 	if (boot_timing) LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PAD_init();
