@@ -171,6 +171,10 @@ WIFI_TXT=/mnt/mmc/wifi.txt
   echo "wifi: $(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}') ssh=$(pgrep dropbearmulti >/dev/null && echo up || echo down)" >> "$LOG"
 ) &
 
+# The ROMS expander runs before the card is mounted, so its log lands on the rootfs where a
+# user cannot reach it. Copy it onto the card now that the card is mounted.
+[ -f /var/minui-zero-expand.log ] && cat /var/minui-zero-expand.log >> "$LOG" 2>/dev/null
+
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui" 2>/dev/null
 
 # COMMUNITY PAK COMPAT: the scene's canonical card mount is /mnt/SDCARD and paks hardcode it

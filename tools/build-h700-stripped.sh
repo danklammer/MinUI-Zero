@@ -170,7 +170,8 @@ sed -i "s|^FRONTEND start|sh /opt/minui-zero/minui-frontend.sh \&|" "$SU"
 # that is exactly how the first version silently did nothing). mount/start.sh is the mount step, so
 # hook immediately above it.
 sed -i "s|^/opt/muos/script/mount/start.sh &|[ -x /opt/minui-zero/expand-roms.sh ] \&\& /opt/minui-zero/expand-roms.sh\n/opt/muos/script/mount/start.sh \&|" "$SU"
-grep -q "expand-roms.sh" "$SU" && echo "  expand-roms hooked pre-mount in startup.sh" || echo "  WARNING: expand-roms hook NOT applied"
+grep -q "expand-roms.sh" "$SU" || { echo "ERROR: expand-roms pre-mount hook did not apply (startup.sh anchor changed)"; exit 1; }
+echo "  expand-roms hooked pre-mount in startup.sh"
 sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
