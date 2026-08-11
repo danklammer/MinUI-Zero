@@ -1010,14 +1010,13 @@ static void prefetchCore(char* emu_name) {
 }
 static void queueNext(char* cmd) {
 	LOG_info("cmd: %s\n", cmd);
-	// Acknowledge the press IMMEDIATELY. Nothing else redraws between here and the game first
-	// frame, so the launcher used to sit on its last menu frame for the whole core+ROM load,
-	// which reads as "the button did nothing" (Dan 2026-08-10: "opening and closing games feels
-	// slow... even if the game takes a minute to load it should change screens"). One cleared
-	// frame with a word on it costs a single flip and turns dead air into visible progress.
+	// Acknowledge the press immediately: clear the panel so the menu does not sit frozen while the
+	// game loads. This started out printing "Loading" as well, which was the right call when a
+	// launch took over a second; once the real cost was found and removed (the SDL joystick open,
+	// 249ms per process) the word only advertised a wait that is no longer there, so it is gone
+	// and the blank frame does the job on its own (Dan 2026-08-10).
 	if (ui_screen) {
 		GFX_clear(ui_screen);
-		GFX_blitMessage(font.large, "Loading", ui_screen, &(SDL_Rect){0,0,ui_screen->w,ui_screen->h});
 		GFX_flip(ui_screen);
 	}
 	putFile("/tmp/next", cmd);
@@ -1477,6 +1476,8 @@ static void ChargingScreen(SDL_Surface* screen) {
 }
 
 int main (int argc, char *argv[]) {
+	uint64_t t_ui0 = getMicroseconds();
+#define UIMARK(what) LOG_info("ui-timing: %-12s +%llums\n", (what), (unsigned long long)((getMicroseconds()-t_ui0)/1000))
 	// OPT-IN boot timing (ZERO_BOOT_TIMING=1). These probes are shared with tg5040 and stdout is
 	// redirected to a file on the SD card by MinUI.pak/launch.sh, so shipping them enabled would
 	// add SD writes to every launch on the primary platform. Left available, not on.
@@ -1492,9 +1493,11 @@ int main (int argc, char *argv[]) {
 
 	LOG_info("MinUI\n");
 	InitSettings();
+	UIMARK("settings");
 	
 	SDL_Surface* screen = GFX_init(MODE_MAIN);
 	ui_screen = screen;
+	UIMARK("gfx_init");
 	if (boot_timing) LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PAD_init();
@@ -1511,6 +1514,7 @@ int main (int argc, char *argv[]) {
 	
 	// now that (most of) the heavy lifting is done, take a load off
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
+	UIMARK("pre_scan");
 	GFX_setVsync(VSYNC_STRICT);
 
 	PAD_reset();
@@ -1913,6 +1917,7 @@ int main (int argc, char *argv[]) {
 			}
 
 			GFX_flip(screen);
+			{ static int ui_first = 1; if (ui_first) { ui_first = 0; UIMARK("first_frame"); } }
 			dirty = 0;
 		}
 		else GFX_sync();
