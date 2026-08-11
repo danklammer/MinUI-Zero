@@ -175,6 +175,32 @@ WIFI_TXT=/mnt/mmc/wifi.txt
 # user cannot reach it. Copy it onto the card now that the card is mounted.
 [ -f /var/minui-zero-expand.log ] && cat /var/minui-zero-expand.log >> "$LOG" 2>/dev/null
 
+# BOOT-TIME READAHEAD. The FIRST game launch after a boot is the slow one: everything it touches
+# is cold on a ~10MB/s card. MEASURED 2026-08-10: the same game took 4348ms cold vs 707ms warm, and
+# the biggest single item is libmali.so (42.5MB) which SDL dlopens because "mali" is the only video
+# driver this SDL2 has. Pull the fixed cost into the seconds after boot, while the user is still
+# looking at the menu and the CPU is otherwise idle, so the first launch is as quick as the rest.
+#
+# This is page cache only: no process stays resident, the kernel evicts it under pressure, and it
+# costs nothing the thesis measures (power, heat, resident memory). Reads are serialised and
+# niced so they never compete with the menu for the card or the CPU.
+( nice -n 19 sh -c '
+	sleep 3                                   # let the menu draw first
+	for f in /usr/lib/libmali.so \
+	         /usr/lib/libSDL2-2.0.so.0 /usr/lib/libSDL2_image-2.0.so.0 /usr/lib/libSDL2_ttf-2.0.so.0 \
+	         "$SYSTEM_PATH/bin/minarch.elf" "$SYSTEM_PATH/lib/libmsettings.so"; do
+		[ -f "$f" ] && cat "$f" > /dev/null 2>&1
+	done
+	# then the core for whatever was played last, which is the most likely next launch
+	R="$SHARED_USERDATA_PATH/.minui/recent.txt"
+	if [ -f "$R" ]; then
+		T=$(sed -n "1p" "$R" | sed -n "s/.*(\([A-Z0-9]*\)).*/\1/p")
+		[ -n "$T" ] && [ -f "$SYSTEM_PATH/paks/Emus/$T.pak/launch.sh" ] && \
+			C=$(grep -o "[a-z0-9_-]*_libretro\.so" "$SYSTEM_PATH/paks/Emus/$T.pak/launch.sh" | head -1) && \
+			[ -n "$C" ] && [ -f "$CORES_PATH/$C" ] && cat "$CORES_PATH/$C" > /dev/null 2>&1
+	fi
+' >/dev/null 2>&1 ) &
+
 mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui" 2>/dev/null
 
 # COMMUNITY PAK COMPAT: the scene's canonical card mount is /mnt/SDCARD and paks hardcode it
