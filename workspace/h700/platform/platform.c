@@ -451,10 +451,17 @@ static int disp_open(void) {
 		else {
 			LOG_info("disp: output switched to LCD (owned OS)\n");
 			// Let the mode-set LATCH before anyone commits: a commit issued while the switch is
-			// still settling is silently eaten, and the static menu draws exactly once — so the
-			// u-boot logo stayed up until a button forced a redraw ("logo until A" RETURNED on
-			// the 20260810 image; the switch alone had only fixed it by timing luck). ~5 vsyncs.
-			usleep(80000);
+			// still settling is silently eaten, and the static menu draws exactly once, so the
+			// u-boot logo stayed up until a button forced a redraw.
+			//
+			// ONCE PER BOOT, not once per process. The race only exists on the first switch after
+			// power-on; every later switch is a no-op on an already-live LCD. Charging every game
+			// launch 80ms for it showed up as 80 of the 106ms gfx_init in the load breakdown
+			// (2026-08-10), which is pure tax on "make loading instant".
+			if (!exists("/tmp/zero-disp-settled")) {
+				usleep(80000);
+				putInt("/tmp/zero-disp-settled", 1);
+			}
 		}
 	}
 	disp_layer_off(); // clear any stale layer a crashed predecessor left behind

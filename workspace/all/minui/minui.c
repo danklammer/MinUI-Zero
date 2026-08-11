@@ -960,6 +960,54 @@ static Array* getEntries(char* path){
 // Set once in main() after GFX_init. queueNext lives far from main and still needs to put a
 // frame on the panel before the process hands over to the emulator.
 static SDL_Surface* ui_screen = NULL;
+// Warm the emulator core into the page cache as soon as we know which system the user is looking
+// at, so the bytes are already in RAM when they press A. MEASURED on h700 2026-08-10: the same
+// game launches in 707ms warm vs 4348ms cold, and core_open alone is 513ms cold vs 216ms warm.
+// This is pure readahead: no process stays resident and the kernel can evict it under pressure,
+// so it costs nothing the thesis cares about (power, heat, resident memory).
+static void prefetchCore(char* emu_name) {
+	static char last[64] = "";
+	if (!emu_name || !emu_name[0]) return;
+	if (exactMatch(last, emu_name)) return;   // already warmed this one
+	strncpy(last, emu_name, sizeof(last)-1); last[sizeof(last)-1] = '\0';
+
+	char pak_path[256];
+	getEmuPath(emu_name, pak_path);
+	FILE* f = fopen(pak_path, "r");
+	if (!f) return;
+	// The core is named in the pak: either `EMU_EXE=<core>` (standard boilerplate) or an inline
+	// `<core>_libretro.so` argument (the h700 paks). Accept both.
+	char line[512], core[128] = "";
+	while (fgets(line, sizeof(line), f)) {
+		char* m = strstr(line, "_libretro.so");
+		if (m) {
+			char* start = m;
+			while (start > line && (isalnum((unsigned char)start[-1]) || start[-1]=='_' || start[-1]=='-')) start--;
+			size_t n = (size_t)(m - start);
+			if (n && n < sizeof(core)-16) { memcpy(core, start, n); core[n] = '\0'; }
+			break;
+		}
+		if (!strncmp(line, "EMU_EXE=", 8)) {
+			char* v = line + 8;
+			char* nl = strpbrk(v, " \t\r\n");
+			if (nl) *nl = '\0';
+			if (v[0]) snprintf(core, sizeof(core), "%s", v);
+		}
+	}
+	fclose(f);
+	if (!core[0]) return;
+
+	// CORES_PATH is an environment variable (set by the frontend/pak), not a compile-time define.
+	const char* cores_dir = getenv("CORES_PATH");
+	if (!cores_dir || !cores_dir[0]) cores_dir = SYSTEM_PATH "/cores";
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/%s_libretro.so", cores_dir, core);
+	// Read it in the background: a plain read is what actually populates the page cache, and doing
+	// it inline would stall the UI for the very time we are trying to hide.
+	char cmd[640];
+	snprintf(cmd, sizeof(cmd), "(cat '%s' > /dev/null 2>&1 &) &", core_path);
+	if (exists(core_path)) system(cmd);
+}
 static void queueNext(char* cmd) {
 	LOG_info("cmd: %s\n", cmd);
 	// Acknowledge the press IMMEDIATELY. Nothing else redraws between here and the game first
@@ -1179,6 +1227,10 @@ static void openRom(char* path, char* last) {
 	queueNext(cmd);
 }
 static void openDirectory(char* path, int auto_launch) {
+	{ // warm this system's core while the user browses (see prefetchCore)
+		char emu_tag[256]; getEmuName(path, emu_tag);
+		if (emu_tag[0]) prefetchCore(emu_tag);
+	}
 	char auto_path[256];
 	if (hasCue(path, auto_path) && auto_launch) {
 		openRom(auto_path, path);

@@ -6621,6 +6621,8 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 #endif // ZERO_FRONTEND_THREADING_V2
 
 int main(int argc , char* argv[]) {
+	uint64_t t_boot0 = getMicroseconds();
+#define TMARK(what) LOG_info("boot-timing: %-14s +%llums\n", (what), (unsigned long long)((getMicroseconds()-t_boot0)/1000))
 	LOG_info("MinArch\n");
 
 	// PowerVR swap chain: 2 buffers instead of the default 3 = one frame less input
@@ -6645,6 +6647,7 @@ int main(int argc , char* argv[]) {
 	LOG_info("rom_path: %s\n", rom_path);
 
 	screen = GFX_init(MODE_MENU);
+	TMARK("gfx_init");
 	PAD_init();
 	DEVICE_WIDTH = screen->w;
 	DEVICE_HEIGHT = screen->h;
@@ -6659,6 +6662,7 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
+	TMARK("core_open");
 	// Presentation-drop protects PS1 audio by SKIPPING presents (up to 6 in a row) whenever the
 	// audio ring dips below 50%. That trade was measured on tg5040, whose audio path is direct SDL.
 	// It is NOT automatically right elsewhere: the MMP routes through the vendor audioserver daemon
@@ -6788,6 +6792,7 @@ int main(int argc , char* argv[]) {
 
 	// restore options
 	Config_load(); // before init?
+	TMARK("pre_config");
 	Config_init();
 	Config_readOptions(); // cores with boot logo option (eg. gb) need to load options early
 	setOverclock(overclock);
@@ -6800,6 +6805,7 @@ int main(int argc , char* argv[]) {
 #endif
 	} else {
 		Core_init();
+		TMARK("core_init");
 	}
 	
 	// TODO: find a better place to do this
@@ -6850,12 +6856,15 @@ int main(int argc , char* argv[]) {
 #endif
 	} else {
 		SND_init(core.sample_rate, core.fps);
+		TMARK("snd_init");
 	}
 
 	Zero_applyRateMatch(); // static panel rate match; re-applied whenever core.fps changes
 
 	InitSettings(); // after we initialize audio
+	TMARK("audio_ready");
 	Menu_init();
+	TMARK("menu_init");
 	if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
 		fc_boot_stage(&zero_ftv2, FC_OP_RESUME, zero_ftv2_drain, NULL);   // = State_resume (nonfatal)
@@ -6934,6 +6943,8 @@ int main(int argc , char* argv[]) {
 	tlm_init(tag_name, core.fps>0 ? (int)(1000000.0/core.fps) : 16667);
 
 	sec_start = SDL_GetTicks();
+	TMARK("ready_to_run");
+	{ static int first = 1; if (first) { first = 0; } }
 	while (!quit) {
 		GFX_startFrame();
 		
