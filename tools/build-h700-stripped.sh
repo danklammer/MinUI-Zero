@@ -180,6 +180,22 @@ sed -i "s|^/opt/muos/script/mount/start.sh &|[ -x /opt/minui-zero/expand-roms.sh
 grep -q "expand-roms.sh" "$SU" || { echo "ERROR: expand-roms pre-mount hook did not apply (startup.sh anchor changed)"; exit 1; }
 echo "  expand-roms hooked pre-mount in startup.sh"
 sed -i "s|^HOTKEY start|true # hotkey daemon disabled (minui owns input)|" "$SU"
+
+# BOOT TRIM (2026-08-11). muOS keeps doing work for features this image does not ship. None of it
+# blocks the menu (it is all backgrounded) but it competes for the CPU and the ~10MB/s card during
+# the exact seconds the user is browsing and launching their first game.
+#   catalogue.sh  - builds muOS catalogue dirs by scanning the whole rom tree. MinUI browses the
+#                   filesystem directly and never reads a catalogue.
+#   sdl_map.sh    - writes an SDL controller mapping. This platform does not use SDL for input at
+#                   all (PLAT_pollInput reads evdev; the SDL joystick open was removed for 249ms).
+sed -i "s|^/opt/muos/script/system/catalogue.sh &|true # catalogue disabled (minui browses the filesystem)|" "$SU"
+sed -i "s|^/opt/muos/script/mux/sdl_map.sh &|true # sdl controller map disabled (evdev input, no SDL joystick)|" "$SU"
+
+# muOS also auto-connects wifi at boot from ITS saved config, while our frontend runs the same
+# connect a moment later using the credentials from wifi.txt. Two connects race each other over one
+# wpa_supplicant. Ours is the one that knows the user current credentials, so turn muOS off and let
+# the frontend own wifi end to end (it also carries the reconnect monitor).
+printf "0" > "$R/opt/muos/config/settings/network/boot"
 mkdir -p "$R/opt/minui-zero"
 cp /a/minui-frontend.sh "$R/opt/minui-zero/minui-frontend.sh"
 cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
