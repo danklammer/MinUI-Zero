@@ -17,8 +17,47 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ASSETS="${H700_ASSETS:-$REPO/.notes/2026-08-05-h700-image}"
 OUT_DIR="$ASSETS/out"
 MUOS_ROOTFS="$ASSETS/muos-p5.img"
-IMG="$OUT_DIR/MinUI-Zero-h700-stripped-$(date +%Y%m%d).img"
 MT=/opt/homebrew/bin
+
+# BUILD MODE — dev (default) vs release. The difference is exactly the dev-loop conveniences, and
+# each of them is actively harmful in a stranger's hands:
+#   authorized_keys — a dev image bakes in the builder's ssh public key. Shipping that would
+#                     authorize ONE person's key on every user's device. A release ships none, and
+#                     the frontend installs a key from the card root instead (user's own, opt-in).
+#   devmode.txt     — arms stay-awake: no autosleep, no idle power-off. On a release that is a
+#                     device that never sleeps, i.e. the exact opposite of this fork's thesis.
+# Release also stamps the version from the git tag rather than today's date.
+MODE="${H700_MODE:-dev}"
+case "$MODE" in
+	dev|release) ;;
+	*) echo "ERROR: H700_MODE must be 'dev' or 'release' (got '$MODE')"; exit 1 ;;
+esac
+if [ "$MODE" = release ]; then
+	# H700_VERSION wins; otherwise the nearest reachable tag — but it MUST look like one of ours
+	# (vN.N.N). This branch's nearest tag is upstream MinUI's `v20231113b`, so an unchecked
+	# `git describe` would have quietly stamped a release with an upstream version number.
+	VERSION="${H700_VERSION:-$(cd "$REPO" && git describe --tags --abbrev=0 2>/dev/null || true)}"
+	case "$VERSION" in
+		v[0-9]*.[0-9]*.[0-9]*) ;;
+		"") echo "ERROR: release build found no tag — set H700_VERSION=vX.Y.Z"; exit 1 ;;
+		*)  echo "ERROR: '$VERSION' is not a MinUI Zero release tag (expected vX.Y.Z)."
+		    echo "       The nearest reachable tag on this branch is upstream MinUI's."
+		    echo "       Tag the release, or pass H700_VERSION=vX.Y.Z."; exit 1 ;;
+	esac
+	IMG="$OUT_DIR/MinUI-Zero-h700-$VERSION.img"
+else
+	VERSION="dev-$(date +%Y%m%d)"
+	IMG="$OUT_DIR/MinUI-Zero-h700-stripped-$(date +%Y%m%d).img"
+fi
+echo "== build mode: $MODE (version $VERSION) =="
+
+# Refresh the dev ssh key BEFORE the rootfs build consumes it (the copy used to sit near the end of
+# the script, so every run baked in the PREVIOUS run's key). Release mode removes it outright so a
+# stale file from an earlier dev build cannot leak into a shipped image.
+rm -f "$ASSETS/authorized_keys"
+if [ "$MODE" = dev ]; then
+	cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
+fi
 
 # geometry (sectors) — p1-p4 verbatim muOS offsets; p5 sized to the STRIPPED rootfs
 P5_FIRST=319488
@@ -276,6 +315,14 @@ cp "$REPO/workspace/all/minarch/build/h700/minarch.elf" "$STAGE/.system/h700/bin
 cp "$REPO/workspace/h700/libmsettings/libmsettings.so"  "$STAGE/.system/h700/lib/"
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti"     "$STAGE/.system/h700/bin/dropbearmulti"  # ssh (openssh stripped); aarch64, shared with tg5040
 chmod +x "$STAGE/.system/h700/bin/dropbearmulti"
+# Shipped shell helpers from the skeleton — notably `suspend`, the deep-sleep choreography that
+# PWR_deepSleep() looks for at ${BIN_PATH}/suspend. Without it the C side silently falls back to a
+# bare `echo mem` with no radio teardown and no mixer restore, i.e. the EBUSY-and-dead-audio path.
+for _b in "$REPO"/skeleton/SYSTEM/h700/bin/*; do
+	[ -f "$_b" ] || continue
+	cp "$_b" "$STAGE/.system/h700/bin/"
+	chmod +x "$STAGE/.system/h700/bin/$(basename "$_b")"
+done
 cp "$REPO"/workspace/tg5040/cores/output/*.so           "$STAGE/.system/h700/cores/"
 cp "$REPO"/skeleton/SYSTEM/res/*                        "$STAGE/.system/res/"
 cp -R "$REPO"/skeleton/SYSTEM/h700/paks                 "$STAGE/.system/h700/paks"
@@ -305,18 +352,34 @@ if [ -d "$REPO/skeleton/EXTRAS/Tools/h700" ]; then
 fi
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
-printf 'MinUI Zero (%s)\n%s\n' "$(date +%Y%m%d)" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
+printf 'MinUI Zero (%s)\n%s\n' "$VERSION" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
 [ -n "$H700_TEST_ROM" ] && [ -f "$H700_TEST_ROM" ] && cp "$H700_TEST_ROM" "$STAGE/Roms/Game Boy Color (GBC)/"
 # example wifi.txt at the card root (commented out; user adds their own "SSID:password")
 printf '# WiFi: one network per line as SSID:password (# comments ignored). Example:\n# MyNetwork:mypassword\n' > "$STAGE/wifi.txt.example"
-# devmode.txt — DEV CARD FLAG (api.c PWR_init arms /tmp/stay_awake at every startup when present).
-# Without it an idle h700 POWERS ITSELF OFF after ~2.5min: 30s -> faux-sleep, then the 2-minute deep
-# sleep escalation finds PLAT_supportsDeepSleep()==0 and falls through to PWR_powerOff() (api.c:2506).
-# That killed every remote debug session on 2026-08-09. Delete this file to restore stock power
-# behaviour (autosleep + idle power-off) — it costs idle battery, so it must NOT ship in a release.
-printf 'MinUI Zero dev flag: keeps the device awake (no autosleep, no idle power-off) so SSH sessions\nsurvive. Delete this file for stock power behaviour / best battery life.\n' > "$STAGE/devmode.txt"
+# ssh is opt-in and key-only: drop your public key here as authorized_keys and the frontend installs
+# it at boot (and only then starts dropbear). No key, no listening port.
+printf '# SSH: rename this to "authorized_keys" and paste your ssh PUBLIC key (one per line).\n# Without it dropbear never starts. Password login is not supported.\n' > "$STAGE/authorized_keys.example"
+if [ "$MODE" = dev ]; then
+	# devmode.txt — DEV CARD FLAG (api.c PWR_init arms /tmp/stay_awake at every startup when present).
+	# Without it an idle h700 POWERS ITSELF OFF after ~2.5min: 30s -> faux-sleep, then the 2-minute deep
+	# sleep escalation finds PLAT_supportsDeepSleep()==0 and falls through to PWR_powerOff() (api.c:2506).
+	# That killed every remote debug session on 2026-08-09. Delete this file to restore stock power
+	# behaviour (autosleep + idle power-off) — it costs idle battery, so it must NOT ship in a release.
+	printf 'MinUI Zero dev flag: keeps the device awake (no autosleep, no idle power-off) so SSH sessions\nsurvive. Delete this file for stock power behaviour / best battery life.\n' > "$STAGE/devmode.txt"
+fi
 
-cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
+# Release gate: assert the dev conveniences really are absent. Cheap, and the failure it prevents is
+# invisible — a shipped image that never sleeps, or that trusts the builder's ssh key on every device.
+if [ "$MODE" = release ]; then
+	if [ -e "$STAGE/devmode.txt" ]; then
+		echo "ERROR: release payload contains devmode.txt (stay-awake would ship)"; exit 1
+	fi
+	if [ -s "$ASSETS/authorized_keys" ]; then
+		echo "ERROR: release build has a baked ssh key at $ASSETS/authorized_keys"; exit 1
+	fi
+	echo "  release gate: no devmode.txt, no baked ssh key"
+fi
+
 rm -f "$OUT_DIR/p6.img"
 dd if=/dev/zero of="$OUT_DIR/p6.img" bs=512 count=$P6_SECTORS status=none
 "$MT/mformat" -i "$OUT_DIR/p6.img" -F -v ROMS ::

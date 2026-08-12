@@ -129,10 +129,20 @@ WIFI_TXT=/mnt/mmc/wifi.txt
   # SSH via dropbear (we ship dropbearmulti, ~250KB; muOS's 32MB openssh is stripped). Key-auth
   # only, reading /root/.ssh/authorized_keys; the ed25519 host key lives on the card so the
   # fingerprint stays stable across boots. Same pattern the Smart Pro uses (skeleton .../dev-net.sh).
+  # A release image ships NO key (the build only bakes one in dev mode), so ssh is opt-in the same
+  # way wifi is: drop your public key at the card root as authorized_keys and it is installed here.
+  # The card is the only writable surface a user has — the rootfs is not reachable without ssh, so
+  # requiring them to edit /root/.ssh first would be a chicken-and-egg.
+  mkdir -p /root/.ssh 2>/dev/null
+  if [ -s "$SDCARD_PATH/authorized_keys" ]; then
+    cp "$SDCARD_PATH/authorized_keys" /root/.ssh/authorized_keys 2>/dev/null
+  fi
   chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null
   DBM="$SYSTEM_PATH/bin/dropbearmulti"
   DBKEY="$USERDATA_PATH/dropbear_ed25519_host_key"
-  if [ -x "$DBM" ] && ! pgrep dropbearmulti >/dev/null 2>&1; then
+  # No key = nobody can authenticate (dropbear runs key-auth only), so the daemon would be a listening
+  # port and idle weight that can never serve anyone. Start it only when a key is actually present.
+  if [ -x "$DBM" ] && [ -s /root/.ssh/authorized_keys ] && ! pgrep dropbearmulti >/dev/null 2>&1; then
     mkdir -p "$USERDATA_PATH" 2>/dev/null
     [ -f "$DBKEY" ] || "$DBM" dropbearkey -t ed25519 -f "$DBKEY" 2>/dev/null
     "$DBM" dropbear -r "$DBKEY" -p 22 2>/dev/null

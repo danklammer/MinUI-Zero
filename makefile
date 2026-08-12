@@ -118,16 +118,21 @@ build:
 	make build -f makefile.toolchain PLATFORM=$(PLATFORM)
 	# ----------------------------------------------------
 
-# h700 (Anbernic RG35XX Plus/H) is hosted-dev alpha: binaries only, no release packaging yet
-# (that arrives with the boot-image milestone — no BOOT/anbernic bootstrap exists to package).
-# Builds libmsettings + minui + minarch + the all/ tools in the tg5040 toolchain image; deploy
-# with the on-device dev loop in workspace/h700/README-BRINGUP.md.
+# h700 (Anbernic RG35XX Plus/H) does NOT ship as a zip like the other platforms: it is an OWNED OS,
+# so the release artifact is a flashable SD-card image built by stripping a muOS donor rootfs. See
+# docs/h700-release.md for the donor requirement (the one input that is not in this repo).
+#   make h700-build   binaries only (the on-device dev loop, workspace/h700/README-BRINGUP.md)
+#   make h700-image   dev image: bakes in the builder's ssh key + devmode.txt (stay-awake)
+#   make h700         release image: no ssh key, no devmode.txt, version from the git tag
 h700-build:
 	echo $(BUILD_HASH) > ./workspace/hash.txt
 	make build -f makefile.toolchain PLATFORM=h700
 
-h700:
-	$(error h700 has no release packaging yet — use `make h700-build` for binaries; see workspace/h700/README-BRINGUP.md)
+h700-image: h700-build
+	H700_MODE=dev sh ./tools/build-h700-stripped.sh
+
+h700: h700-build
+	H700_MODE=release sh ./tools/build-h700-stripped.sh
 
 system:
 	make -f ./workspace/$(PLATFORM)/platform/makefile.copy PLATFORM=$(PLATFORM)
