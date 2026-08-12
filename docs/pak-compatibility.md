@@ -51,7 +51,7 @@ Verify on any target before promising compatibility — the donor OS decides thi
 ## Will every pak just work? No. Here is the honest state
 
 Tested on the h700 image 2026-08-10. The resolution/env plumbing is verified; **no third-party
-pak has been run end to end yet.** Three known gaps, in order of how often they will bite:
+pak has been run end to end yet.** Four known gaps, in order of how often they will bite:
 
 1. **Hardcoded `/mnt/SDCARD`** — the scene's canonical mount (NextUI's own HOOKS.md uses the
    literal path), while muOS mounts our card at `/mnt/mmc`. **Mitigated:** the frontend creates
@@ -68,7 +68,7 @@ pak has been run end to end yet.** Three known gaps, in order of how often they 
    preinstalled fails. Open decision: ship them (small, and they make the whole tool ecosystem
    work) versus an opt-in compat pak. Leaning ship-them — they are pak infrastructure, not
    features, so they do not violate the lean thesis.
-3. **Libraries the lean strip removed** — `libX11`, `libsqlite3`, `libopenal`, `libsamplerate`,
+4. **Libraries the lean strip removed** — `libX11`, `libsqlite3`, `libopenal`, `libsamplerate`,
    `libarchive` are gone; SDL2 + SDL2_image + SDL2_ttf remain. Standalone-emulator paks linking
    the removed set will fail to start. Policy stands: bundle, or opt-in compat pak, never
    re-fatten the base image.
