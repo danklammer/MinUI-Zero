@@ -986,8 +986,14 @@ int PLAT_supportsDeepSleep(void) {
 	// DEFERRED (2026-08-07): kept OFF until FAUX-sleep-wake is validated on-device. Deep sleep is
 	// the 2-minute escalation *past* faux-sleep, so it can only be trusted once the wake path
 	// (PLAT_shouldWake, below) is proven — enabling it earlier stacked `echo mem` on a sleep that
-	// could not wake. Flip to `zero_owns_os()` after the supervised faux-sleep-wake test passes.
-	return 0;
+	// could not wake, and a device that suspends without waking reads as bricked.
+	//
+	// ARMED BY A CARD FLAG so the supervised test costs a file, not a rebuild+reflash per attempt:
+	// `touch /mnt/mmc/deepsleep.txt`, run the test, delete it to disarm. Once the wake path is
+	// proven on-device this becomes the default and the flag inverts to the tg5040's opt-OUT
+	// (DEEP_SLEEP_OFF_PATH, already honored by PWR_waitForWake). Until then the safe answer is 0.
+	if (!zero_owns_os()) return 0; // never suspend the host while running as a guest inside muOS
+	return exists(SDCARD_PATH "/deepsleep.txt");
 }
 
 int PLAT_pickSampleRate(int requested, int max) {
