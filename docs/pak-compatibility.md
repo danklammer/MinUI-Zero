@@ -57,7 +57,12 @@ pak has been run end to end yet.** Three known gaps, in order of how often they 
    literal path), while muOS mounts our card at `/mnt/mmc`. **Mitigated:** the frontend creates
    `/mnt/SDCARD -> $SDCARD_PATH` at boot when the name is free. Paks that build paths from the
    documented env vars were never affected.
-2. **NextUI helper binaries** — `minui-list`, `minui-presenter`, `minui-keyboard`. Modern
+2. **`SDL_VIDEODRIVER=dummy` is inherited.** The h700 frontend exports it for MinUI (which presents
+   through the DE layer and uses SDL only for plumbing). Any real SDL app that inherits it
+   **segfaults** — measured, not theorised. A pak that opens a window must `unset SDL_VIDEODRIVER`
+   in its launch.sh; the shipped Files pak does exactly that and is the reference. This is the
+   first thing to check when a community tool "does not open".
+3. **NextUI helper binaries** — `minui-list`, `minui-presenter`, `minui-keyboard`. Modern
    community *tool* paks (the Pak Store family especially) shell out to these for their UI, and
    we do **not** ship them. A pak that bundles its own copies works; one that expects them
    preinstalled fails. Open decision: ship them (small, and they make the whole tool ecosystem
