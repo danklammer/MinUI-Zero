@@ -20,8 +20,12 @@ before() {
 	>&2 echo "Preparing for suspend..."
 	if pgrep wpa_supplicant >/dev/null 2>&1; then
 		wpa_running=1
-		killall -9 wpa_supplicant 2>/dev/null || true
 	fi
+	# keepalive.sh (muOS's own rtw_power_mgnt=0 idle-drop fix) pings on a timer and dhcpcd holds a
+	# lease timer; both are started BY net.sh connect, so tearing down wpa_supplicant alone left two
+	# processes waking the box and racing the reconnect below.
+	killall -q keepalive.sh 2>/dev/null || true
+	killall -9 wpa_supplicant dhcpcd 2>/dev/null || true
 	ifconfig wlan0 down 2>/dev/null || true
 }
 
@@ -31,11 +35,23 @@ after() {
 	# SetVolume(GetVolume()) then re-applies the user's actual level.
 	alsactl -U -f /opt/muos/device/control/asound.state restore 2>/dev/null || true
 	# Bring wifi back only if it was up before (the frontend only runs its bring-up at boot).
-	if [ -n "$wpa_running" ] && [ -f /etc/wpa_supplicant.conf ]; then
-		ifconfig wlan0 up 2>/dev/null || true
-		iw dev wlan0 set power_save off 2>/dev/null || true
-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null || true
-		( dhcpcd -t 25 wlan0 2>/dev/null & )
+	#
+	# DELEGATE, do not hand-roll. This block used to run its own ifconfig/wpa_supplicant/dhcpcd
+	# sequence; that is the same hand-rolled bring-up that broke wifi repeatedly on this chip and
+	# which the frontend deliberately replaced with muOS's proven net.sh (driver load + scan +
+	# wpa_passphrase + dhcp + validate + keepalive). Resume must use the identical path, or the
+	# device comes back from every deep sleep with wifi in a state the rest of the system does not
+	# expect. It is backgrounded by the caller, so net.sh's ~30s does not delay the UI.
+	if [ -n "$wpa_running" ]; then
+		if [ -x /opt/muos/script/system/network.sh ]; then
+			/opt/muos/script/system/network.sh connect >/dev/null 2>&1 || true
+		elif [ -f /etc/wpa_supplicant.conf ]; then
+			# Fallback only if the donor script is missing (it is not, on our image).
+			ifconfig wlan0 up 2>/dev/null || true
+			iw dev wlan0 set power_save off 2>/dev/null || true
+			wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null || true
+			( dhcpcd -t 25 wlan0 2>/dev/null & )
+		fi
 	fi
 }
 
