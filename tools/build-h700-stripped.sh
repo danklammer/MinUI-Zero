@@ -312,6 +312,13 @@ mkdir -p "$STAGE/.system/h700/bin" "$STAGE/.system/h700/lib" "$STAGE/.system/h70
          "$STAGE/Saves" "$STAGE/Bios" "$STAGE/Roms/Game Boy Color (GBC)"
 cp "$REPO/workspace/all/minui/build/h700/minui.elf"     "$STAGE/.system/h700/bin/"
 cp "$REPO/workspace/all/minarch/build/h700/minarch.elf" "$STAGE/.system/h700/bin/"
+# Shared UI helpers every tool pak calls by bare name (the frontend puts this dir on PATH). Without
+# them the Deep Sleep tool — the only way to turn deep sleep OFF without ssh, now that it ships on
+# by default — dies at its first confirm.elf.
+for _h in confirm say; do
+	cp "$REPO/workspace/all/$_h/build/h700/$_h.elf" "$STAGE/.system/h700/bin/" 2>/dev/null || \
+		{ echo "ERROR: $_h.elf missing for h700 — run 'make h700-build' first"; exit 1; }
+done
 cp "$REPO/workspace/h700/libmsettings/libmsettings.so"  "$STAGE/.system/h700/lib/"
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti"     "$STAGE/.system/h700/bin/dropbearmulti"  # ssh (openssh stripped); aarch64, shared with tg5040
 chmod +x "$STAGE/.system/h700/bin/dropbearmulti"

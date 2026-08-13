@@ -983,17 +983,22 @@ int PLAT_supportsDeepSleep(void) {
 	// save/restore, radio teardown, the `echo mem` write) lives in ${BIN_PATH}/suspend, invoked
 	// by PWR_deepSleep(). Owned-OS only: never suspend the host while running as a guest in muOS.
 	//
-	// DEFERRED (2026-08-07): kept OFF until FAUX-sleep-wake is validated on-device. Deep sleep is
-	// the 2-minute escalation *past* faux-sleep, so it can only be trusted once the wake path
-	// (PLAT_shouldWake, below) is proven — enabling it earlier stacked `echo mem` on a sleep that
-	// could not wake, and a device that suspends without waking reads as bricked.
+	// VALIDATED ON-DEVICE 2026-08-13 (RG35XX Plus): 3 supervised suspend/resume cycles, all clean,
+	// with the kernel receipt `PM: Suspending system (mem)` / `PM: suspend exit` and uptime
+	// continuous across each. Resume restores screen, volume (mixer read back the exact SetVolume
+	// value) and wifi (~30s, via net.sh — sample later than that or it reads as a failure).
+	// MEASURED PAYOFF: ~1.0 %/h suspended vs 8.79 %/h playing, i.e. ~9x cheaper and ~4 days of
+	// standby, on a device whose ONLY previous option after an idle timeout was to power itself
+	// off and lose the session.
 	//
-	// ARMED BY A CARD FLAG so the supervised test costs a file, not a rebuild+reflash per attempt:
-	// `touch /mnt/mmc/deepsleep.txt`, run the test, delete it to disarm. Once the wake path is
-	// proven on-device this becomes the default and the flag inverts to the tg5040's opt-OUT
-	// (DEEP_SLEEP_OFF_PATH, already honored by PWR_waitForWake). Until then the safe answer is 0.
-	if (!zero_owns_os()) return 0; // never suspend the host while running as a guest inside muOS
-	return exists(SDCARD_PATH "/deepsleep.txt");
+	// Validation was 3 supervised cycles, NOT the 10-cycle unattended soak originally planned: the
+	// soak needs an RTC that can wake from `mem`, and rtc0 here is an external pcf8563 that is not
+	// wired as a wake source (an armed alarm never fired; the device sat suspended until a power
+	// press). rtc1 (sunxi-rtc) is untried. Recorded so nobody reads "on by default" as "soaked".
+	//
+	// Opt-out is the shared one the tg5040 already uses (DEEP_SLEEP_OFF_PATH, honored in
+	// PWR_waitForWake), so the Deep Sleep tool works here identically.
+	return zero_owns_os(); // owned OS only: never suspend the host while running as a muOS guest
 }
 
 int PLAT_pickSampleRate(int requested, int max) {

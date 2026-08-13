@@ -24,6 +24,10 @@ export CHEATS_PATH=/mnt/mmc/Cheats
 # plus vs h (near-twins; muOS resolves the board for us). Consumed by paks and minarch alike.
 export DEVICE=$(sed 's/^rg35xx-//' /opt/muos/device/config/board/name 2>/dev/null || echo plus)
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
+# Shipped helper binaries (confirm.elf, say.elf, minarch.elf, ...) on PATH, matching tg5040 — tool
+# and emulator paks call them bare, so without this every community pak written against the normal
+# MinUI contract fails with "not found". Ours worked only because they used absolute paths.
+export PATH=/mnt/mmc/.system/h700/bin:$PATH
 # audio: pipewire is REMOVED (build-h700-stripped.sh). startup.sh's trimmed pipewire.sh does the
 # codec init (alsactl restore) at boot; ALSA routes default->hw directly (asound.conf); minui and
 # the emu paks use SDL_AUDIODRIVER=alsa. Nothing audio-related to do here.
