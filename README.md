@@ -165,6 +165,12 @@ An **alpha** build for the Anbernic H700 family. Same launcher, same closed-loop
 emulator cores — but newer than the TrimUI builds and less proven. Back up your card and expect
 rough edges.
 
+**Developed and verified on the RG35XX Plus only.** The image is built from a Plus-specific donor:
+the board config and boot chain (DTB, u-boot) are that device's, and the model is read from a file
+in the image rather than detected from the hardware. Other H700 devices — the RG35XX H included —
+are **untested and likely need their own image**. Do not assume the family is covered because the
+SoC matches.
+
 **This one installs differently, and it is worth understanding why.** On the TrimUI and Miyoo
 devices MinUI Zero is a *guest*: the stock firmware boots, and MinUI takes over the screen. On the
 RG35XX Plus there is no stock firmware to be a guest of — the device boots whatever card you give
