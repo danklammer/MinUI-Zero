@@ -70,7 +70,6 @@ if [ "$DEVICE" != "rg35xx-plus" ]; then
 		"$DEVICE_DIR/package/boot_package.fex" "$OUT_DIR/raw36-$DEVICE.img" || exit 1
 	BUILT_RAW="$OUT_DIR/raw36-$DEVICE.img"
 	rm -f "$OUT_DIR/base-raw36.img"
-	IMG="${IMG%.img}-$DEVICE.img"
 	# FAIL CLOSED on the kernel. muOS builds one kernel per board and the board drivers live in it,
 	# only the RG35XX H kernel contains the analog-mux code (`amux`/`adc_en` are absent from the Plus
 	# kernel). Without this check a missing or misnamed parts-<device>/p4-kernel.img.gz silently falls
@@ -88,6 +87,8 @@ fi
 # an older same-name .img and .xz sitting there looking current, and a later upload publishes stale
 # code from a build that never succeeded.
 rm -f "$IMG" "$IMG.xz"
+
+IMG="${IMG%.img}-$DEVICE.img"   # every image names its board; they are NOT interchangeable
 
 echo "== build mode: $MODE (version $VERSION) =="
 
