@@ -33,7 +33,13 @@ BUILD_ROOT=../../$(PLATFORM)/cores
 define TEMPLATE
 
 $1_REPO ?= https://github.com/libretro/$(1)
-$1_MAKE ?= make $(and $($1_MAKEFILE),-f $($1_MAKEFILE)) platform=$(PLATFORM) $($(1)_FLAGS)
+# ISOLATE EVERY CORE FROM THE PARENT JOBSERVER. These are third-party makefiles that recurse, and
+# several mishandle an inherited jobserver: the sub-make ignores our -jN and starts linking before
+# its objects exist (picodrive: undefined lprintf/rfread/rfseek; fceumm the same on miyoomini). The
+# giveaway is that they build perfectly standalone and via `make <core>`, and ONLY fail inside a
+# full platform build. Clearing MAKEFLAGS makes $1_PROCS the single source of truth for how parallel
+# a core is allowed to be (2026-08-14).
+$1_MAKE ?= env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL make $(and $($1_MAKEFILE),-f $($1_MAKEFILE)) platform=$(PLATFORM) $($(1)_FLAGS)
 $1_BUILD_PATH ?= $(1)
 # Per-core parallelism. Needed because a core can recurse into a sub-make that mishandles the
 # jobserver: picodrive's Cyclone M68K generator dies with "write jobserver: Bad file descriptor"
@@ -84,6 +90,7 @@ all: cores
 $(foreach CORE,$(CORES),$(eval $(call TEMPLATE,$(CORE))))
 
 cores: $(foreach CORE,$(CORES),$(CORE))
+	@sh ../../all/cores/check-cores.sh output $(CORES)
 	
 clean: $(foreach CORE,$(CORES),clean-$(CORE))
 

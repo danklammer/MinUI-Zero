@@ -20,6 +20,14 @@ gambatte_HASH           = fc59959a30b40d74875f18ac4bc617d81b42d782
 gpsp_HASH               = 69e86ebe89f14c3f5f75b809c12c0a953b3d6ce4
 pcsx_rearmed_HASH       = 050981b6eeb715f142854f57c68086f62921f027
 picodrive_HASH          = 9e011174842a098a99290622b14db7ffafa717d1
+# SERIAL, AND ISOLATED FROM THE PARENT JOBSERVER. picodrive builds cleanly on its own and through
+# `make picodrive`, but failed inside the full `make tg5040` with undefined lprintf/rfread/rfseek:
+# its recursive sub-makes inherit the outer jobserver and start the link before
+# platform/libretro/libretro.o exists. Stale objects hid this for months; a genuinely clean tree
+# failed every time (2026-08-14). Clearing MAKEFLAGS/MFLAGS makes the sub-make truly serial.
+# miyoomini already carries the -j1 half for the same core.
+picodrive_PROCS = -j1
+picodrive_MAKE = env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL make -f Makefile.libretro platform=tg5040
 snes9x2005_plus_HASH    = b60356971fc9caae02cd0853676dced886a08be7
 mednafen_pce_fast_HASH  = 4727b96c10f50405167d98d364844469307fcc41
 mednafen_vb_HASH        = 38e7a0ec9ac7079ca1c1e3dd9aaf5b56f527efca
