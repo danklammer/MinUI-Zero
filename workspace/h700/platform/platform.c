@@ -151,6 +151,42 @@ static void ev_hat(uint16_t code, int32_t value, uint32_t tick) {
 	if (value > 0 && !(pad.is_pressed & pos_btn)) { pad.is_pressed |= pos_btn; pad.just_pressed |= pos_btn; pad.just_repeated |= pos_btn; pad.repeat_at[pos_id] = tick + PAD_REPEAT_DELAY; }
 }
 
+// ANALOG STICKS (RG35XX H only; the Plus has none and never emits these codes).
+//
+// MEASURED on-device 2026-08-14, not assumed — the axis assignment is NOT the conventional
+// X/Y/RX/RY, so guessing would have been wrong:
+//     ABS_Z  (2) = LEFT stick X      ABS_RX (3) = LEFT stick Y
+//     ABS_RY (4) = RIGHT stick X     ABS_RZ (5) = RIGHT stick Y
+// Range is +/-4096 (the vendor adc_joystick driver, 4 mux channels with per-channel calibration);
+// negative is left/up. The shared code expects SDL-scale values, hence the *8.
+//
+// These axes only exist when the board's own kernel is running: the device tree declares the
+// generic `gpio-keys-polled`, and only the H kernel carries the ADC/mux code that acts on its
+// vendor properties. On the Plus kernel the same codes report a -1..1 digital hat.
+#define STICK_RAW_MAX 4096
+#define STICK_DEADZONE 512   // menu-navigation only; games still get the raw value
+static void ev_stick(uint16_t code, int32_t value, uint32_t tick) {
+	int scaled = value * (32768 / STICK_RAW_MAX);
+	if (scaled >  32767) scaled =  32767;
+	if (scaled < -32767) scaled = -32767;
+	// Deadzone applies ONLY to the button-emulation used for menu navigation. pad.laxis/raxis keep
+	// the full-fidelity value, because that is what minarch hands to cores as RETRO_DEVICE_ANALOG —
+	// clamping there would quietly cost precision in every analog game.
+	int nav = (value > STICK_DEADZONE || value < -STICK_DEADZONE) ? scaled : 0;
+	switch (code) {
+		case 2: // left X
+			pad.laxis.x = scaled;
+			PAD_setAnalog(BTN_ID_ANALOG_LEFT, BTN_ID_ANALOG_RIGHT, nav, tick + PAD_REPEAT_DELAY);
+			break;
+		case 3: // left Y
+			pad.laxis.y = scaled;
+			PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, nav, tick + PAD_REPEAT_DELAY);
+			break;
+		case 4: pad.raxis.x = scaled; break; // right X — no menu emulation, matches tg5040
+		case 5: pad.raxis.y = scaled; break; // right Y
+	}
+}
+
 void PLAT_pollInput(void) {
 	pad.just_pressed  = BTN_NONE;
 	pad.just_released = BTN_NONE;
@@ -175,7 +211,13 @@ void PLAT_pollInput(void) {
 	for (int i = 0; i < EVDEV_COUNT; i++) {
 		if (ev_fds[i] < 0) continue;
 		while (read(ev_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
-			if (ev.type == 3) { ev_hat(ev.code, ev.value, tick); continue; } // dpad hat
+			// EV_ABS: codes 16/17 are the d-pad hat on every h700 board; 2-5 are the analog
+			// sticks, which only report real values on hardware whose kernel drives the ADC mux.
+			if (ev.type == 3) {
+				if (ev.code >= 2 && ev.code <= 5) ev_stick(ev.code, ev.value, tick);
+				else ev_hat(ev.code, ev.value, tick);
+				continue;
+			}
 			if (ev.type != 1) continue;      // EV_KEY otherwise
 			if (ev.value == 2) continue;     // autorepeat: we do our own
 			// BOOT GRACE for the power key: the press that powers the device ON reaches minui
