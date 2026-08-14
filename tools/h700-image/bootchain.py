@@ -36,7 +36,14 @@ FDT_BEGIN_NODE, FDT_END_NODE, FDT_PROP, FDT_NOP, FDT_END = 1, 2, 3, 4, 9
 
 
 def find_fdt(buf):
-    """Return (offset, size) of the single real FDT blob inside a boot package."""
+    """Return (offset, size) of the single real FDT blob inside a boot package.
+
+    Validates that the blob actually FITS and that its structure/string blocks lie inside it. Without
+    that, a header claiming a larger totalsize than the package holds still parsed far enough to find
+    and patch poll-interval — and toc1_fix() would then wrap a valid outer checksum around an
+    internally invalid device tree, i.e. a chain that passes every check here and does not boot.
+    Fail closed instead: a boot chain we cannot fully verify is not one to ship.
+    """
     off = 0
     while True:
         i = buf.find(FDT_MAGIC, off)
@@ -44,8 +51,11 @@ def find_fdt(buf):
             return None
         total = struct.unpack_from('>I', buf, i + 4)[0]
         ver = struct.unpack_from('>I', buf, i + 20)[0]
-        if 0x1000 < total < 4_000_000 and ver in (16, 17):
-            return i, total
+        if 0x1000 < total < 4_000_000 and ver in (16, 17) and i + total <= len(buf):
+            off_struct, off_strings = struct.unpack_from('>II', buf, i + 8)
+            size_strings = struct.unpack_from('>I', buf, i + 12 + 12)[0]  # header: ...strings size
+            if 0 < off_struct < total and 0 < off_strings <= total and off_strings + size_strings <= total:
+                return i, total
         off = i + 4
 
 

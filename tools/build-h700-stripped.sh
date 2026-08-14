@@ -71,7 +71,23 @@ if [ "$DEVICE" != "rg35xx-plus" ]; then
 	BUILT_RAW="$OUT_DIR/raw36-$DEVICE.img"
 	rm -f "$OUT_DIR/base-raw36.img"
 	IMG="${IMG%.img}-$DEVICE.img"
+	# FAIL CLOSED on the kernel. muOS builds one kernel per board and the board drivers live in it —
+	# only the RG35XX H kernel contains the analog-mux code (`amux`/`adc_en` are absent from the Plus
+	# kernel). Without this check a missing or misnamed parts-<device>/p4-kernel.img.gz silently falls
+	# back to the Plus kernel via part(), producing a device-labelled image whose hardware does not
+	# work, with a successful build log. If a future board genuinely shares the Plus kernel, copy it
+	# in deliberately rather than relying on the fallback.
+	[ -f "$ASSETS/parts-$DEVICE/p4-kernel.img.gz" ] || {
+		echo "ERROR: $DEVICE needs its own kernel at $ASSETS/parts-$DEVICE/p4-kernel.img.gz"
+		echo "       (extract p4 from that board muOS image; the fallback would ship the Plus kernel)"
+		exit 1; }
 fi
+
+# Stale-artifact guard: remove any previous image under this exact name NOW, not at assembly time.
+# Otherwise a build that fails partway (rootfs extract, device overlay, boot-chain synthesis) leaves
+# an older same-name .img and .xz sitting there looking current, and a later upload publishes stale
+# code from a build that never succeeded.
+rm -f "$IMG" "$IMG.xz"
 
 echo "== build mode: $MODE (version $VERSION) =="
 
@@ -101,7 +117,7 @@ mkdir -p "$OUT_DIR"
 echo "== extracting + stripping muOS rootfs (this takes a few minutes) =="
 cp "$REPO/tools/h700-strip/minui-frontend.sh" "$ASSETS/minui-frontend.sh"
 cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
-docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e P5_KB=$((P5_SECTORS / 2)) -e DEVICE="$DEVICE" tg5040-toolchain /bin/bash -c '
+docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e P5_KB=$((P5_SECTORS / 2)) -e DEVICE="$DEVICE" -e MODE="$MODE" tg5040-toolchain /bin/bash -c '
 set -e
 R=/work/root
 rm -rf "$R"; mkdir -p "$R"
@@ -284,8 +300,20 @@ chmod +x "$R/opt/minui-zero/minui-frontend.sh"
 rm -f "$R/etc/wpa_supplicant.conf" 2>/dev/null || true
 # ssh access: dropbear (the frontend launches dropbearmulti) reads /root/.ssh/authorized_keys for
 # key auth. openssh is stripped, so its host-key perm dance is gone with it.
+#
+# PURGE THE INHERITED KEY FIRST. The donor rootfs was dumped from a working card that already had an
+# authorized_keys installed, so it carries one of its own. Release mode only removed the key we COPY
+# IN ($ASSETS/authorized_keys) and left that inherited file alone — and the frontend starts dropbear
+# whenever the file is non-empty. A published image therefore authorized ONE developer key on every
+# user device and opened a listening port (confirmed present in the built v1.6.0 image, Codex review
+# 2026-08-14). Deleting it unconditionally is what makes release mode mean anything.
+# NOTE: no apostrophes anywhere in this docker block — it is one single-quoted string and an
+# apostrophe closes it early, which is how this very edit first broke the script.
+rm -f "$R/root/.ssh/authorized_keys"
 mkdir -p "$R/root/.ssh"
-cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
+if [ "$MODE" = dev ]; then
+	cp /a/authorized_keys "$R/root/.ssh/authorized_keys" 2>/dev/null || true
+fi
 chmod 700 "$R/root/.ssh" 2>/dev/null || true
 
 echo "  wiring ALSA-direct audio (pipewire removed)..."
@@ -333,6 +361,19 @@ esac
 exit 0
 PWSH
 chmod +x "$R/opt/muos/script/system/pipewire.sh"
+
+# RELEASE GATE ON THE ARTIFACT, not on the inputs. The previous gate checked only the key we copy
+# IN, so the one the donor rootfs already carried shipped anyway (Codex review 2026-08-14). Assert
+# against the tree that is about to become the image.
+if [ "$MODE" = release ]; then
+	if [ -s "$R/root/.ssh/authorized_keys" ]; then
+		echo "ERROR: release rootfs still carries /root/.ssh/authorized_keys"; exit 1
+	fi
+	if [ -e "$R/mnt/mmc/devmode.txt" ]; then
+		echo "ERROR: release rootfs carries devmode.txt"; exit 1
+	fi
+	echo "  release gate (rootfs): no ssh key, no devmode.txt"
+fi
 
 echo "  stripped rootfs size: $(du -sh $R | cut -f1)"
 echo "  building lean p5 (${P5_KB}k)..."
@@ -439,10 +480,19 @@ rm -f "$IMG"
 # mainline uses interrupts). A re-dumped part from a stock card would silently regress to 20ms —
 # re-run the patch script against any fresh dump (offsets + verified algorithm inside it).
 if [ -n "$BUILT_RAW" ]; then cp "$BUILT_RAW" "$IMG"; else gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"; fi
-gunzip -c "$ASSETS/parts/p2-boot.img.gz"   | dd of="$IMG" bs=512 seek=90112  conv=notrunc status=none
-gunzip -c "$ASSETS/parts/p3-env.img.gz"    | dd of="$IMG" bs=512 seek=155648 conv=notrunc status=none
-BOOTIMG_BYTES=$(gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | head -c 48 | python3 -c 'import sys,struct;d=sys.stdin.buffer.read(48);k,_,r=struct.unpack("<III",d[8:20]);pg=struct.unpack("<I",d[36:40])[0];print(pg*(1+(k+pg-1)//pg+(r+pg-1)//pg))')
-gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | head -c "$BOOTIMG_BYTES" | dd of="$IMG" bs=512 seek=188416 conv=notrunc status=none
+# PER-DEVICE PARTS. A board may need its own partition here — the RG35XX H needs its own KERNEL
+# (p4): muOS builds one per device, and only the H's contains the analog-mux driver (`amux`/`adc_en`
+# are absent from the Plus kernel, present in the H's — checked, both Linux 4.9.170 from the same
+# build host, so modules stay compatible). Anything not overridden falls back to the shared part.
+part() { if [ -f "$ASSETS/parts-$DEVICE/$1" ]; then echo "$ASSETS/parts-$DEVICE/$1"; else echo "$ASSETS/parts/$1"; fi; }
+# `gunzip -c X | dd ...` reports DD exit status, and /bin/sh has no pipefail — so a truncated or
+# corrupt part produced a short write, a zero exit, and a fully assembled image that cannot boot.
+# Decompress to a temp file first so set -e actually sees the failure.
+unz() { gunzip -c "$1" > "$OUT_DIR/.part.tmp"; }
+unz "$(part p2-boot.img.gz)";   dd if="$OUT_DIR/.part.tmp" of="$IMG" bs=512 seek=90112  conv=notrunc status=none
+unz "$(part p3-env.img.gz)";    dd if="$OUT_DIR/.part.tmp" of="$IMG" bs=512 seek=155648 conv=notrunc status=none
+BOOTIMG_BYTES=$(gunzip -c "$(part p4-kernel.img.gz)" | head -c 48 | python3 -c 'import sys,struct;d=sys.stdin.buffer.read(48);k,_,r=struct.unpack("<III",d[8:20]);pg=struct.unpack("<I",d[36:40])[0];print(pg*(1+(k+pg-1)//pg+(r+pg-1)//pg))')
+unz "$(part p4-kernel.img.gz)"; head -c "$BOOTIMG_BYTES" "$OUT_DIR/.part.tmp" | dd of="$IMG" bs=512 seek=188416 conv=notrunc status=none
 dd if="$OUT_DIR/p5.img" of="$IMG" bs=512 seek=$P5_FIRST conv=notrunc status=none
 dd if="$OUT_DIR/p6.img" of="$IMG" bs=512 seek=$P6_FIRST conv=notrunc status=none
 python3 "$REPO/tools/h700-image/gpt.py" "$IMG" $TOTAL $P5_LAST $P6_FIRST $P6_LAST
