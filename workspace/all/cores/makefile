@@ -90,7 +90,7 @@ all: cores
 $(foreach CORE,$(CORES),$(eval $(call TEMPLATE,$(CORE))))
 
 cores: $(foreach CORE,$(CORES),$(CORE))
-	@sh ../../all/cores/check-cores.sh output $(CORES)
+	@sh ../../all/cores/check-cores.sh output $(foreach C,$(CORES),$(if $($(C)_CORE),$($(C)_CORE),$(C)_libretro.so))
 	
 clean: $(foreach CORE,$(CORES),clean-$(CORE))
 

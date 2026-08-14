@@ -6,20 +6,31 @@
 # with a broken PlayStation core and no error anywhere (2026-08-14). A core that fails to build is
 # obvious; a core that half-builds is not, and nothing was checking.
 #
-# Usage: check-cores.sh <output-dir> <core> [core...]
+# ARGUMENTS ARE ARTIFACT FILENAMES, not core names. The two differ: the core `fake-08` produces
+# `fake08_libretro.so` via its *_CORE override, so deriving the filename here would reject every
+# valid build. The makefile passes the same $(if $(C_CORE),...) expression the template uses to move
+# the artifact, which keeps this checker and the build agreeing by construction.
+#
+# Usage: check-cores.sh <output-dir> <artifact.so> [artifact.so...]
 set -e
 OUT="$1"; shift
-MIN=102400        # 100KB. The smallest real core here is mednafen_vb at ~167KB; stubs are ~10KB.
+MIN=102400        # 100KB. Smallest real core here is miyoomini mednafen_vb at 138KB; stubs are ~10KB.
+
+if [ $# -eq 0 ]; then
+	echo "ERROR: check-cores.sh called with no cores to check (vacuous pass)"
+	exit 1
+fi
+
 BAD=""
-for c in "$@"; do
-	so="$OUT/${c}_libretro.so"
+for so_name in "$@"; do
+	so="$OUT/$so_name"
 	if [ ! -f "$so" ]; then
-		BAD="$BAD $c(missing)"
+		BAD="$BAD $so_name(missing)"
 		continue
 	fi
 	sz=$(stat -f%z "$so" 2>/dev/null || stat -c%s "$so" 2>/dev/null || echo 0)
 	if [ "$sz" -lt "$MIN" ]; then
-		BAD="$BAD $c(${sz}B)"
+		BAD="$BAD $so_name(${sz}B)"
 	fi
 done
 if [ -n "$BAD" ]; then
