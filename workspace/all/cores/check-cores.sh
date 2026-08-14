@@ -14,7 +14,8 @@
 # Usage: check-cores.sh <output-dir> <artifact.so> [artifact.so...]
 set -e
 OUT="$1"; shift
-MIN=102400        # 100KB. Smallest real core here is miyoomini mednafen_vb at 138KB; stubs are ~10KB.
+. "$(dirname "$0")/core-limits.sh"
+MIN=$CORE_MIN_SIZE
 
 if [ $# -eq 0 ]; then
 	echo "ERROR: check-cores.sh called with no cores to check (vacuous pass)"

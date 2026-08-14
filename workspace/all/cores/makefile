@@ -30,6 +30,13 @@ PROCS ?= -j4
 
 BUILD_ROOT=../../$(PLATFORM)/cores
 
+# The FILE a core produces, which is not always its name: fake-08 emits fake08_libretro.so via its
+# *_CORE override. The build target, the mv, the clean rule and the gate must all derive it the same
+# way or they disagree — they did, so `make clean` deleted a fake-08_libretro.so that never existed,
+# leaving the real artifact from an older checkout in output/ and rebuilding the core every time
+# (Codex review 2026-08-14).
+CORE_ARTIFACT = $(if $($(1)_CORE),$($(1)_CORE),$(1)_libretro.so)
+
 define TEMPLATE
 
 $1_REPO ?= https://github.com/libretro/$(1)
@@ -63,10 +70,10 @@ verify-$(1): src/$(1)/.patched src/$(1)/.patched-all
 	sh ../../all/cores/verify-source.sh src/$(1) "$(if $($1_HASH),$($1_HASH),HEAD)" $(if $(wildcard patches/$(1).patch),patches/$(1).patch) $(sort $(wildcard ../../all/cores/patches/$(1)/*.patch)) $(addprefix --ignore=,$($(1)_VERIFY_IGNORE))
 
 
-output/$(1)_libretro.so: src/$(1)/.patched src/$(1)/.patched-all | verify-$(1)
+output/$(call CORE_ARTIFACT,$(1)): src/$(1)/.patched src/$(1)/.patched-all | verify-$(1)
 	mkdir -p output
 	cd src/$$($1_BUILD_PATH) && $$($1_MAKE) $$($1_PROCS)
-	mv src/$$($1_BUILD_PATH)/$(if $($(1)_CORE),$($(1)_CORE),$(1)_libretro.so) ./output
+	mv src/$$($1_BUILD_PATH)/$(call CORE_ARTIFACT,$(1)) ./output
 
 clone-$(1): src/$(1)
 
@@ -77,9 +84,9 @@ patch-$(1): src/$(1)/.patched
 
 clean-$(1):
 	test ! -d src/$(1) || cd src/$$($1_BUILD_PATH) && $$($1_MAKE) clean
-	rm -rf output/$(1)_libretro.so
+	rm -rf output/$(call CORE_ARTIFACT,$(1))
 
-$(1): output/$(1)_libretro.so
+$(1): output/$(call CORE_ARTIFACT,$(1))
 
 endef
 
@@ -90,7 +97,7 @@ all: cores
 $(foreach CORE,$(CORES),$(eval $(call TEMPLATE,$(CORE))))
 
 cores: $(foreach CORE,$(CORES),$(CORE))
-	@sh ../../all/cores/check-cores.sh output $(foreach C,$(CORES),$(if $($(C)_CORE),$($(C)_CORE),$(C)_libretro.so))
+	@sh ../../all/cores/check-cores.sh output $(foreach C,$(CORES),$(call CORE_ARTIFACT,$(C)))
 	
 clean: $(foreach CORE,$(CORES),clean-$(CORE))
 

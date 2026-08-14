@@ -244,11 +244,16 @@ else
 	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak
 endif
 
-# ORDERED DEPLIBERATELY. `cores` here only COPIES core artifacts into build/; the actual core build
+# ORDERED DELIBERATELY. `cores` here only COPIES core artifacts into build/; the actual core build
 # and its stub gate happen inside `build`. Listed as plain prerequisites they may run concurrently
 # under -j, so the copy can take a stale output/ core while the build validates the new one, and the
 # staged payload silently disagrees with what was checked (Codex review 2026-08-14).
-.NOTPARALLEL:
+#
+# Order-only prerequisites (|) rather than a bare `.NOTPARALLEL:`, which has no prerequisites in
+# make 3.81 and therefore serializes the ENTIRE makefile — a global switch to express one local
+# ordering constraint, with no hint to the next person why nothing ever parallelizes.
+system: | build
+cores: | build
 common: build system cores
 	
 clean:
@@ -337,8 +342,15 @@ ifneq (,$(findstring tg5040, $(PLATFORMS)))
 endif
 
 .PHONY: check-payload
+# ITERATES $(PLATFORMS), NOT $(PLATFORM). `make tg5040` expands to a chain in which `make package`
+# is its own make invocation with PLATFORM unset, so the first version of this gate resolved to
+# ./build/SYSTEM//paks/Emus, found nothing, and passed every build silently — the exact vacuous
+# pass it was written to prevent (Codex review 2026-08-14, round 2). Everything else in `package`
+# already uses $(PLATFORMS) for this reason.
 check-payload:
-	@sh ./workspace/all/cores/check-payload.sh ./build/SYSTEM/$(PLATFORM)/paks/Emus $(PLATFORM)
+	@for p in $(PLATFORMS); do \
+		sh ./workspace/all/cores/check-payload.sh ./build/SYSTEM/$$p $$p || exit 1; \
+	done
 
 # GATED. package used to depend only on `tidy`, so a manually staged or interrupted build could be
 # zipped without the core gate ever running (Codex review 2026-08-14). check-payload verifies the

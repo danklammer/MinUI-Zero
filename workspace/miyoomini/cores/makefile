@@ -72,12 +72,11 @@ fake-08_BUILD_PATH = fake-08/platform/libretro
 # deterministically. Serial for this core only — the ARM32 Cyclone/SH2 DRC path is worth the wait,
 # it is the one big win this device has that the aarch64 Brick cannot use.
 picodrive_PROCS = -j1
-# ...and isolated from the PARENT jobserver too. -j1 on its own command line is not enough: the outer
-# make exports MAKEFLAGS, picodrive recurses, and the sub-make starts linking before
-# platform/libretro/libretro.o exists (undefined lprintf/rfread/rfseek). It builds fine standalone
-# and via `make picodrive`, and ONLY fails inside the full platform build, which is what made this
-# take so long to see. Same fix as tg5040 (2026-08-14).
-picodrive_MAKE = env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL make -f Makefile.libretro platform=miyoomini
+# -j1 alone is not enough, because the outer make exports MAKEFLAGS and the recursive sub-make links
+# before platform/libretro/libretro.o exists (undefined lprintf/rfread/rfseek) — it builds fine
+# standalone and via `make picodrive`, and ONLY fails inside the full platform build, which is what
+# made this take so long to see. That isolation is the template default in ../../all/cores/makefile
+# and covers every core, so only the -j1 above is picodrive-specific (2026-08-14).
 # Upstream tracks two prebuilt GP2X objects that its broad clean rule deletes; irrelevant here.
 picodrive_VERIFY_IGNORE = platform/gp2x/warm_2.4.25.o platform/gp2x/warm_2.4.26-open2x.o
 

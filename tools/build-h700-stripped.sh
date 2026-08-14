@@ -446,18 +446,21 @@ for _pak in "$STAGE"/.system/h700/paks/Emus/*.pak; do
 	_core=$(grep -oE "[a-z0-9_]+_libretro\.so" "$_pak/launch.sh" 2>/dev/null | head -1)
 	[ -n "$_core" ] || continue
 	_path="$STAGE/.system/h700/cores/$_core"
-	if [ ! -f "$_path" ]; then
-		MISSING="$MISSING $_tag:$_core(absent)"
-	elif [ "$(stat -f%z "$_path" 2>/dev/null || stat -c%s "$_path" 2>/dev/null)" -lt 102400 ]; then
-		MISSING="$MISSING $_tag:$_core(stub)"
-	fi
+	[ -f "$_path" ] || MISSING="$MISSING $_tag:$_core(absent)"
 done
 if [ -n "$MISSING" ]; then
-	echo "ERROR: paks without a usable core, $MISSING"
+	echo "ERROR: paks without a core, $MISSING"
 	echo "       build the full core set first: make -C workspace/tg5040/cores (or make tg5040)"
 	exit 1
 fi
-echo "  core coverage: every emu pak has a real core"
+echo "  core coverage: every emu pak names a core that exists"
+
+# Then validate those cores the same way `make package` does. This path is how the 10,840-byte
+# pcsx_rearmed reached three devices, and it never ran the shared gate — it re-implemented only the
+# size half, so a valid-header core built for the wrong architecture packaged unchallenged. The two
+# checks are complementary: the loop above proves coverage (a pak with no core), this proves the
+# artifacts are real (Codex review 2026-08-14, round 2).
+sh "$REPO/workspace/all/cores/check-payload.sh" "$STAGE/.system/h700" h700
 
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)

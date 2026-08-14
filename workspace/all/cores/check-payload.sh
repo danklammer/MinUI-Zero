@@ -5,36 +5,63 @@
 # same thing: a stale core can be copied from a previous build, and `make package` can be run
 # against a manually staged tree the build gate never saw (Codex review 2026-08-14).
 #
-# Size alone is too weak. A raced link can drop a subset of objects and still exceed any byte
-# threshold, and a core built for the wrong architecture is exactly the right size while being
-# unusable. So check the ELF header directly:
-#   - ELF magic, and ET_DYN (a shared object, not an executable or a truncated file)
-#   - e_machine matches the platform (AArch64 0xB7 for tg5040/h700, ARM 0x28 for miyoomini)
-#   - the libretro entry point `retro_run` appears in the file, which a stub link omits
+# SCANS THE WHOLE STAGED PLATFORM TREE, not one subdirectory. The first version took the Emus pak
+# dir, which is where only the seven DORMANT extras live — the primary cores (including the
+# pcsx_rearmed this file was written for) stage in <platform>/cores, and on miyoomini every core
+# does, so the gate inspected nothing at all on the platform it named (2026-08-14, review round 2).
 #
-# Usage: check-payload.sh <emus-dir> <platform>
+# Two independent failure modes, and neither check finds the other:
+#   - a stub. A raced link still emits a valid ET_DYN of the right architecture WITH retro_run in
+#     it, just missing most of the code (measured: pcsx_rearmed at 10,840 bytes passes every header
+#     check below). Only size separates those, so the size check is load-bearing — do not remove it
+#     as redundant with the ELF checks.
+#   - a wrong or non-core file: right size, unusable. ELF magic + ET_DYN + e_machine catch a core
+#     built for another architecture, and retro_run catches a shared object that is not a libretro
+#     core at all.
+#
+# Usage: check-payload.sh <staged-platform-dir> <platform>
 set -e
 DIR="$1"
 PLATFORM="$2"
-[ -d "$DIR" ] || { echo "  check-payload: no staged Emus dir at $DIR, nothing to verify"; exit 0; }
+. "$(dirname "$0")/core-limits.sh"
 
+# FAILS CLOSED, like check-cores.sh. A missing directory or an empty scan means the gate was wired
+# wrong, not that the payload is clean, and a gate that reassures you when it inspected nothing is
+# worse than no gate. That is precisely how the first version passed a build it never looked at.
+[ -n "$PLATFORM" ] || { echo "ERROR: check-payload.sh called with no platform (vacuous pass)"; exit 1; }
+[ -d "$DIR" ] || { echo "ERROR: check-payload: no staged tree at $DIR (vacuous pass)"; exit 1; }
+
+# No catch-all default. Guessing an architecture is the mistake this gate exists to catch, so an
+# unknown platform is an error — a new platform must state its own arch here.
 case "$PLATFORM" in
-	miyoomini) WANT_MACHINE=40;  WANT_NAME="ARM" ;;      # 0x28
-	*)         WANT_MACHINE=183; WANT_NAME="AArch64" ;;  # 0xB7
+	tg5040|h700) WANT_MACHINE=183; WANT_NAME="AArch64" ;;  # 0xB7
+	miyoomini)   WANT_MACHINE=40;  WANT_NAME="ARM"     ;;  # 0x28
+	*) echo "ERROR: check-payload: unknown platform '$PLATFORM', refusing to guess its architecture"; exit 1 ;;
 esac
 
-BAD=""
-N=0
-for so in $(find "$DIR" -name "*_libretro.so" 2>/dev/null); do
-	N=$((N + 1))
-	name=$(basename "$so")
+LIST=$(mktemp) || exit 1
+BAD=$(mktemp)  || exit 1
+trap 'rm -f "$LIST" "$BAD"' EXIT INT TERM
 
-	# Size first. The ELF checks below do NOT catch a stub: a raced link still emits a valid
-	# aarch64 ET_DYN with retro_run in it, just missing most of the code (measured: the 10,840-byte
-	# pcsx_rearmed passes every header check). Size is the only signal that separates those.
+# -print into a file and read line-by-line: `for so in $(find ...)` word-splits, so one pak with a
+# space in its name (this tree already ships "Optimize CPU.pak") reports two bogus stubs and fails
+# a good release. No -type f, so a broken symlink reaches the missing branch below instead of being
+# silently skipped.
+find "$DIR" -name "*_libretro.so" -print > "$LIST"
+
+N=0
+while IFS= read -r so; do
+	N=$((N + 1))
+	name=${so#$DIR/}
+
+	if [ ! -f "$so" ] || [ ! -r "$so" ]; then
+		echo "$name(missing or unreadable)" >> "$BAD"
+		continue
+	fi
+
 	sz=$(stat -f%z "$so" 2>/dev/null || stat -c%s "$so" 2>/dev/null || echo 0)
-	if [ "$sz" -lt 102400 ]; then
-		BAD="$BAD $name(stub ${sz}B)"
+	if [ "$sz" -lt "$CORE_MIN_SIZE" ]; then
+		echo "$name(stub ${sz}B)" >> "$BAD"
 		continue
 	fi
 
@@ -42,28 +69,30 @@ for so in $(find "$DIR" -name "*_libretro.so" 2>/dev/null); do
 	magic=$(od -An -t u1 -j 0 -N 4 "$so" 2>/dev/null | tr -s ' ')
 	case "$magic" in
 		*" 127 69 76 70"*) ;;
-		*) BAD="$BAD $name(not-ELF)"; continue ;;
+		*) echo "$name(not-ELF)" >> "$BAD"; continue ;;
 	esac
 
 	# e_type at offset 16, little-endian u16. 3 = ET_DYN (shared object).
 	etype=$(od -An -t u2 -j 16 -N 2 "$so" 2>/dev/null | tr -d ' ')
-	[ "$etype" = "3" ] || { BAD="$BAD $name(not-shared-object)"; continue; }
+	[ "$etype" = "3" ] || { echo "$name(not-shared-object)" >> "$BAD"; continue; }
 
 	# e_machine at offset 18, little-endian u16.
 	mach=$(od -An -t u2 -j 18 -N 2 "$so" 2>/dev/null | tr -d ' ')
-	[ "$mach" = "$WANT_MACHINE" ] || { BAD="$BAD $name(arch=$mach want=$WANT_MACHINE)"; continue; }
+	[ "$mach" = "$WANT_MACHINE" ] || { echo "$name(arch=$mach want=$WANT_MACHINE)" >> "$BAD"; continue; }
 
-	# The libretro entry point must be present. A raced/stub link omits it.
-	grep -q "retro_run" "$so" 2>/dev/null || BAD="$BAD $name(no-retro_run)"
-done
+	# Not a stub check — see the header. This catches a shared object that is not a libretro core:
+	# a host library or an unrelated .so copied into the payload by a bad path.
+	grep -q "retro_run" "$so" 2>/dev/null || echo "$name(no-retro_run)" >> "$BAD"
+done < "$LIST"
 
 if [ "$N" -eq 0 ]; then
-	echo "  check-payload: no cores staged under $DIR (nothing to verify)"
-	exit 0
+	echo "ERROR: check-payload: no cores staged under $DIR (vacuous pass)"
+	exit 1
 fi
-if [ -n "$BAD" ]; then
-	echo "ERROR: staged cores are not valid $WANT_NAME libretro objects:$BAD"
+if [ -s "$BAD" ]; then
+	echo "ERROR: staged cores are not valid $WANT_NAME libretro objects:"
+	sed 's/^/         /' "$BAD"
 	echo "       refusing to package. Rebuild the affected cores from a clean tree."
 	exit 1
 fi
-echo "  check-payload: $N staged cores are valid $WANT_NAME libretro objects"
+echo "  check-payload: $N staged core(s) valid $WANT_NAME libretro objects"
