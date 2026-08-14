@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch one device's definition from muOS (MustardOS/internal) into a local folder.
 
-muOS keeps every supported handheld in one tree — device/<name>/{config,control,package} — and picks
+muOS keeps every supported handheld in one tree, device/<name>/{config,control,package}, and picks
 ONE at image-build time; nothing installs a device package at runtime (verified against the shipped
 scripts). So building for a different board means fetching that board's folder and using it, which is
 exactly what this does.

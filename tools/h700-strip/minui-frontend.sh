@@ -24,7 +24,7 @@ export CHEATS_PATH=/mnt/mmc/Cheats
 # plus vs h (near-twins; muOS resolves the board for us). Consumed by paks and minarch alike.
 export DEVICE=$(sed 's/^rg35xx-//' /opt/muos/device/config/board/name 2>/dev/null || echo plus)
 export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
-# Shipped helper binaries (confirm.elf, say.elf, minarch.elf, ...) on PATH, matching tg5040 — tool
+# Shipped helper binaries (confirm.elf, say.elf, minarch.elf, ...) on PATH, matching tg5040, tool
 # and emulator paks call them bare, so without this every community pak written against the normal
 # MinUI contract fails with "not found". Ours worked only because they used absolute paths.
 export PATH=/mnt/mmc/.system/h700/bin:$PATH
@@ -135,7 +135,7 @@ WIFI_TXT=/mnt/mmc/wifi.txt
   # fingerprint stays stable across boots. Same pattern the Smart Pro uses (skeleton .../dev-net.sh).
   # A release image ships NO key (the build only bakes one in dev mode), so ssh is opt-in the same
   # way wifi is: drop your public key at the card root as authorized_keys and it is installed here.
-  # The card is the only writable surface a user has — the rootfs is not reachable without ssh, so
+  # The card is the only writable surface a user has, the rootfs is not reachable without ssh, so
   # requiring them to edit /root/.ssh first would be a chicken-and-egg.
   mkdir -p /root/.ssh 2>/dev/null
   if [ -s "$SDCARD_PATH/authorized_keys" ]; then

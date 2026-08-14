@@ -1,7 +1,7 @@
 # Releasing the h700 (Anbernic RG35XX Plus/H)
 
 The h700 does **not** ship as a zip like `tg5040` and `miyoomini`. Those are *tenants*: they drop a
-payload onto a card and hijack the stock firmware's launcher. The h700 is an **owned OS** — the
+payload onto a card and hijack the stock firmware's launcher. The h700 is an **owned OS**, the
 release artifact is a flashable SD-card image containing our own rootfs, built by stripping a muOS
 donor down to its hardware-enablement layer and replacing everything above it.
 
@@ -39,7 +39,7 @@ A user drops their public key at the card root as `authorized_keys` (the image s
 `authorized_keys.example` next to `wifi.txt.example`) and the frontend installs it at boot. Password
 login does not exist.
 
-## The donor — the one input not in this repo
+## The donor, the one input not in this repo
 
 | | |
 |---|---|
@@ -72,10 +72,10 @@ the source of truth):
 
 To recreate them, flash an official muOS `rg35xx-plus` release to a card and `dd` those ranges out
 (or read them from the release image directly). **Confirm the offsets against the donor's own GPT
-rather than trusting this table** — it documents the 2601.0 layout, and a future muOS release is free
+rather than trusting this table**, it documents the 2601.0 layout, and a future muOS release is free
 to move things.
 
-### The DTB patch is baked into `raw-36mb.img.gz` — do not lose it
+### The DTB patch is baked into `raw-36mb.img.gz`, do not lose it
 
 `raw-36mb.img.gz` is not a stock extract. It carries the **input-lag fix**: this BSP *polls* the
 gpio-keys instead of using interrupts, at 20ms. The patch rewrites `poll-interval` to 5ms inside the
@@ -102,7 +102,7 @@ Never the muOS card. The build prints this line with the real path when it finis
 an `.xz` alongside the raw image for distribution.
 
 First boot expands the ROMS partition to fill the card (`tools/h700-strip/expand-roms.sh`, hooked
-pre-mount in `startup.sh` — it must run before muOS mounts the card, since parted refuses to resize a
+pre-mount in `startup.sh`, it must run before muOS mounts the card, since parted refuses to resize a
 partition in use).
 
 ## Known gaps

@@ -6,7 +6,7 @@ WHY THIS EXISTS
 muOS selects a device at IMAGE-BUILD time: each device folder in MustardOS/internal carries its own
 `package/boot_package.fex`, which holds u-boot + the device tree for that board. PROVEN here: the
 1310720-byte blob at offset 16793600 of our boot chain is byte-identical to the published
-`boot_package.fex` (our copy differs by exactly 2 bytes — our own poll-interval patch). So a
+`boot_package.fex` (our copy differs by exactly 2 bytes, our own poll-interval patch). So a
 different device's boot chain is a SUBSTITUTION at a known offset, not a separate 1GB donor image.
 
 That matters because the device tree is what makes hardware exist: the RG35XX H tree enables a GPADC
@@ -16,7 +16,7 @@ the H tree the sticks are invisible to the kernel no matter what userspace does.
 THE INPUT-LAG PATCH TRAVELS WITH IT
 -----------------------------------
 This BSP *polls* gpio-keys rather than using interrupts, at 20ms. We rewrite poll-interval to 5ms.
-The old script hardcoded an absolute byte offset, which silently means "Plus only" — a different
+The old script hardcoded an absolute byte offset, which silently means "Plus only", a different
 device tree puts it elsewhere. This one PARSES the flattened device tree and finds every
 poll-interval property, so it is correct for any board, and it recomputes the Allwinner toc1
 additive checksum afterwards or the SoC refuses to boot.
@@ -40,7 +40,7 @@ def find_fdt(buf):
 
     Validates that the blob actually FITS and that its structure/string blocks lie inside it. Without
     that, a header claiming a larger totalsize than the package holds still parsed far enough to find
-    and patch poll-interval — and toc1_fix() would then wrap a valid outer checksum around an
+    and patch poll-interval, and toc1_fix() would then wrap a valid outer checksum around an
     internally invalid device tree, i.e. a chain that passes every check here and does not boot.
     Fail closed instead: a boot chain we cannot fully verify is not one to ship.
     """
@@ -94,7 +94,7 @@ def find_poll_intervals(fdt):
 def toc1_fix(buf):
     """Recompute the Allwinner toc1 additive checksum over the package.
 
-    Layout is `name[16] magic add_sum`, so add_sum sits at +20 (0x14) — NOT +12. Writing it at +12
+    Layout is `name[16] magic add_sum`, so add_sum sits at +20 (0x14), NOT +12. Writing it at +12
     clobbers the tail of the name field and leaves the real checksum stale, which is a boot chain the
     SoC rejects. Caught by the self-test that rebuilds the known-good Plus chain and demands a
     byte-for-byte match; keep that test, it is the only thing standing between a typo and a device
@@ -133,7 +133,7 @@ def build(base_raw, package, out_raw):
 
     hits = list(find_poll_intervals(fdt))
     if not hits:
-        sys.exit("ERROR: no poll-interval property in this device tree — refusing to guess")
+        sys.exit("ERROR: no poll-interval property in this device tree, refusing to guess")
     patched = 0
     for voff, val, node in hits:
         if val == NEW_MS:

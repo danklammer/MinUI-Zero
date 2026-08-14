@@ -149,7 +149,7 @@
 ///////////////////////////////
 
 // SIX rows at the stock pill size. TRIED AND REJECTED (Dan, on-device 2026-08-13): shrinking
-// PILL_SIZE to buy a 7th row like the Brick has. This panel divides badly — 640x480 at FIXED_SCALE 2
+// PILL_SIZE to buy a 7th row like the Brick has. This panel divides badly, 640x480 at FIXED_SCALE 2
 // gives exactly 480/(30*2) = 8.00 slots, all spent on header + 6 rows + footer, with none of the
 // fractional slack the Brick's 768/(30*3) = 8.53 enjoys. PILL_SIZE 26 clipped the 7th row's
 // highlight; 24 fit but shrank every pill, button and text baseline and simply looked worse.

@@ -153,7 +153,7 @@ static void ev_hat(uint16_t code, int32_t value, uint32_t tick) {
 
 // ANALOG STICKS (RG35XX H only; the Plus has none and never emits these codes).
 //
-// MEASURED on-device 2026-08-14, not assumed — the axis assignment is NOT the conventional
+// MEASURED on-device 2026-08-14, not assumed, the axis assignment is NOT the conventional
 // X/Y/RX/RY, so guessing would have been wrong:
 //     ABS_Z  (2) = LEFT stick X      ABS_RX (3) = LEFT stick Y
 //     ABS_RY (4) = RIGHT stick X     ABS_RZ (5) = RIGHT stick Y
@@ -170,7 +170,7 @@ static void ev_stick(uint16_t code, int32_t value, uint32_t tick) {
 	if (scaled >  32767) scaled =  32767;
 	if (scaled < -32767) scaled = -32767;
 	// Deadzone applies ONLY to the button-emulation used for menu navigation. pad.laxis/raxis keep
-	// the full-fidelity value, because that is what minarch hands to cores as RETRO_DEVICE_ANALOG —
+	// the full-fidelity value, because that is what minarch hands to cores as RETRO_DEVICE_ANALOG,
 	// clamping there would quietly cost precision in every analog game.
 	int nav = (value > STICK_DEADZONE || value < -STICK_DEADZONE) ? scaled : 0;
 	switch (code) {
@@ -182,7 +182,7 @@ static void ev_stick(uint16_t code, int32_t value, uint32_t tick) {
 			pad.laxis.y = scaled;
 			PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, nav, tick + PAD_REPEAT_DELAY);
 			break;
-		case 4: pad.raxis.x = scaled; break; // right X — no menu emulation, matches tg5040
+		case 4: pad.raxis.x = scaled; break; // right X, no menu emulation, matches tg5040
 		case 5: pad.raxis.y = scaled; break; // right Y
 	}
 }
@@ -1028,7 +1028,7 @@ int PLAT_supportsDeepSleep(void) {
 	// VALIDATED ON-DEVICE 2026-08-13 (RG35XX Plus): 3 supervised suspend/resume cycles, all clean,
 	// with the kernel receipt `PM: Suspending system (mem)` / `PM: suspend exit` and uptime
 	// continuous across each. Resume restores screen, volume (mixer read back the exact SetVolume
-	// value) and wifi (~30s, via net.sh — sample later than that or it reads as a failure).
+	// value) and wifi (~30s, via net.sh, sample later than that or it reads as a failure).
 	// MEASURED PAYOFF: ~1.0 %/h suspended vs 8.79 %/h playing, i.e. ~9x cheaper and ~4 days of
 	// standby, on a device whose ONLY previous option after an idle timeout was to power itself
 	// off and lose the session.

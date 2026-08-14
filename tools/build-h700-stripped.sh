@@ -19,12 +19,12 @@ OUT_DIR="$ASSETS/out"
 MUOS_ROOTFS="$ASSETS/muos-p5.img"
 MT=/opt/homebrew/bin
 
-# BUILD MODE — dev (default) vs release. The difference is exactly the dev-loop conveniences, and
+# BUILD MODE, dev (default) vs release. The difference is exactly the dev-loop conveniences, and
 # each of them is actively harmful in a stranger's hands:
-#   authorized_keys — a dev image bakes in the builder's ssh public key. Shipping that would
+#   authorized_keys, a dev image bakes in the builder's ssh public key. Shipping that would
 #                     authorize ONE person's key on every user's device. A release ships none, and
 #                     the frontend installs a key from the card root instead (user's own, opt-in).
-#   devmode.txt     — arms stay-awake: no autosleep, no idle power-off. On a release that is a
+#   devmode.txt, arms stay-awake: no autosleep, no idle power-off. On a release that is a
 #                     device that never sleeps, i.e. the exact opposite of this fork's thesis.
 # Release also stamps the version from the git tag rather than today's date.
 MODE="${H700_MODE:-dev}"
@@ -33,13 +33,13 @@ case "$MODE" in
 	*) echo "ERROR: H700_MODE must be 'dev' or 'release' (got '$MODE')"; exit 1 ;;
 esac
 if [ "$MODE" = release ]; then
-	# H700_VERSION wins; otherwise the nearest reachable tag — but it MUST look like one of ours
+	# H700_VERSION wins; otherwise the nearest reachable tag, but it MUST look like one of ours
 	# (vN.N.N). This branch's nearest tag is upstream MinUI's `v20231113b`, so an unchecked
 	# `git describe` would have quietly stamped a release with an upstream version number.
 	VERSION="${H700_VERSION:-$(cd "$REPO" && git describe --tags --abbrev=0 2>/dev/null || true)}"
 	case "$VERSION" in
 		v[0-9]*.[0-9]*.[0-9]*) ;;
-		"") echo "ERROR: release build found no tag — set H700_VERSION=vX.Y.Z"; exit 1 ;;
+		"") echo "ERROR: release build found no tag, set H700_VERSION=vX.Y.Z"; exit 1 ;;
 		*)  echo "ERROR: '$VERSION' is not a MinUI Zero release tag (expected vX.Y.Z)."
 		    echo "       The nearest reachable tag on this branch is upstream MinUI's."
 		    echo "       Tag the release, or pass H700_VERSION=vX.Y.Z."; exit 1 ;;
@@ -49,8 +49,8 @@ else
 	VERSION="dev-$(date +%Y%m%d)"
 	IMG="$OUT_DIR/MinUI-Zero-h700-stripped-$(date +%Y%m%d).img"
 fi
-# TARGET DEVICE. muOS keeps every board in one tree and selects ONE at image-build time — nothing
-# installs a device package at runtime — so a different handheld means a different IMAGE, not a
+# TARGET DEVICE. muOS keeps every board in one tree and selects ONE at image-build time, nothing
+# installs a device package at runtime, so a different handheld means a different IMAGE, not a
 # runtime switch. Default is the Plus (the donor we dumped and the only device verified end to end).
 #
 #   rg35xx-plus  uses the donor boot chain as-is
@@ -62,7 +62,7 @@ DEVICE_DIR="$ASSETS/device-$DEVICE"
 RAW36="$ASSETS/parts/raw-36mb.img.gz"          # the Plus chain, our proven baseline
 BUILT_RAW=""                                    # set when we synthesize a chain for another board
 if [ "$DEVICE" != "rg35xx-plus" ]; then
-	[ -d "$DEVICE_DIR" ] || { echo "ERROR: no device tree at $DEVICE_DIR — run: python3 tools/h700-image/fetch-device.py $DEVICE $DEVICE_DIR"; exit 1; }
+	[ -d "$DEVICE_DIR" ] || { echo "ERROR: no device tree at $DEVICE_DIR, run: python3 tools/h700-image/fetch-device.py $DEVICE $DEVICE_DIR"; exit 1; }
 	echo "== target device: $DEVICE (building a boot chain from its muOS package) =="
 	mkdir -p "$OUT_DIR"
 	gunzip -c "$RAW36" > "$OUT_DIR/base-raw36.img"
@@ -71,7 +71,7 @@ if [ "$DEVICE" != "rg35xx-plus" ]; then
 	BUILT_RAW="$OUT_DIR/raw36-$DEVICE.img"
 	rm -f "$OUT_DIR/base-raw36.img"
 	IMG="${IMG%.img}-$DEVICE.img"
-	# FAIL CLOSED on the kernel. muOS builds one kernel per board and the board drivers live in it —
+	# FAIL CLOSED on the kernel. muOS builds one kernel per board and the board drivers live in it,
 	# only the RG35XX H kernel contains the analog-mux code (`amux`/`adc_en` are absent from the Plus
 	# kernel). Without this check a missing or misnamed parts-<device>/p4-kernel.img.gz silently falls
 	# back to the Plus kernel via part(), producing a device-labelled image whose hardware does not
@@ -249,7 +249,7 @@ echo "  kernel modules: $_msz -> $(du -sh "$R/lib/modules" 2>/dev/null | cut -f1
 
 # TARGET-DEVICE OVERLAY. The rdumped rootfs carries the DONOR board (rg35xx-plus) in
 # /opt/muos/device, and every muOS boot script reads its identity and hardware paths from there via
-# GET_VAR — board/name, board/stick, board/rtc_wake, screen geometry, the alsa baseline. Shipping it
+# GET_VAR, board/name, board/stick, board/rtc_wake, screen geometry, the alsa baseline. Shipping it
 # unchanged on another handheld means the OS honestly believes it is a Plus. Replace it wholesale.
 if [ -n "$DEVICE" ] && [ "$DEVICE" != "rg35xx-plus" ] && [ -d "/a/device-$DEVICE" ]; then
 	rm -rf "$R/opt/muos/device"
@@ -303,11 +303,11 @@ rm -f "$R/etc/wpa_supplicant.conf" 2>/dev/null || true
 #
 # PURGE THE INHERITED KEY FIRST. The donor rootfs was dumped from a working card that already had an
 # authorized_keys installed, so it carries one of its own. Release mode only removed the key we COPY
-# IN ($ASSETS/authorized_keys) and left that inherited file alone — and the frontend starts dropbear
+# IN ($ASSETS/authorized_keys) and left that inherited file alone, and the frontend starts dropbear
 # whenever the file is non-empty. A published image therefore authorized ONE developer key on every
 # user device and opened a listening port (confirmed present in the built v1.6.0 image, Codex review
 # 2026-08-14). Deleting it unconditionally is what makes release mode mean anything.
-# NOTE: no apostrophes anywhere in this docker block — it is one single-quoted string and an
+# NOTE: no apostrophes anywhere in this docker block, it is one single-quoted string and an
 # apostrophe closes it early, which is how this very edit first broke the script.
 rm -f "$R/root/.ssh/authorized_keys"
 mkdir -p "$R/root/.ssh"
@@ -389,16 +389,16 @@ mkdir -p "$STAGE/.system/h700/bin" "$STAGE/.system/h700/lib" "$STAGE/.system/h70
 cp "$REPO/workspace/all/minui/build/h700/minui.elf"     "$STAGE/.system/h700/bin/"
 cp "$REPO/workspace/all/minarch/build/h700/minarch.elf" "$STAGE/.system/h700/bin/"
 # Shared UI helpers every tool pak calls by bare name (the frontend puts this dir on PATH). Without
-# them the Deep Sleep tool — the only way to turn deep sleep OFF without ssh, now that it ships on
-# by default — dies at its first confirm.elf.
+# them the Deep Sleep tool, the only way to turn deep sleep OFF without ssh, now that it ships on
+# by default, dies at its first confirm.elf.
 for _h in confirm say; do
 	cp "$REPO/workspace/all/$_h/build/h700/$_h.elf" "$STAGE/.system/h700/bin/" 2>/dev/null || \
-		{ echo "ERROR: $_h.elf missing for h700 — run 'make h700-build' first"; exit 1; }
+		{ echo "ERROR: $_h.elf missing for h700, run 'make h700-build' first"; exit 1; }
 done
 cp "$REPO/workspace/h700/libmsettings/libmsettings.so"  "$STAGE/.system/h700/lib/"
 cp "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti"     "$STAGE/.system/h700/bin/dropbearmulti"  # ssh (openssh stripped); aarch64, shared with tg5040
 chmod +x "$STAGE/.system/h700/bin/dropbearmulti"
-# Shipped shell helpers from the skeleton — notably `suspend`, the deep-sleep choreography that
+# Shipped shell helpers from the skeleton, notably `suspend`, the deep-sleep choreography that
 # PWR_deepSleep() looks for at ${BIN_PATH}/suspend. Without it the C side silently falls back to a
 # bare `echo mem` with no radio teardown and no mixer restore, i.e. the EBUSY-and-dead-audio path.
 for _b in "$REPO"/skeleton/SYSTEM/h700/bin/*; do
@@ -433,6 +433,31 @@ if [ -d "$REPO/skeleton/EXTRAS/Tools/h700" ]; then
 		cp -R "$DC/res" "$STAGE/Tools/h700/Files.pak/" 2>/dev/null || true
 	fi
 fi
+# CORE COVERAGE GATE. The image advertises one pak per system, but the cores are whatever happens
+# to be sitting in the tg5040 output directory, so a partially built core tree silently produced an
+# image where two thirds of the menu cannot launch anything. That shipped: v1.6.0 as first built had
+# 15 paks backed by 5 cores, and PS1 was a 10KB stub rather than a real core (found 2026-08-14 when
+# PS1 games would not start). Every pak must have a core, and a core must be big enough to be real.
+MISSING=""
+for _pak in "$STAGE"/.system/h700/paks/Emus/*.pak; do
+	[ -d "$_pak" ] || continue
+	_tag=$(basename "$_pak" .pak)
+	_core=$(grep -oE "[a-z0-9_]+_libretro\.so" "$_pak/launch.sh" 2>/dev/null | head -1)
+	[ -n "$_core" ] || continue
+	_path="$STAGE/.system/h700/cores/$_core"
+	if [ ! -f "$_path" ]; then
+		MISSING="$MISSING $_tag:$_core(absent)"
+	elif [ "$(stat -f%z "$_path" 2>/dev/null || stat -c%s "$_path" 2>/dev/null)" -lt 102400 ]; then
+		MISSING="$MISSING $_tag:$_core(stub)"
+	fi
+done
+if [ -n "$MISSING" ]; then
+	echo "ERROR: paks without a usable core, $MISSING"
+	echo "       build the full core set first: make -C workspace/tg5040/cores (or make tg5040)"
+	exit 1
+fi
+echo "  core coverage: every emu pak has a real core"
+
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
 printf 'MinUI Zero (%s)\n%s\n' "$VERSION" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
@@ -443,16 +468,16 @@ printf '# WiFi: one network per line as SSID:password (# comments ignored). Exam
 # it at boot (and only then starts dropbear). No key, no listening port.
 printf '# SSH: rename this to "authorized_keys" and paste your ssh PUBLIC key (one per line).\n# Without it dropbear never starts. Password login is not supported.\n' > "$STAGE/authorized_keys.example"
 if [ "$MODE" = dev ]; then
-	# devmode.txt — DEV CARD FLAG (api.c PWR_init arms /tmp/stay_awake at every startup when present).
+	# devmode.txt, DEV CARD FLAG (api.c PWR_init arms /tmp/stay_awake at every startup when present).
 	# Without it an idle h700 POWERS ITSELF OFF after ~2.5min: 30s -> faux-sleep, then the 2-minute deep
 	# sleep escalation finds PLAT_supportsDeepSleep()==0 and falls through to PWR_powerOff() (api.c:2506).
 	# That killed every remote debug session on 2026-08-09. Delete this file to restore stock power
-	# behaviour (autosleep + idle power-off) — it costs idle battery, so it must NOT ship in a release.
+	# behaviour (autosleep + idle power-off), it costs idle battery, so it must NOT ship in a release.
 	printf 'MinUI Zero dev flag: keeps the device awake (no autosleep, no idle power-off) so SSH sessions\nsurvive. Delete this file for stock power behaviour / best battery life.\n' > "$STAGE/devmode.txt"
 fi
 
 # Release gate: assert the dev conveniences really are absent. Cheap, and the failure it prevents is
-# invisible — a shipped image that never sleeps, or that trusts the builder's ssh key on every device.
+# invisible, a shipped image that never sleeps, or that trusts the builder's ssh key on every device.
 if [ "$MODE" = release ]; then
 	if [ -e "$STAGE/devmode.txt" ]; then
 		echo "ERROR: release payload contains devmode.txt (stay-awake would ship)"; exit 1
@@ -480,12 +505,12 @@ rm -f "$IMG"
 # mainline uses interrupts). A re-dumped part from a stock card would silently regress to 20ms —
 # re-run the patch script against any fresh dump (offsets + verified algorithm inside it).
 if [ -n "$BUILT_RAW" ]; then cp "$BUILT_RAW" "$IMG"; else gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"; fi
-# PER-DEVICE PARTS. A board may need its own partition here — the RG35XX H needs its own KERNEL
+# PER-DEVICE PARTS. A board may need its own partition here, the RG35XX H needs its own KERNEL
 # (p4): muOS builds one per device, and only the H's contains the analog-mux driver (`amux`/`adc_en`
-# are absent from the Plus kernel, present in the H's — checked, both Linux 4.9.170 from the same
+# are absent from the Plus kernel, present in the H's, checked, both Linux 4.9.170 from the same
 # build host, so modules stay compatible). Anything not overridden falls back to the shared part.
 part() { if [ -f "$ASSETS/parts-$DEVICE/$1" ]; then echo "$ASSETS/parts-$DEVICE/$1"; else echo "$ASSETS/parts/$1"; fi; }
-# `gunzip -c X | dd ...` reports DD exit status, and /bin/sh has no pipefail — so a truncated or
+# `gunzip -c X | dd ...` reports DD exit status, and /bin/sh has no pipefail, so a truncated or
 # corrupt part produced a short write, a zero exit, and a fully assembled image that cannot boot.
 # Decompress to a temp file first so set -e actually sees the failure.
 unz() { gunzip -c "$1" > "$OUT_DIR/.part.tmp"; }
