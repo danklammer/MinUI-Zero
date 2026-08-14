@@ -27,3 +27,18 @@ system:minarch_prevent_tearing
 # supafaust affinity masks name CPUs 2-3, which do not exist on the dual-A7 MMP.
 SUPA.pak:supafaust_thread_affinity_emu
 SUPA.pak:supafaust_thread_affinity_ppu
+
+# ---- h700 (Anbernic RG35XX Plus) — namespaced h700/<pak>:<key> ----
+# Same 640x480 panel as the MMP, so the same scaling reasoning applies verbatim (see the FC/GB/GBC
+# block above): Aspect there means a 2.5x horizontal NES scale and scroll shimmer.
+h700/FC.pak:minarch_screen_scaling
+h700/GB.pak:minarch_screen_scaling
+h700/GBC.pak:minarch_screen_scaling
+
+# The RG35XX Plus has no analog sticks, so no DualShock default (same reason as the MMP).
+h700/PS.pak:minarch_gamepad_type
+
+# Threading is LOCKED OFF on h700 for now — unlike the MMP this is NOT a core-count argument (the
+# H700 is quad-core A53); threading v2 has simply never been qualified on this platform. Revisit
+# after the h700 governor/threading measurement pass; this entry is a placeholder for a receipt.
+h700/PS.pak:minarch_threading

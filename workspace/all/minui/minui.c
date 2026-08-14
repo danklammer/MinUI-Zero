@@ -481,7 +481,13 @@ static int hasEmu(char* emu_name) {
 	if (exists(pak_path)) return 1;
 
 	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM, emu_name);
-	return exists(pak_path);
+	if (exists(pak_path)) return 1;
+#ifdef PLATFORM_ALIAS
+	// see getEmuPath (utils.c): also honour the platform folder name the community publishes under
+	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM_ALIAS, emu_name);
+	if (exists(pak_path)) return 1;
+#endif
+	return 0;
 }
 static int hasCue(char* dir_path, char* cue_path) { // NOTE: dir_path not rom_path
 	char* tmp = strrchr(dir_path, '/') + 1; // folder name
@@ -751,6 +757,11 @@ static Array* getRoot(void) {
 	
 	char* tools_path = SDCARD_PATH "/Tools/" PLATFORM;
 	if (exists(tools_path) && !simple_mode) Array_push(root, Entry_new(tools_path, ENTRY_DIR));
+#ifdef PLATFORM_ALIAS
+	// community Tools paks publish under the scene's platform name (see getEmuPath, utils.c)
+	char* tools_alias_path = SDCARD_PATH "/Tools/" PLATFORM_ALIAS;
+	if (exists(tools_alias_path) && !simple_mode) Array_push(root, Entry_new(tools_alias_path, ENTRY_DIR));
+#endif
 	
 	return root;
 }
@@ -946,8 +957,65 @@ static Array* getEntries(char* path){
 
 ///////////////////////////////////////
 
+// Set once in main() after GFX_init. queueNext lives far from main and still needs to put a
+// frame on the panel before the process hands over to the emulator.
+static SDL_Surface* ui_screen = NULL;
+// Warm the emulator core into the page cache as soon as we know which system the user is looking
+// at, so the bytes are already in RAM when they press A. MEASURED on h700 2026-08-10: the same
+// game launches in 707ms warm vs 4348ms cold, and core_open alone is 513ms cold vs 216ms warm.
+// This is pure readahead: no process stays resident and the kernel can evict it under pressure,
+// so it costs nothing the thesis cares about (power, heat, resident memory).
+static void prefetchCore(char* emu_name) {
+	static char last[64] = "";
+	if (!emu_name || !emu_name[0]) return;
+	if (exactMatch(last, emu_name)) return;   // already warmed this one
+	strncpy(last, emu_name, sizeof(last)-1); last[sizeof(last)-1] = '\0';
+
+	char pak_path[256];
+	getEmuPath(emu_name, pak_path);
+	FILE* f = fopen(pak_path, "r");
+	if (!f) return;
+	// The core is named in the pak: either `EMU_EXE=<core>` (standard boilerplate) or an inline
+	// `<core>_libretro.so` argument (the h700 paks). Accept both.
+	char line[512], core[128] = "";
+	while (fgets(line, sizeof(line), f)) {
+		char* m = strstr(line, "_libretro.so");
+		if (m) {
+			char* start = m;
+			while (start > line && (isalnum((unsigned char)start[-1]) || start[-1]=='_' || start[-1]=='-')) start--;
+			size_t n = (size_t)(m - start);
+			if (n && n < sizeof(core)-16) { memcpy(core, start, n); core[n] = '\0'; }
+			break;
+		}
+		if (!strncmp(line, "EMU_EXE=", 8)) {
+			char* v = line + 8;
+			char* nl = strpbrk(v, " \t\r\n");
+			if (nl) *nl = '\0';
+			if (v[0]) snprintf(core, sizeof(core), "%s", v);
+		}
+	}
+	fclose(f);
+	if (!core[0]) return;
+
+	// CORES_PATH is an environment variable (set by the frontend/pak), not a compile-time define.
+	const char* cores_dir = getenv("CORES_PATH");
+	if (!cores_dir || !cores_dir[0]) cores_dir = SYSTEM_PATH "/cores";
+	char core_path[512];
+	snprintf(core_path, sizeof(core_path), "%s/%s_libretro.so", cores_dir, core);
+	// Read it in the background: a plain read is what actually populates the page cache, and doing
+	// it inline would stall the UI for the very time we are trying to hide.
+	char cmd[640];
+	snprintf(cmd, sizeof(cmd), "(cat '%s' > /dev/null 2>&1 &) &", core_path);
+	if (exists(core_path)) system(cmd);
+}
 static void queueNext(char* cmd) {
 	LOG_info("cmd: %s\n", cmd);
+	// NOTE: no transition frame here on purpose. This briefly cleared the panel (and before that
+	// printed "Loading") to prove the button had registered, which was right when a launch cost
+	// over a second. Removing the real cost changed the answer: the launcher is now ~57ms and a
+	// game arrives in roughly half a second, so blanking the screen IS the artifact -- it reads as
+	// a flash between two frames that would otherwise follow each other closely (Dan 2026-08-10).
+	// Leave the menu on screen; the game's first frame replaces it.
 	putFile("/tmp/next", cmd);
 	quit = 1;
 }
@@ -1155,6 +1223,10 @@ static void openRom(char* path, char* last) {
 	queueNext(cmd);
 }
 static void openDirectory(char* path, int auto_launch) {
+	{ // warm this system's core while the user browses (see prefetchCore)
+		char emu_tag[256]; getEmuName(path, emu_tag);
+		if (emu_tag[0]) prefetchCore(emu_tag);
+	}
 	char auto_path[256];
 	if (hasCue(path, auto_path) && auto_launch) {
 		openRom(auto_path, path);
@@ -1401,6 +1473,11 @@ static void ChargingScreen(SDL_Surface* screen) {
 }
 
 int main (int argc, char *argv[]) {
+	uint64_t t_ui0 = getMicroseconds();
+#define UIMARK(what) do { const char* _e = getenv("ZERO_BOOT_TIMING"); \
+		if (_e && _e[0] && _e[0] != '0') LOG_info("ui-timing: %-12s +%llums\n", (what), \
+			(unsigned long long)((getMicroseconds()-t_ui0)/1000)); \
+	} while (0)
 	// OPT-IN boot timing (ZERO_BOOT_TIMING=1). These probes are shared with tg5040 and stdout is
 	// redirected to a file on the SD card by MinUI.pak/launch.sh, so shipping them enabled would
 	// add SD writes to every launch on the primary platform. Left available, not on.
@@ -1416,8 +1493,11 @@ int main (int argc, char *argv[]) {
 
 	LOG_info("MinUI\n");
 	InitSettings();
+	UIMARK("settings");
 	
 	SDL_Surface* screen = GFX_init(MODE_MAIN);
+	ui_screen = screen;
+	UIMARK("gfx_init");
 	if (boot_timing) LOG_info("- graphics init: %lu\n", SDL_GetTicks() - main_begin);
 	
 	PAD_init();
@@ -1434,6 +1514,7 @@ int main (int argc, char *argv[]) {
 	
 	// now that (most of) the heavy lifting is done, take a load off
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
+	UIMARK("pre_scan");
 	GFX_setVsync(VSYNC_STRICT);
 
 	PAD_reset();
@@ -1674,15 +1755,20 @@ int main (int argc, char *argv[]) {
 			
 			if (show_version) {
 				if (!version) {
-					char release[256];
+					char release[256] = {0};
 					getFile(ROOT_SYSTEM_PATH "/version.txt", release, 256);
-					
-					char *tmp,*commit;
-					commit = strrchr(release, '\n');
-					commit[0] = '\0';
-					commit = strrchr(release, '\n')+1;
-					tmp = strchr(release, '\n');
-					tmp[0] = '\0';
+
+					char *commit;
+					// version.txt is "release\ncommit\n". A MISSING or malformed file (no newline)
+					// made strrchr return NULL and the next deref crashed minui — pressing MENU on
+					// the home screen looked like a no-op because minui died + respawned (h700, no
+					// version.txt shipped, 2026-08-06). Guard every strrchr/strchr.
+					char* nl = strrchr(release, '\n'); // trailing newline
+					if (!nl) { strcpy(release, "unknown\n?\n"); nl = strrchr(release, '\n'); }
+					nl[0] = '\0';                      // strip the trailing newline
+					char* mid = strrchr(release, '\n');// the newline between release and commit
+					commit = mid ? mid + 1 : "?";      // commit = the second line
+					if (mid) mid[0] = '\0';            // strip -> release = the first line
 					
 					// TODO: not sure if I want bare PLAT_* calls here
 					char* extra_key = "Model";
@@ -1831,6 +1917,7 @@ int main (int argc, char *argv[]) {
 			}
 
 			GFX_flip(screen);
+			{ static int ui_first = 1; if (ui_first) { ui_first = 0; UIMARK("first_frame"); } }
 			dirty = 0;
 		}
 		else GFX_sync();

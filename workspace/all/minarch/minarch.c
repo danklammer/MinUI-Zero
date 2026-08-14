@@ -357,22 +357,28 @@ static void Zero_applyRateMatch(void) {
 	const char* hz = getenv("MINARCH_PANEL_FPS");
 	if (hz && *hz && core.fps > 1.0) {
 		double panel = atof(hz);
-		// GATE BOTH SIDES. This corrects a ~60Hz core down to a slightly slower ~60Hz panel and
-		// must never touch anything else:
+		// GATE BOTH SIDES. This corrects a ~60Hz core to a nearby ~60Hz panel and must never
+		// touch anything else:
 		//  * PAL/50Hz content would compute +186000ppm and run 5%% FAST. Reachable in cores we ship
 		//    (fceumm, picodrive, snes9x2005_plus, pcsx_rearmed all report PAL timing).
-		//  * panel >= core.fps means there is no surplus frame, so there is nothing to correct.
 		//  * an absurd panel value must not be "corrected" into a clamp. MINARCH_PANEL_FPS=30 with
 		//    a 60fps core used to clamp to -50000ppm and target 57fps while the panel actually
 		//    delivered 30 — the resampler compensated 5%% against a 50%% shortfall and underran
-		//    continuously. Requiring the panel within 5%% of the core makes the clamp unreachable
-		//    from this path.
+		//    continuously. Requiring the panel within a few %% of the core makes the clamp
+		//    unreachable from this path.
+		// Below-core band is 5%% (MMP: panel 59.672 under GBC 59.7275 — audio deficit repaid by
+		// slowing the core). Above-core band is a tight 1%%: the h700 panel (59.978 measured) sits
+		// 0.42%% ABOVE the GBC core, and under Strict the pan-blocked loop stepped the core 0.42%%
+		// fast with nothing pacing the surplus — the ring filled, the producer blocked, and one
+		// vblank slipped every ~4s (a visible judder beat, RG35XX Plus 2026-08-05). Matching the
+		// core up to the panel locks the cadence; +1%% is inaudible in pitch (<17 cents) while
+		// keeping PAL and typo'd panels unreachable.
 		int core_ok  = (core.fps >= 58.0 && core.fps <= 61.0);
-		int panel_ok = (panel > 1.0 && panel < core.fps && panel >= core.fps * 0.95);
+		int panel_ok = (panel > 1.0 && panel >= core.fps * 0.95 && panel <= core.fps * 1.01);
 		if (core_ok && panel_ok)
 			ppm = (int)lround((panel / core.fps - 1.0) * 1000000.0);
 		else if (panel > 1.0)
-			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below it)\n",
+			LOG_info("rate match: skipped (core %.4f fps, panel %.3f — needs 58-61fps core and a panel within 5%% below / 1%% above)\n",
 			         core.fps, panel);
 	}
 
@@ -5609,6 +5615,21 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		}
 	}
 	
+#ifdef PLAT_PRESENT_SCALER
+	// On a hardware-scaler platform the render-space rect computed above is NOT what the panel
+	// shows — the display engine aspect-fits the crop after us (h700: GBC 3x renders 480x432,
+	// panel shows 533x480). The platform mirrors that math in PLAT_getGameRect; use its answer
+	// so the menu backdrop matches the live game exactly (was visibly smaller, Dan 2026-08-10).
+	// dst is DEVICE-sized here except the halved thumbnail path, which scales down uniformly.
+	if (scaling==SCALE_NATIVE || scaling==SCALE_CROPPED) {
+		int px, py, pw_, ph_;
+		PLAT_getGameRect(&px, &py, &pw_, &ph_);
+		if (pw_ > 0 && ph_ > 0) {
+			rx = px; ry = py; rw = pw_; rh = ph_;
+			if (dw==DEVICE_WIDTH/2) { rx /= 2; ry /= 2; rw /= 2; rh /= 2; }
+		}
+	}
+#endif
 	if (scaling==SCALE_ASPECT || rw>dw || rh>dh) {
 		// LOG_info("aspect\n");
 		double fixed_aspect_ratio = ((double)DEVICE_WIDTH) / DEVICE_HEIGHT;
@@ -6196,7 +6217,7 @@ static void Menu_loop(void) {
 					else GFX_blitAsset(ASSET_DOT, NULL, screen, &(SDL_Rect){ox+SCALE1(i*15)+4,oy+SCALE1(2)});
 				}
 			}
-	
+
 			GFX_flip(screen);
 			dirty = 0;
 		}
@@ -6600,6 +6621,14 @@ static void zero_ftv2_drain(void* ctx, const fr_event* ev) {
 #endif // ZERO_FRONTEND_THREADING_V2
 
 int main(int argc , char* argv[]) {
+	uint64_t t_boot0 = getMicroseconds();
+static int zero_boot_timing = -1;
+#define TMARK(what) do { \
+		if (zero_boot_timing < 0) { const char* _e = getenv("ZERO_BOOT_TIMING"); \
+			zero_boot_timing = (_e && _e[0] && _e[0] != '0'); } \
+		if (zero_boot_timing) LOG_info("boot-timing: %-14s +%llums\n", (what), \
+			(unsigned long long)((getMicroseconds()-t_boot0)/1000)); \
+	} while (0)
 	LOG_info("MinArch\n");
 
 	// PowerVR swap chain: 2 buffers instead of the default 3 = one frame less input
@@ -6624,6 +6653,7 @@ int main(int argc , char* argv[]) {
 	LOG_info("rom_path: %s\n", rom_path);
 
 	screen = GFX_init(MODE_MENU);
+	TMARK("gfx_init");
 	PAD_init();
 	DEVICE_WIDTH = screen->w;
 	DEVICE_HEIGHT = screen->h;
@@ -6638,6 +6668,7 @@ int main(int argc , char* argv[]) {
 	// Overrides_init();
 	
 	Core_open(core_path, tag_name);
+	TMARK("core_open");
 	// Presentation-drop protects PS1 audio by SKIPPING presents (up to 6 in a row) whenever the
 	// audio ring dips below 50%. That trade was measured on tg5040, whose audio path is direct SDL.
 	// It is NOT automatically right elsewhere: the MMP routes through the vendor audioserver daemon
@@ -6767,6 +6798,7 @@ int main(int argc , char* argv[]) {
 
 	// restore options
 	Config_load(); // before init?
+	TMARK("pre_config");
 	Config_init();
 	Config_readOptions(); // cores with boot logo option (eg. gb) need to load options early
 	setOverclock(overclock);
@@ -6779,6 +6811,7 @@ int main(int argc , char* argv[]) {
 #endif
 	} else {
 		Core_init();
+		TMARK("core_init");
 	}
 	
 	// TODO: find a better place to do this
@@ -6809,9 +6842,11 @@ int main(int argc , char* argv[]) {
 			goto finish;
 		}
 	}
+	TMARK("game_loaded");
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+	TMARK("cfg_read");
 #ifndef ZERO_DISABLE_FRONTEND_THREADING
 	int legacy_tv = 0; // pre-rename minarch_thread_video (v1.2 cfgs) — must read while user_cfg is alive
 	{
@@ -6829,12 +6864,15 @@ int main(int argc , char* argv[]) {
 #endif
 	} else {
 		SND_init(core.sample_rate, core.fps);
+		TMARK("snd_init");
 	}
 
 	Zero_applyRateMatch(); // static panel rate match; re-applied whenever core.fps changes
 
 	InitSettings(); // after we initialize audio
+	TMARK("audio_ready");
 	Menu_init();
+	TMARK("menu_init");
 	if (use_ftv2) {
 #ifdef ZERO_FRONTEND_THREADING_V2
 		fc_boot_stage(&zero_ftv2, FC_OP_RESUME, zero_ftv2_drain, NULL);   // = State_resume (nonfatal)
@@ -6913,6 +6951,8 @@ int main(int argc , char* argv[]) {
 	tlm_init(tag_name, core.fps>0 ? (int)(1000000.0/core.fps) : 16667);
 
 	sec_start = SDL_GetTicks();
+	TMARK("ready_to_run");
+	{ static int first = 1; if (first) { first = 0; } }
 	while (!quit) {
 		GFX_startFrame();
 		
@@ -7189,8 +7229,20 @@ int main(int argc , char* argv[]) {
 						int p95 = (int)gov_work[GOV_TICK_FRAMES - 2]; // ~93rd percentile of 30
 						int budget_us = gov_target_fps > 0 ? (int)(1000000.0 / gov_target_fps) : 16667;
 						int next = gov_sink_target(&gov_state, &gov_profile);
+#ifdef GOV_PLATFORM_H700
+						// GEN-RATE DESCENT (not the frame-work gate). On the DE-layer present the
+						// libretro core SELF-PACES to real time: core.run measures ~16.6ms wall for a
+						// GB game (only ~40%% CPU; the rest is the core's own throttle) so p95 "work"
+						// is ~15ms and the predictive gate reads BUSY forever, pinning the ceiling
+						// (measured 2026-08-06). Reaching this branch already means NOT slipping
+						// (fps_short/fps_gross are checked first), so the game is holding target ->
+						// probe one OPP down. fail-memory + presink-undo revert a step that slips.
+						(void)p95; (void)next; (void)budget_us;
+						frame_overrun = GOV_SIGNAL_SLACK;
+#else
 						frame_overrun = gov_sink_fits(gov_state.ceil_khz, next, p95, budget_us)
 							? GOV_SIGNAL_SLACK : GOV_SIGNAL_BUSY;
+#endif
 						{ // ZERO_GOV_DEBUG=1: periodic gate telemetry (why does/doesn't it sink?)
 							static int zgd = -1, zgd_n = 0;
 							if (zgd < 0) { const char* e = getenv("ZERO_GOV_DEBUG"); zgd = (e && e[0] && e[0] != '0') ? 1 : 0; }
@@ -7526,6 +7578,10 @@ finish:
 		 && !atomic_load_explicit(&zero_ftv2_fatal, memory_order_acquire))
 			zero_ftv2_failures_clear();
 	#endif
+	// NOTE: deliberately NOT clearing the panel here. Blanking on exit was worth it while the
+	// launcher took 313ms to draw its first frame; it now takes 57ms (the SDL joystick open was
+	// 249ms of that), so the clear only inserts a black flash between the last game frame and the
+	// menu. Let the last frame hold for those few milliseconds instead (Dan 2026-08-10).
 	Core_close();
 	
 	Config_quit();

@@ -103,6 +103,14 @@ void getEmuName(const char* in_name, char* out_name) { // NOTE: both char arrays
 void getEmuPath(char* emu_name, char* pak_path) {
 	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM, emu_name);
 	if (exists(pak_path)) return;
+#ifdef PLATFORM_ALIAS
+	// Community paks are published under the platform folder name the wider scene uses, which is
+	// not always ours (h700 == "rg35xxplus" to NextUI/MinUI pak authors). Honour that name too so
+	// third-party paks install drop-in — the compat rail for "lean core, opt-in features from the
+	// community that exists today" (Dan 2026-08-10). Our own name wins when both exist.
+	sprintf(pak_path, "%s/Emus/%s/%s.pak/launch.sh", SDCARD_PATH, PLATFORM_ALIAS, emu_name);
+	if (exists(pak_path)) return;
+#endif
 	sprintf(pak_path, "%s/Emus/%s.pak/launch.sh", PAKS_PATH, emu_name);
 }
 

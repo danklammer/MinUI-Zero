@@ -1,0 +1,121 @@
+#!/bin/sh
+# MinUI Zero h700 — PID 1. The whole OS: mount, wifi, then the launch loop.
+# The muOS-derived ramdisk switch_roots here after mounting p5.
+#
+# WiFi + poweroff replicate muOS's OWN method (read from its rootfs, not guessed): the earlier
+# hand-rolled versions failed because (a) poweroff needs the AXP register poke, plain poweroff
+# just reboots, and (b) wifi needs iwconfig-essid + dhcpcd, not bare wpa+udhcpc.
+# Every step breadcrumbs to p2 (the FAT partition a Mac reads); failure NEVER powers off.
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /tmp 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+mkdir -p /dev/shm /var/run /var/db/dhcpcd
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
+
+mkdir -p /mnt/log
+mount /dev/mmcblk0p2 /mnt/log 2>/dev/null
+LOG=/mnt/log/minui-zero-boot.log
+log() { echo "[$(cut -d' ' -f1 /proc/uptime 2>/dev/null)] $*" >> "$LOG" 2>/dev/null; sync; }
+: > "$LOG" 2>/dev/null
+log "MinUI Zero h700 init"
+
+echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
+log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
+
+mkdir -p /mnt/mmc
+# p6 is FAT32 (readable on any PC): try vfat explicitly, fall back to auto
+mount -t vfat -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null \
+	|| mount -o rw,noatime /dev/mmcblk0p6 /mnt/mmc 2>/dev/null
+mountpoint -q /mnt/mmc && log "p6 mounted (fat)" || log "p6 MOUNT FAILED"
+
+# poweroff the RG the way muOS does: AXP PMIC register (plain poweroff just REBOOTS on this board)
+power_off() {
+	log "power_off: sync + AXP cut"
+	sync
+	umount /mnt/mmc 2>/dev/null
+	echo 0x1801 > /sys/class/axp/axp_reg 2>/dev/null
+	poweroff -f
+}
+
+# WiFi — muOS's exact sequence, backgrounded so it never delays the menu.
+( if [ -f /etc/wpa_supplicant.conf ]; then
+	SSID=$(sed -n 's/^[[:space:]]*ssid="\(.*\)"/\1/p' /etc/wpa_supplicant.conf | head -1)
+	log "wifi: loading 8821cs (ssid='$SSID')"
+	insmod /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko 2>>"$LOG"
+	I=0; while [ $I -lt 15 ]; do [ -e /sys/class/net/wlan0 ] && break; sleep 1; I=$((I+1)); done
+	if [ ! -e /sys/class/net/wlan0 ]; then log "wifi: wlan0 NEVER appeared (lsmod: $(lsmod | grep 8821))"; exit; fi
+	log "wifi: wlan0 up after ${I}s"
+	ifconfig wlan0 up 2>>"$LOG"
+	iw dev wlan0 set power_save off 2>>"$LOG"          # the RTL8821CS deafness fix, at the source
+	iwconfig wlan0 essid -- "$SSID" 2>>"$LOG"
+	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>>"$LOG" || log "wifi: wpa_supplicant failed"
+	sleep 3
+	dhcpcd -t 20 wlan0 >>"$LOG" 2>&1 &
+	J=0; while [ $J -lt 20 ]; do
+		IP=$(ip -4 -o addr show wlan0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+		[ -n "$IP" ] && break; sleep 1; J=$((J+1))
+	done
+	log "wifi: IP=${IP:-NONE} after ${J}s; assoc=$(iw dev wlan0 link 2>/dev/null | head -1)"
+  fi ) &
+
+if [ -x /usr/sbin/dropbearmulti ]; then
+	mkdir -p /etc/dropbear
+	[ -f /etc/dropbear/dropbear_ed25519_host_key ] || /usr/sbin/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1
+	/usr/sbin/dropbearmulti dropbear -R -B 2>/dev/null
+	log "dropbear started"
+fi
+
+export PLATFORM=h700
+export SDCARD_PATH=/mnt/mmc
+export SYSTEM_PATH=/mnt/mmc/.system/h700
+export USERDATA_PATH=/mnt/mmc/.userdata/h700
+export LOGS_PATH=/mnt/mmc/.userdata/h700/logs
+export SHARED_USERDATA_PATH=/mnt/mmc/.userdata/shared
+export SAVES_PATH=/mnt/mmc/Saves
+export BIOS_PATH=/mnt/mmc/Bios
+export CORES_PATH=/mnt/mmc/.system/h700/cores
+export LD_LIBRARY_PATH=/mnt/mmc/.system/h700/lib:/usr/lib:/lib
+export SDL_AUDIODRIVER=alsa
+export SDL_VIDEODRIVER=dummy
+mkdir -p "$LOGS_PATH" "$SAVES_PATH" "$SHARED_USERDATA_PATH/.minui"
+
+M="$SYSTEM_PATH/bin/minui.elf"
+
+# background syncer: stream logs to the FAT partition so even a hang leaves a trace
+( while : ; do sync; sleep 3; done ) &
+
+cd /tmp
+FAILS=0
+while : ; do
+	rm -f /tmp/next
+	"$M" > /mnt/log/minui-live.log 2>&1
+	RC=$?
+	if [ -f /tmp/next ]; then
+		FAILS=0
+		CMD=$(cat /tmp/next)
+		log "launch: $CMD"
+		sh -c "$CMD"
+		log "game exited rc=$?"
+		cp "$LOGS_PATH"/*.txt /mnt/log/ 2>/dev/null
+		sync
+	elif [ "$RC" = "0" ]; then
+		log "minui clean exit — powering off"
+		power_off
+	else
+		FAILS=$((FAILS+1))
+		log "minui exited rc=$RC (fail $FAILS); tail:"
+		tail -20 /mnt/log/minui-live.log >> "$LOG" 2>/dev/null
+		sync
+		if [ $FAILS -ge 3 ]; then
+			log "minui failing repeatedly — parking (ssh in if wifi is up, or pull p2)"
+			while : ; do sleep 60; done
+		fi
+		sleep 2
+	fi
+done

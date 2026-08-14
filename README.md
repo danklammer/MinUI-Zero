@@ -2,7 +2,7 @@
 
 ## Same simple MinUI — Runs cooler. Lasts longer. Plays smoother.
 
-**MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI Brick** and **TrimUI Smart Pro**, with an **experimental Miyoo Mini Plus build** ([see below](#miyoo-mini-plus-experimental)).
+**MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI Brick** and **TrimUI Smart Pro**, with experimental builds for the **Miyoo Mini family** ([see below](#miyoo-mini-family-experimental)) and the **Anbernic RG35XX Plus / H** ([see below](#anbernic-rg35xx-plus--h-experimental)).
 
 It keeps MinUI's fast, distraction-free experience while tuning everything underneath to use only the power each game actually needs.
 
@@ -10,10 +10,33 @@ It keeps MinUI's fast, distraction-free experience while tuning everything under
 
 ### Install
 
-[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest), then:
+[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest). **How you
+install depends on the device, and the two ways are genuinely different**: one copies files, the
+other replaces the whole card.
+
+**TrimUI Brick / Smart Pro, and the Miyoo Mini family: copy files onto a card**
+
+MinUI Zero rides along with the firmware already on the device. Nothing is erased.
 
 - **Fresh:** unzip `MinUI-Zero-*-base.zip` onto a blank FAT32 SD card.
 - **Update:** extract `MinUI.zip` from the release archive, place it on the card root, and reboot.
+
+**Anbernic RG35XX Plus / H: flash a disk image**
+
+On this device MinUI Zero **is the operating system**, so you write a whole card image instead of
+copying files. Decompress `MinUI-Zero-h700-*.img.xz` and flash the `.img` with
+[Raspberry Pi Imager](https://www.raspberrypi.com/software/), [balenaEtcher](https://etcher.balena.io/),
+or `dd`.
+
+> **Flashing ERASES the card.** Back up saves and roms first.
+
+Two things make this less alarming than it sounds: the OS lives entirely on the card, so **nothing
+is written to the device itself**. Keep your existing card and flash a *different* one, and you
+switch systems by swapping cards. And on first boot the ROMS partition expands to fill the card
+automatically, so a 256GB card gives you 256GB of space without any manual resizing.
+
+After flashing, the `ROMS` partition mounts on any PC or Mac. Drop roms into the matching folders,
+and optionally add `wifi.txt` (wifi is off until you ask for it) or `authorized_keys` (ssh likewise).
 
 ---
 
@@ -110,6 +133,10 @@ Press POWER and the device suspends to RAM instead of leaving the OS awake behin
 screen: state saved, audio closed, near-zero draw — then it wakes almost instantly, right where
 you left off. An opt-out tool is included for anyone who prefers the stock behavior.
 
+On the RG35XX Plus this is measured at **~1.0 %/h suspended against 8.79 %/h while playing** (
+roughly nine times cheaper, about four days of standby), and it replaces the only behaviour that
+device previously had once it went idle, which was to power itself off and lose your place.
+
 ### Idle is truly idle
 
 The launcher renders without the GPU (TrimUI Brick), so the menu runs cool. Radios and LEDs
@@ -131,6 +158,41 @@ screen, then sleeps — cooler charging, honest percentages.
 **Also aboard, dormant:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System,
 TurboGrafx-16, Virtual Boy, PICO-8 — create the matching Roms folder (eg. "Virtual Boy (VB)")
 and the system appears, tuned core already installed.
+
+## Anbernic RG35XX Plus / H (experimental)
+
+An **alpha** build for the Anbernic H700 family. Same launcher, same closed-loop governor, same
+emulator cores, but newer than the TrimUI builds and less proven. Back up your card and expect
+rough edges.
+
+**Developed and verified on the RG35XX Plus only.** The image is built from a Plus-specific donor:
+the board config and boot chain (DTB, u-boot) are that device's, and the model is read from a file
+in the image rather than detected from the hardware. Other H700 devices, the RG35XX H included,
+are **untested and likely need their own image**. Do not assume the family is covered because the
+SoC matches.
+
+**This one installs differently, and it is worth understanding why.** On the TrimUI and Miyoo
+devices MinUI Zero is a *guest*: the stock firmware boots, and MinUI takes over the screen. On the
+RG35XX Plus there is no stock firmware to be a guest of: the device boots whatever card you give
+it, so MinUI Zero ships as a complete operating system on a card image you flash. See
+[Install](#install).
+
+What that changes for you:
+
+- **You flash an image; it erases the card.** No unzipping files onto an existing setup.
+- **Nothing is written to the device.** Flash a spare card and swap cards to switch systems; your
+  existing card is untouched.
+- **The card resizes itself.** First boot expands the ROMS partition to fill the card.
+- **Updates are a reflash today.** There is no in-place updater yet; saves live on the ROMS
+  partition, so copy them off before reflashing.
+
+Why bother owning the OS here: it is what makes the device boot straight into the launcher, drop
+input latency to a 5ms poll, and idle with nothing else running. The measured result is
+**95% → 6% battery over 10.1 hours of continuous Game Boy Color play**, at the lowest clock the
+silicon offers, at ~36°C.
+
+Wifi and ssh are both **off until you ask for them** (`wifi.txt` and `authorized_keys` at the card
+root). An idle radio is battery you did not agree to spend.
 
 ## Miyoo Mini family (experimental)
 

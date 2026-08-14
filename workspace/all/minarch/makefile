@@ -32,7 +32,8 @@ CFLAGS   = $(ARCH) -fomit-frame-pointer -DZERO_UV_ENGINE
 # miyoomini: dual-core Cortex-A7 where minarch + core + the SDL audio thread already contend for
 # two cores, and PLAT_flip blocks ~16.76ms in FBIOPAN_DISPLAY plus MI_GFX fence waits. The auto-
 # threading trial was running there unvalidated.
-ifneq (,$(filter $(PLATFORM),tg5040 miyoomini))
+# h700: hosted-dev alpha — the threading path is unqualified on this SoC's fbdev present.
+ifneq (,$(filter $(PLATFORM),tg5040 miyoomini h700))
 CFLAGS  += -DZERO_DISABLE_FRONTEND_THREADING
 endif
 CFLAGS  += $(INCDIR) -DPLATFORM=\"$(PLATFORM)\" -DUSE_$(SDL) -O3 -std=gnu99
