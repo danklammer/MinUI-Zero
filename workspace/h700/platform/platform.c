@@ -1094,7 +1094,7 @@ void PLAT_setDebugOverlay(uint16_t* top, uint16_t* bottom, int w, int h, int str
 // Nearest upscale with a 16.16 accumulator: one add per pixel instead of a multiply AND divide,
 // which on a 640-wide strip is thousands of divides per frame in a fork whose whole point is not
 // spending cycles it does not have to. Step rounded up so the index stays inside the strip.
-static void dbg_blit_strip(uint16_t* strip, int dst_y, int dst_w, int dst_h) {
+static void dbg_blit_strip(uint16_t* strip, int dst_x, int dst_y, int dst_w, int dst_h) {
 	if (!strip || dst_w <= 0 || dst_h <= 0 || dbg.w <= 0 || dbg.h <= 0) return;
 	uint16_t* base = (uint16_t*)vid.screen->pixels;
 	int dpitch = vid.screen->pitch / 2;
@@ -1109,9 +1109,11 @@ static void dbg_blit_strip(uint16_t* strip, int dst_y, int dst_w, int dst_h) {
 		uint16_t* drow = base + (size_t)y * dpitch;
 		uint32_t xacc = 0;
 		for (int dx = 0; dx < wlim; dx++, xacc += xstep) {
+			int x = dst_x + dx;
+			if (x < 0 || x >= vid.width) continue;
 			uint16_t px = srow[xacc >> 16];
 			if (px == DBG_KEY) continue;   // transparent
-			drow[dx] = px;
+			drow[x] = px;
 		}
 	}
 }
@@ -1125,15 +1127,34 @@ static void dbg_compose(void) {
 	// to the panel. The Miyoo formula scales by vid.width/FIXED_WIDTH because ITS vid.width is the
 	// framebuffer; borrowing that here shrank the strips to ~75% and clipped the text off the right
 	// edge (Dan 2026-08-11).
+	// OVERSCAN INSET. The strip content spans essentially the full surface (measured: fields at
+	// x=2..211 of a 213-wide strip, so x=6..633 once tripled onto the 640 panel), and this LCD does
+	// not display its outermost columns, so the leading and trailing characters were invisible.
+	// Nothing was clipped in software: every field logged as DRAWN and in bounds. The Brick never
+	// showed this because its 1024-wide surface leaves proportionally more slack.
+	// COMPOSE INSIDE THE CROP RECT, not across the whole surface. The DE scans out only
+	// vid.crop_* (the game image) and stretches THAT to the panel: SNES showed
+	// `crop 64,16 512x448 -> win 45,0 549x480`, so a strip drawn at surface x=0 or y=0 fell
+	// outside the crop and was never displayed. That is the "HUD cut off" report, and it is why
+	// PS1 looked fine: its 320x240 at 2x filled the surface exactly, making crop == surface.
+	// Anchoring to the crop puts the text hard against the visible image edge on every system.
+	int cx = vid.crop_w > 0 ? vid.crop_x : 0;
+	int cy = vid.crop_h > 0 ? vid.crop_y : 0;
+	int cw = vid.crop_w > 0 ? vid.crop_w : vid.width;
+	int ch = vid.crop_h > 0 ? vid.crop_h : vid.height;
 	int dst_w = dbg.w * S;
 	int dst_h = dbg.h * S;
-	int margin = S;
-	if (dst_w > vid.width) dst_w = vid.width;
+	// A SMALL margin, not none: with the strip flush to the crop edge the panel sliced the text
+	// through the middle of the glyphs, top and bottom (Dan, on-device 2026-08-14) — this LCD does
+	// not display its outermost rows. 4*S (8px) clears that band while still reading as edge-anchored;
+	// the 19px an earlier 4%-of-height inset produced was visibly too generous.
+	int margin = S * 4;
+	if (dst_w > cw - margin * 2) dst_w = cw - margin * 2;
 	if (dst_h < 1) dst_h = 1;
 	if (margin < 1) margin = 1;
-	if (dst_h * 2 + margin * 2 > vid.height) return;   // no room: skip rather than overlap the game
-	dbg_blit_strip(dbg.top, margin, dst_w, dst_h);
-	dbg_blit_strip(dbg.bottom, vid.height - dst_h - margin, dst_w, dst_h);
+	if (dst_h * 2 + margin * 2 > ch) return;   // no room: skip rather than overlap the game
+	dbg_blit_strip(dbg.top, cx + margin, cy + margin, dst_w, dst_h);
+	dbg_blit_strip(dbg.bottom, cx + margin, cy + ch - dst_h - margin, dst_w, dst_h);
 }
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
 	// The rect the PANEL actually shows (the contract every caller relies on: menu backdrop via

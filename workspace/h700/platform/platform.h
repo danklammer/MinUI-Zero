@@ -154,6 +154,12 @@
 // fractional slack the Brick's 768/(30*3) = 8.53 enjoys. PILL_SIZE 26 clipped the 7th row's
 // highlight; 24 fit but shrank every pill, button and text baseline and simply looked worse.
 // The row count is a consequence of panel geometry here, not a number to tune.
+// Debug HUD strip scale. The shared default is 3, which on this 640x480 panel gives a 213px strip,
+// about 34 characters, and renders the text large enough that longer lines run to the screen edge.
+// 2 gives a 320px strip (about 53 characters, close to the Brick 1024/3 = 341px) and draws the text
+// smaller, which is what it should look like here (Dan, on-device 2026-08-14).
+#define DBG_OVERLAY_SCALE 2
+
 #define MAIN_ROW_COUNT 6
 #define PADDING 10
 
