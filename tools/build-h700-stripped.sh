@@ -49,6 +49,30 @@ else
 	VERSION="dev-$(date +%Y%m%d)"
 	IMG="$OUT_DIR/MinUI-Zero-h700-stripped-$(date +%Y%m%d).img"
 fi
+# TARGET DEVICE. muOS keeps every board in one tree and selects ONE at image-build time — nothing
+# installs a device package at runtime — so a different handheld means a different IMAGE, not a
+# runtime switch. Default is the Plus (the donor we dumped and the only device verified end to end).
+#
+#   rg35xx-plus  uses the donor boot chain as-is
+#   rg35xx-h     substitutes that board's boot_package (u-boot + device tree) into the chain and
+#                overlays its /opt/muos/device, which is what makes its analog sticks exist at all:
+#                the H tree enables a GPADC + analog mux and adds keyL3/keyR3, none of it in the Plus.
+DEVICE="${H700_DEVICE:-rg35xx-plus}"
+DEVICE_DIR="$ASSETS/device-$DEVICE"
+RAW36="$ASSETS/parts/raw-36mb.img.gz"          # the Plus chain, our proven baseline
+BUILT_RAW=""                                    # set when we synthesize a chain for another board
+if [ "$DEVICE" != "rg35xx-plus" ]; then
+	[ -d "$DEVICE_DIR" ] || { echo "ERROR: no device tree at $DEVICE_DIR — run: python3 tools/h700-image/fetch-device.py $DEVICE $DEVICE_DIR"; exit 1; }
+	echo "== target device: $DEVICE (building a boot chain from its muOS package) =="
+	mkdir -p "$OUT_DIR"
+	gunzip -c "$RAW36" > "$OUT_DIR/base-raw36.img"
+	python3 "$REPO/tools/h700-image/bootchain.py" "$OUT_DIR/base-raw36.img" \
+		"$DEVICE_DIR/package/boot_package.fex" "$OUT_DIR/raw36-$DEVICE.img" || exit 1
+	BUILT_RAW="$OUT_DIR/raw36-$DEVICE.img"
+	rm -f "$OUT_DIR/base-raw36.img"
+	IMG="${IMG%.img}-$DEVICE.img"
+fi
+
 echo "== build mode: $MODE (version $VERSION) =="
 
 # Refresh the dev ssh key BEFORE the rootfs build consumes it (the copy used to sit near the end of
@@ -77,7 +101,7 @@ mkdir -p "$OUT_DIR"
 echo "== extracting + stripping muOS rootfs (this takes a few minutes) =="
 cp "$REPO/tools/h700-strip/minui-frontend.sh" "$ASSETS/minui-frontend.sh"
 cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
-docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e P5_KB=$((P5_SECTORS / 2)) tg5040-toolchain /bin/bash -c '
+docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e P5_KB=$((P5_SECTORS / 2)) -e DEVICE="$DEVICE" tg5040-toolchain /bin/bash -c '
 set -e
 R=/work/root
 rm -rf "$R"; mkdir -p "$R"
@@ -206,6 +230,17 @@ echo "  kernel modules: $_msz -> $(du -sh "$R/lib/modules" 2>/dev/null | cut -f1
 # KEEP: /opt/muos/script (init + network.sh + halt.sh + func.sh), /opt/muos/device + config,
 #       udev, wifi stack, dropbearmulti (ssh), SDL, kernel modules, alsa-utils (amixer/alsactl),
 #       gl4es/libopenal/libsamplerate/embiggen-disk (possible SDL/runtime deps — not worth the risk)
+
+# TARGET-DEVICE OVERLAY. The rdumped rootfs carries the DONOR board (rg35xx-plus) in
+# /opt/muos/device, and every muOS boot script reads its identity and hardware paths from there via
+# GET_VAR — board/name, board/stick, board/rtc_wake, screen geometry, the alsa baseline. Shipping it
+# unchanged on another handheld means the OS honestly believes it is a Plus. Replace it wholesale.
+if [ -n "$DEVICE" ] && [ "$DEVICE" != "rg35xx-plus" ] && [ -d "/a/device-$DEVICE" ]; then
+	rm -rf "$R/opt/muos/device"
+	mkdir -p "$R/opt/muos/device"
+	cp -R "/a/device-$DEVICE/." "$R/opt/muos/device/"
+	echo "  /opt/muos/device replaced with $DEVICE ($(cat "$R/opt/muos/device/config/board/name" 2>/dev/null))"
+fi
 
 echo "  swapping FRONTEND -> minui in startup.sh..."
 SU="$R/opt/muos/script/system/startup.sh"
@@ -403,7 +438,7 @@ rm -f "$IMG"
 # toc1 checksum. That is the all-systems input-lag fix (buttons are kernel-POLLED on this BSP;
 # mainline uses interrupts). A re-dumped part from a stock card would silently regress to 20ms —
 # re-run the patch script against any fresh dump (offsets + verified algorithm inside it).
-gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"
+if [ -n "$BUILT_RAW" ]; then cp "$BUILT_RAW" "$IMG"; else gunzip -c "$ASSETS/parts/raw-36mb.img.gz" > "$IMG"; fi
 gunzip -c "$ASSETS/parts/p2-boot.img.gz"   | dd of="$IMG" bs=512 seek=90112  conv=notrunc status=none
 gunzip -c "$ASSETS/parts/p3-env.img.gz"    | dd of="$IMG" bs=512 seek=155648 conv=notrunc status=none
 BOOTIMG_BYTES=$(gunzip -c "$ASSETS/parts/p4-kernel.img.gz" | head -c 48 | python3 -c 'import sys,struct;d=sys.stdin.buffer.read(48);k,_,r=struct.unpack("<III",d[8:20]);pg=struct.unpack("<I",d[36:40])[0];print(pg*(1+(k+pg-1)//pg+(r+pg-1)//pg))')
