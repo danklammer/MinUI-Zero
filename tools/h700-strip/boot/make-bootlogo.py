@@ -24,7 +24,12 @@ W, H = 640, 480
 # ---- bootlogo.bmp: official MinUI mark at half the old size ----
 logo = Image.open(os.path.join(REPO, "skeleton/SYSTEM/tg5040/dat/bootlogo.bmp")).convert("RGB")
 canvas = Image.new("RGB", (W, H), (0, 0, 0))
-scale = 0.8  # was 1.6; half per Dan 2026-08-10, referencing the OG MinUI rg35xxplus logo
+# 0.625 makes the mark occupy the SAME fraction of the screen as it does on the Brick, which is the
+# only defensible target: 216px on the Brick 1024 panel = 21.1% of width, and 216*0.625 = 135px on
+# this 640 panel = 21.1%. History: 1.6 filled the panel edge to edge, 0.8 (2026-08-10) halved it but
+# still read ~28% oversized against the Brick because 640x480 is a much smaller canvas than
+# 1024x768, so the same nominal scale eats proportionally more screen (Dan spotted it 2026-08-13).
+scale = 0.625
 lw, lh = int(logo.width * scale), int(logo.height * scale)
 canvas.paste(logo.resize((lw, lh), Image.LANCZOS), ((W - lw) // 2, (H - lh) // 2))
 out = os.path.join(HERE, "bootlogo.bmp")

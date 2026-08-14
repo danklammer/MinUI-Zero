@@ -55,7 +55,13 @@
 #define COLOR_BUTTON_TEXT	(SDL_Color){TRIAD_GRAY}
 
 // all before scale
+// PILL_SIZE is the row/pill height the whole layout is derived from, so it also sets how many list
+// rows fit: MAIN_ROW_COUNT = FIXED_HEIGHT / (PILL_SIZE * FIXED_SCALE) - 2. Guarded so a platform
+// whose panel divides badly can trade a little text size for a row (h700: 640x480 at 2x yields
+// exactly 8 slots at 30, all spent on header + 6 rows + footer, with no fractional slack to claim).
+#ifndef PILL_SIZE
 #define PILL_SIZE 30
+#endif
 #define BUTTON_SIZE 20
 #define BUTTON_MARGIN 5 // ((PILL_SIZE - BUTTON_SIZE) / 2)
 #define BUTTON_PADDING 12
