@@ -244,6 +244,11 @@ else
 	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak
 endif
 
+# ORDERED DEPLIBERATELY. `cores` here only COPIES core artifacts into build/; the actual core build
+# and its stub gate happen inside `build`. Listed as plain prerequisites they may run concurrently
+# under -j, so the copy can take a stale output/ core while the build validates the new one, and the
+# staged payload silently disagrees with what was checked (Codex review 2026-08-14).
+.NOTPARALLEL:
 common: build system cores
 	
 clean:
@@ -331,7 +336,14 @@ ifneq (,$(findstring tg5040, $(PLATFORMS)))
 	cp ./build/SYSTEM/tg5040/bin/install.sh ./build/SYSTEM/tg3040/paks/MinUI.pak/launch.sh
 endif
 
-package: tidy
+.PHONY: check-payload
+check-payload:
+	@sh ./workspace/all/cores/check-payload.sh ./build/SYSTEM/$(PLATFORM)/paks/Emus $(PLATFORM)
+
+# GATED. package used to depend only on `tidy`, so a manually staged or interrupted build could be
+# zipped without the core gate ever running (Codex review 2026-08-14). check-payload verifies the
+# staged cores in build/ before anything is compressed.
+package: tidy check-payload
 	# ----------------------------------------------------
 	# zip up build
 		
