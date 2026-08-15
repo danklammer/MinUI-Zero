@@ -9,10 +9,21 @@ underneath to use only the power each game actually needs.
 
 **Full speed. Zero tinkering.**
 
+### Which download?
+
+[The latest release](https://github.com/danklammer/MinUI-Zero/releases/latest) carries four
+artifacts, and they are not interchangeable.
+
+| Device | Status | Download | Install |
+|---|---|---|---|
+| TrimUI Brick / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
+| Miyoo Mini / Plus / Flip | Alpha | `MinUI-Zero-miyoo-*-alpha.zip` | Copy onto a card |
+| Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
+| Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
+
 ### Install
 
-[Download the latest release](https://github.com/danklammer/MinUI-Zero/releases/latest). The two
-installs are genuinely different: one copies files, the other replaces the whole card.
+The two installs are genuinely different: one copies files, the other replaces the whole card.
 
 **TrimUI and Miyoo: copy files.** MinUI Zero rides along with the firmware already on the device and
 nothing is erased.
@@ -29,18 +40,20 @@ for your device and write it with [Raspberry Pi Imager](https://www.raspberrypi.
 
 Nothing is written to the device itself, so flash a spare card and swap cards to switch systems.
 First boot expands the ROMS partition to fill the card, and that partition mounts on any PC or Mac.
-Wifi and ssh stay off until you ask for them, via `wifi.txt` and `authorized_keys` at the card root.
+On Anbernic, Wi-Fi and SSH stay off until you ask for them, via `wifi.txt` and `authorized_keys` at
+the card root.
 
 ---
 
 ## Why MinUI Zero?
 
 - **Cooler gameplay** without lowering frame rates
-- **Longer battery life**, ~7.5 hours on Game Boy and ~7 on PlayStation
+- **Longer battery life**: ~7.5 hours on Game Boy, ~7 on PlayStation (TrimUI, measured)
 - **Smoother gameplay**: panel-matched frame pacing, better audio resampling, roughly one frame less
   input latency
 - **No CPU settings to manage.** Every game is tuned automatically and continuously
-- **Deep sleep by default**: near-zero draw, instant resume, never running hot in your bag
+- **Deep sleep by default** on TrimUI and Anbernic: near-zero draw, instant resume, never running
+  hot in your bag
 - **The simplicity of MinUI**: no box art, stores, accounts, or themes
 
 For people who want to turn on a handheld and play games, not spend their time configuring one.
@@ -62,7 +75,7 @@ On real TrimUI hardware, against stock MinUI on the same device.
 Your games, silicon, and settings will vary. Raw data and the reasoning behind every claim live in
 [`docs/bench/`](docs/bench/) and [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
-## MinUI Zero or NextUI?
+## On TrimUI: Zero or NextUI?
 
 [NextUI](https://github.com/LoveRetro/NextUI) is the other major MinUI fork for these devices,
 full-featured and polished where Zero is deliberately minimal. Both are good firmware; pick by
@@ -76,7 +89,7 @@ philosophy.
 | Rendering | Lean pipeline; the GPU only displays the finished frame in-game, and powers down at the menu | Fully OpenGL/GPU-based, with shaders and overlays |
 | CPU | Frame-aware closed loop plus a pipelined PS1 frontend; holds full speed at stock clocks, never overclocks | Dynamic scaling; performance mode is a 2.0 GHz overclock |
 | Undervolting | Self-calibrating per-chip tool, finds each chip's lowest safe voltage (opt-in) | None |
-| Features | None by design | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
+| Features | Minimal by design: no box art, store, themes, or accounts | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor, plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes | Yes |
 | Devices | Brick, Smart Pro (+ alpha Anbernic RG35XX Plus / H and Miyoo Mini family) | Brick, Smart Pro, Smart Pro S |
@@ -96,8 +109,8 @@ kernel picks the most efficient clock beneath that ceiling, and a clock that fai
 rather than immediately retried. Every game gets its own answer: Zelda DX settles at 408 MHz, Bloody
 Roar II pays 1800 only in the scenes that need it.
 
-**Optimize CPU**, the self-calibrating undervolt. Factory voltage tables carry margin most individual
-chips don't need. Run **Tools → Optimize CPU**, leave the device charging for about 90 minutes, and
+**Optimize CPU**, the self-calibrating undervolt (TrimUI only). Factory voltage tables carry margin
+most individual chips don't need. Run **Tools → Optimize CPU**, leave it charging ~90 minutes, and
 it measures its own silicon under load to find each clock's real limit. Result: **~20% less CPU power
 at identical clocks**, with nothing to configure afterward. Voltages apply at runtime only, so any
 reboot returns to factory-safe values.
@@ -116,7 +129,7 @@ daemon polls in the background, and idling on the charger shows a dim battery sc
 - **Stock bugs fixed**: hot-running NES settings, crackling audio, hanging quit menus, LEDs turning
   themselves back on
 - **Safer failure handling**: bad ROMs exit cleanly, mid-game resolution changes are handled, and
-  saves are written atomically so a crash or full card can never destroy a good save
+  saves are written atomically, so a crash or a full card leaves the previous good save intact
 - **Efficiency-tuned cores**, including NEON-accelerated PlayStation video decoding
 - **Fast boot**: power to menu in ~10 seconds, and waking from sleep is instant
 - **Menu clock** (opt-in) via Tools → Clock
@@ -175,7 +188,7 @@ Instead POWER blanks and idles, and after two minutes the device quicksaves and 
 
 ## What's left out
 
-No boxart, wifi, store, achievements, LED effects, shaders, or themes. Anything that adds heat or
+No box art, Wi-Fi UI, store, achievements, LED effects, shaders, or themes. Anything that adds heat or
 drain without earning it doesn't ship, and several flashy features were built, measured as
 break-even, and cut. `docs/DECISIONS.md` records every verdict.
 
@@ -191,8 +204,8 @@ Built on [MinUI](https://github.com/shauninman/MinUI) by Shaun Inman. Deep sleep
 [zhaofengli](https://github.com/zhaofengli/MinUI); techniques borrowed from
 [MyMinUI](https://github.com/Turro75/MyMinUI) and [NextUI](https://github.com/LoveRetro/NextUI); the
 dynamic rate control idea from [RetroArch](https://github.com/libretro/RetroArch); the power-off
-haptic cue idea from [SpruceOS](https://github.com/spruceUI/spruceOS). The Anbernic hardware
-enablement layer is stripped from [muOS](https://muos.dev). An independent personal fork, not
+haptic cue idea from [SpruceOS](https://github.com/spruceUI/spruceOS). The Anbernic build uses the
+hardware-enablement layer from [muOS](https://muos.dev). An independent personal fork, not
 affiliated with, endorsed by, or supported by any of them. See [`LICENSE.md`](LICENSE.md) for
 license and provenance, and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for detailed
 attribution.
