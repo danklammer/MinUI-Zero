@@ -96,33 +96,20 @@ philosophy.
 
 Measured at MinUI Zero v1.5 and NextUI v6.14.0. Source lines count each firmware's own `.c`/`.h` and
 exclude the emulator cores both ship; download sizes are each project's base release zip. The NextUI
-column comes from its README and its own boot and launch scripts. Code flows both ways between these
-projects: deep sleep shares a lineage, and NextUI is credited in this codebase.
+column comes from its README and its own boot and launch scripts, and the governor difference is
+researched in [`docs/nextui-comparison.md`](docs/nextui-comparison.md). Code flows both ways between
+these projects: deep sleep shares a lineage, and NextUI is credited in this codebase.
 
 ## How it works
 
-**The governor, and why there's no CPU Speed setting.** Most forks use a hand-picked static clock per
-console, one number that has to cover the heaviest game on the system, so it runs hot for everything
-else. MinUI Zero measures whether the game is holding its target frame rate, lowers the CPU ceiling
-when there is headroom, and raises it within about a second when a demanding scene needs more. The
-kernel picks the most efficient clock beneath that ceiling, and a clock that failed is remembered
-rather than immediately retried. Every game gets its own answer: Zelda DX settles at 408 MHz, Bloody
-Roar II pays 1800 only in the scenes that need it.
+There is no CPU Speed setting because the machine answers that question itself, per game,
+continuously: the frontend watches whether a game is holding its target frame rate and moves the CPU
+ceiling to the lowest clock that still does. Zelda DX settles at 408 MHz; Bloody Roar II pays 1800
+only in the scenes that need it. **Deep sleep** suspends to RAM rather than idling behind a dark
+screen, and on TrimUI, **Optimize CPU** measures your specific chip's lowest safe voltage for about
+20% less CPU power at identical clocks.
 
-**Optimize CPU**, the self-calibrating undervolt (TrimUI only). Factory voltage tables carry margin
-most individual chips don't need. Run **Tools → Optimize CPU**, leave it charging ~90 minutes, and
-it measures its own silicon under load to find each clock's real limit. Result: **~20% less CPU power
-at identical clocks**, with nothing to configure afterward. Voltages apply at runtime only, so any
-reboot returns to factory-safe values.
-
-**Deep sleep.** Press POWER and the device suspends to RAM instead of leaving the OS awake behind a
-dark screen, then wakes almost instantly where you left off. On the RG35XX Plus that is **~1.0 %/h
-suspended against 8.79 %/h while playing**, about four days of standby, replacing the only idle
-behaviour that device had before, which was to power off and lose your place. An opt-out tool is
-included.
-
-**Idle is truly idle.** The launcher renders without the GPU (Brick), radios and LEDs are off, no
-daemon polls in the background, and idling on the charger shows a dim battery screen and then sleeps.
+Full explanation of each, and the design docs behind them: [**docs/how-it-works.md**](docs/how-it-works.md).
 
 ## Quality of life
 
