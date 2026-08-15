@@ -9,51 +9,6 @@ underneath to use only the power each game actually needs.
 
 **Full speed. Zero tinkering.**
 
-### Which download?
-
-[The latest release](https://github.com/danklammer/MinUI-Zero/releases/latest) carries four
-artifacts, and they are not interchangeable.
-
-| Device | Status | Download | Install |
-|---|---|---|---|
-| TrimUI Brick / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
-| Miyoo Mini / Plus / Flip | Alpha | `MinUI-Zero-miyoo-*-alpha.zip` | Copy onto a card |
-| Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
-| Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
-
-### Install
-
-The two installs are genuinely different: one copies files, the other replaces the whole card.
-
-**TrimUI and Miyoo: copy files.** MinUI Zero rides along with the firmware already on the device and
-nothing is erased.
-
-- **Fresh:** unzip the base zip onto a blank FAT32 SD card.
-- **Update:** drop `MinUI.zip` on the card root and reboot.
-
-**Anbernic: flash an image.** Here MinUI Zero *is* the operating system. Decompress the `.img.xz`
-for your device and write it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/),
-[balenaEtcher](https://etcher.balena.io/), or `dd`.
-
-> **Flashing erases the card.** Back up saves and roms first. The Plus and H images are not
-> interchangeable: each carries its own boot chain, device tree and kernel.
-
-Nothing is written to the device itself, so flash a spare card and swap cards to switch systems.
-First boot expands the ROMS partition to fill the card, and that partition mounts on any PC or Mac.
-On Anbernic, Wi-Fi and SSH stay off until you ask for them, via `wifi.txt` and `authorized_keys` at
-the card root.
-
-**One card, more than one device.** Upstream MinUI ships every platform in a single zip, so one card
-boots anything it supports. Zero builds each platform separately, so a card carries only the build
-you installed. TrimUI and Miyoo can still share one: extract both zips onto it and they coexist, with
-`Roms`, `Saves` and `Bios` shared at the root while each device keeps its own settings under
-`.userdata/<platform>`. We have verified the two payloads do not collide, but have not booted a
-dual-device card end to end. Anbernic cannot join in, since it is a flashed image that owns the whole
-card. Note that battery saves carry between devices but save *states* may not, as they are tied to
-the emulator core's architecture.
-
----
-
 ## Why MinUI Zero?
 
 - **Cooler gameplay** without lowering frame rates
@@ -137,6 +92,49 @@ Full explanation of each, and the design docs behind them: [**docs/how-it-works.
 **Also aboard, dormant:** Game Boy, mGBA, Super Game Boy, Game Gear, Master System, TurboGrafx-16,
 Virtual Boy, PICO-8. Create the matching Roms folder (eg. "Virtual Boy (VB)") and the system appears,
 tuned core already installed.
+
+## Which download?
+
+[The latest release](https://github.com/danklammer/MinUI-Zero/releases/latest) carries four
+artifacts, and they are not interchangeable.
+
+| Device | Status | Download | Install |
+|---|---|---|---|
+| TrimUI Brick / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
+| Miyoo Mini / Plus / Flip | Alpha | `MinUI-Zero-miyoo-*-alpha.zip` | Copy onto a card |
+| Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
+| Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
+
+## Install
+
+The two installs are genuinely different: one copies files, the other replaces the whole card.
+
+**TrimUI and Miyoo: copy files.** MinUI Zero rides along with the firmware already on the device and
+nothing is erased.
+
+- **Fresh:** unzip the base zip onto a blank FAT32 SD card.
+- **Update:** drop `MinUI.zip` on the card root and reboot.
+
+**Anbernic: flash an image.** Here MinUI Zero *is* the operating system. Decompress the `.img.xz`
+for your device and write it with [Raspberry Pi Imager](https://www.raspberrypi.com/software/),
+[balenaEtcher](https://etcher.balena.io/), or `dd`.
+
+> **Flashing erases the card.** Back up saves and roms first. The Plus and H images are not
+> interchangeable: each carries its own boot chain, device tree and kernel.
+
+Nothing is written to the device itself, so flash a spare card and swap cards to switch systems.
+First boot expands the ROMS partition to fill the card, and that partition mounts on any PC or Mac.
+On Anbernic, Wi-Fi and SSH stay off until you ask for them, via `wifi.txt` and `authorized_keys` at
+the card root.
+
+**One card, more than one device.** Upstream MinUI ships every platform in a single zip, so one card
+boots anything it supports. Zero builds each platform separately, so a card carries only the build
+you installed. TrimUI and Miyoo can still share one: extract both zips onto it and they coexist, with
+`Roms`, `Saves` and `Bios` shared at the root while each device keeps its own settings under
+`.userdata/<platform>`. We have verified the two payloads do not collide, but have not booted a
+dual-device card end to end. Anbernic cannot join in, since it is a flashed image that owns the whole
+card. Note that battery saves carry between devices but save *states* may not, as they are tied to
+the emulator core's architecture.
 
 ## Anbernic RG35XX Plus / H (alpha)
 
