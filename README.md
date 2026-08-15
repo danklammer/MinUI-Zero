@@ -43,6 +43,15 @@ First boot expands the ROMS partition to fill the card, and that partition mount
 On Anbernic, Wi-Fi and SSH stay off until you ask for them, via `wifi.txt` and `authorized_keys` at
 the card root.
 
+**One card, more than one device.** Upstream MinUI ships every platform in a single zip, so one card
+boots anything it supports. Zero builds each platform separately, so a card carries only the build
+you installed. TrimUI and Miyoo can still share one: extract both zips onto it and they coexist, with
+`Roms`, `Saves` and `Bios` shared at the root while each device keeps its own settings under
+`.userdata/<platform>`. We have verified the two payloads do not collide, but have not booted a
+dual-device card end to end. Anbernic cannot join in, since it is a flashed image that owns the whole
+card. Note that battery saves carry between devices but save *states* may not, as they are tied to
+the emulator core's architecture.
+
 ---
 
 ## Why MinUI Zero?
