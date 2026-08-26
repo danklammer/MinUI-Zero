@@ -376,6 +376,25 @@ if [ "$MODE" = release ]; then
 	echo "  release gate (rootfs): no ssh key, no devmode.txt"
 fi
 
+# EVERY BOOT-CRITICAL SCRIPT MUST BE EXECUTABLE, asserted, not assumed. startup.sh calls
+# expand-roms.sh behind a [ -x ] guard, so a file that lands non-executable is not an error at
+# boot: the guard simply skips it, first boot never expands the card, and the failure is silent.
+# BaseOS shipped exactly this (expand-storage at 0644, guarded by [ -x ], first boot showed
+# NO SYSTEM FOUND) and closed it with a build-time guard. Borrowed, same reasoning: a chmod that
+# quietly did not take must fail the BUILD, not the device.
+for _crit in /opt/minui-zero/expand-roms.sh /opt/minui-zero/minui-frontend.sh \
+             /opt/muos/script/system/startup.sh; do
+	if [ ! -f "$R$_crit" ]; then
+		echo "ERROR: boot-critical script missing from the rootfs: $_crit"; exit 1
+	fi
+	if [ ! -x "$R$_crit" ]; then
+		echo "ERROR: boot-critical script is not executable: $_crit"
+		echo "       a [ -x ] guard would skip it at boot and the failure would be silent."
+		exit 1
+	fi
+done
+echo "  boot-critical scripts: present and executable"
+
 echo "  stripped rootfs size: $(du -sh $R | cut -f1)"
 echo "  building lean p5 (${P5_KB}k)..."
 mke2fs -q -F -t ext4 -d "$R" -L rootfs /a/out/p5.img ${P5_KB}k
