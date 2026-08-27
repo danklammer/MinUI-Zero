@@ -152,6 +152,18 @@ for a in sh mount umount mkdir ln rm cp mv cat echo sleep usleep sync hostname i
 done
 ln -sf /bin/busybox "$R/sbin/init"
 
+# /var/run -> /run and /var/lock -> /run/lock. wpa_supplicant opens its control socket under
+# /var/run/wpa_supplicant and simply fails without the path; the donor had these and the allowlist
+# did not carry them, because a denylist inherits the whole directory skeleton for free. Found on
+# the first boot of this rootfs (2026-08-27): device up, wifi dead.
+mkdir -p "$R/var" "$R/run/lock"
+ln -sfn /run "$R/var/run"
+ln -sfn /run/lock "$R/var/lock"
+# resolv.conf is written at DHCP time by usr/share/udhcpc/default.script, but the file has to exist
+# and be writable first, and /etc is on the read-write rootfs so a plain empty file is enough.
+: > "$R/etc/resolv.conf"
+chmod 644 "$R/etc/resolv.conf"
+
 # STRIP KERNEL MODULE DEBUG SYMBOLS. The donor ships them unstripped: mali_kbase.ko alone is
 # 17,586,616 bytes and becomes 720,624 (the size the running device actually has). The existing
 # denylist build has always done this (build-h700-stripped.sh:262); this builder did not, which is

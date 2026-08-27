@@ -1,0 +1,34 @@
+#!/bin/sh
+# busybox udhcpc REQUIRES this script. udhcpc itself only speaks DHCP: it obtains a lease and then
+# execs this to actually apply it. Without it the daemon runs, gets an address from the router, and
+# configures NOTHING, which looks exactly like "connected to wifi but no internet" (2026-08-27,
+# first boot of the allowlist rootfs).
+#
+# The muOS rootfs had one and our allowlist did not carry it, because the denylist build inherited
+# it invisibly. This is the standard busybox script, using only applets we ship (ifconfig, route).
+[ -z "$1" ] && echo "error: should be called from udhcpc" && exit 1
+
+RESOLV_CONF=/etc/resolv.conf
+[ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+[ -n "$subnet" ] && NETMASK="netmask $subnet"
+
+case "$1" in
+	deconfig)
+		ifconfig "$interface" 0.0.0.0
+		;;
+	renew|bound)
+		ifconfig "$interface" "$ip" $BROADCAST $NETMASK
+		if [ -n "$router" ]; then
+			while route del default gw 0.0.0.0 dev "$interface" 2>/dev/null; do :; done
+			for _r in $router; do
+				route add default gw "$_r" dev "$interface"
+			done
+		fi
+		: > "$RESOLV_CONF"
+		[ -n "$domain" ] && echo "search $domain" >> "$RESOLV_CONF"
+		for _d in $dns; do
+			echo "nameserver $_d" >> "$RESOLV_CONF"
+		done
+		;;
+esac
+exit 0
