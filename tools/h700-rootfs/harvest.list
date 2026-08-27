@@ -53,6 +53,13 @@
 # /etc/asound.conf uses only `type plug` and `type hw`, both built into libasound, and the shipping
 # device runs with that directory empty and audio working.
 /etc/asound.conf
+# THE CODEC ROUTING STATE. Without this there is NO SOUND, at any volume: the DAC-to-output mixer
+# switches (LINEOUT, OutputL Mixer DACL, OutputR Mixer DACR) power up OFF, and alsactl restore is
+# what turns them on. The launcher has always called alsactl restore, but on this rootfs there was
+# nothing to restore from and the call silently did nothing. Measured on-device 2026-08-27: volume
+# sat at 47/63 while all three switches read [off]. The launcher looks for it at the muOS path
+# first, so it is installed there.
+/opt/muos/device/control/asound.state
 /usr/sbin/alsactl
 /usr/bin/amixer
 
@@ -112,6 +119,13 @@
 /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko
 # mali_kbase: see the GPU note at the bottom. Kept by default, dropped by H700_NO_GPU=1.
 /lib/modules/4.9.170/kernel/drivers/video/gpu/mali_kbase.ko
+# BACKLIGHT. These never appear in lsmod as separate entries, so deriving the module list from a
+# running device missed them entirely and the first allowlist image had an EMPTY
+# /sys/class/backlight, i.e. no brightness control at all (2026-08-27). muOS got them via udev
+# autoload; we insmod them explicitly in rcS.
+/lib/modules/4.9.170/kernel/drivers/video/backlight/backlight.ko
+/lib/modules/4.9.170/kernel/drivers/video/backlight/lcd.ko
+/lib/modules/4.9.170/kernel/drivers/video/backlight/generic_bl.ko
 
 # ---- /etc -------------------------------------------------------------------------------------
 /etc/passwd

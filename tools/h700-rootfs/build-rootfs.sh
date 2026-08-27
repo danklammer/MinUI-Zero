@@ -178,7 +178,8 @@ for a in sh mount umount mkdir ln rm cp mv cat echo sleep usleep sync hostname i
          killall pgrep pkill ps grep sed awk head tail cut tr basename dirname date df du \
          mountpoint poweroff reboot halt init udhcpc ip ifconfig route nc wc sort uniq find touch \
          chmod stat readlink env printf test true false uname \
-         fdisk mkfs.vfat partprobe blockdev dd; do
+         fdisk mkfs.vfat partprobe blockdev dd \
+         ls md5sum tee xargs seq expr kill more vi; do
 	ln -sf /bin/busybox "$R/bin/$a" 2>/dev/null || true
 done
 ln -sf /bin/busybox "$R/sbin/init"
@@ -229,10 +230,15 @@ cp -a /a/overlay/. "$R/"
 cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
 chmod +x "$R/init" "$R/etc/init.d/rcS" "$R/opt/minui-zero/expand-roms.sh"
 
-# ld.so.cache is REGENERATED, never harvested: a donor cache describes libraries we did not copy.
-echo "  ldconfig..."
+# NO ld.so.cache. The build host is amd64 and its ldconfig writes a cache the aarch64 loader cannot
+# read, which is WORSE than having none: with the bad cache in place the loader failed to find
+# libasound and even libm, so anything not launched with an explicit LD_LIBRARY_PATH was broken
+# (measured on-device 2026-08-27: amixer ran only when handed /usr/lib:/lib by hand, which is why
+# the launcher worked and everything else did not). With no cache, glibc falls back to its built-in
+# trusted directories, which are exactly /lib and /usr/lib on this layout.
+echo "  ld.so.conf (deliberately no cache: a host-built one is the wrong architecture)..."
 printf "/lib\n/usr/lib\n" > "$R/etc/ld.so.conf"
-ldconfig -r "$R" 2>/dev/null || echo "    (ldconfig unavailable for the target; cache will build at first boot)"
+rm -f "$R/etc/ld.so.cache"
 
 echo "  closure check: every retained ELF must resolve inside this rootfs..."
 # Read into a list first: an unquoted $(find) word-splits, and one path with a space would report

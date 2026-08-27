@@ -56,6 +56,16 @@ fi
 ( [ -f /lib/modules/4.9.170/kernel/drivers/video/gpu/mali_kbase.ko ] && \
   insmod /lib/modules/4.9.170/kernel/drivers/video/gpu/mali_kbase.ko 2>/dev/null ) &
 
+# BACKLIGHT. Ordered before the hand-off because the launcher sets brightness at startup and an
+# empty /sys/class/backlight means it silently cannot. backlight.ko and lcd.ko are the class
+# providers, generic_bl.ko the driver; they load in that order and cost ~0 because they are tiny.
+# muOS got these through udev autoload, which we do not run, and their absence is invisible in
+# lsmod on a working device, which is exactly why the first build missed them.
+for _m in backlight lcd generic_bl; do
+	insmod "/lib/modules/4.9.170/kernel/drivers/video/backlight/$_m.ko" 2>/dev/null
+done
+[ -e /sys/class/backlight ] && mark backlight
+
 mark modules
 
 # --- hand off ------------------------------------------------------------------------------------
