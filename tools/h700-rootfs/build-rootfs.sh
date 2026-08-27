@@ -29,6 +29,12 @@ for f in "$LIST" "$DONOR"; do
 done
 [ -d "$OVERLAY" ] || { echo "ERROR: missing overlay dir: $OVERLAY"; exit 1; }
 mkdir -p "$OUT"
+# Artifact name carries the mode. Both builds used to write p5-lean.img, so building a release
+# silently replaced the dev rootfs at the same path and the next image shipped with no ssh key
+# (caught 2026-08-27 before it cost a third flash cycle).
+MODE="${H700_MODE:-dev}"
+OUTNAME="p5-lean.img"
+[ "$MODE" = release ] && OUTNAME="p5-lean-release.img"
 
 # The allowlist is filtered HERE rather than inside the container, so the no-GPU variant is visible
 # in the build log and cannot silently disagree with what got installed.
@@ -51,7 +57,6 @@ cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
 # allowlist image had no key, dropbear therefore refused to start (by design, it is key-auth only),
 # and every flash produced a device that ran perfectly and could not be reached (2026-08-27). Two
 # wasted flash cycles before the cause was obvious.
-MODE="${H700_MODE:-dev}"
 rm -f "$ASSETS/authorized_keys"
 if [ "$MODE" = dev ]; then
 	cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
@@ -72,7 +77,7 @@ rm -rf "$ASSETS/overlay"; cp -R "$OVERLAY" "$ASSETS/overlay"
 
 # NOTE: no apostrophes anywhere inside the docker block below. It is one single-quoted string and
 # an apostrophe closes it early, which is a confusing failure a long way from its cause.
-docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e SIZE_KB="$SIZE_KB" -e H700_MODE_IN="$MODE" tg5040-toolchain /bin/bash -c '
+docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e SIZE_KB="$SIZE_KB" -e H700_MODE_IN="$MODE" -e OUTNAME="$OUTNAME" tg5040-toolchain /bin/bash -c '
 set -e
 D=/work/donor
 R=/work/lean
@@ -315,8 +320,8 @@ du -a "$R" 2>/dev/null | sort -rn | head -12 | awk -v r="$R" "{ sub(r, \"\", \$2
 # data=ordered and the kernel rejects that on a journal-less fs. Both learned from BaseOS docs/00.
 mke2fs -q -F -t ext4 \
 	-O ^metadata_csum,^metadata_csum_seed,^64bit,has_journal \
-	-d "$R" -L rootfs /a/out/p5-lean.img ${SIZE_KB}k
-echo "  wrote p5-lean.img"
+	-d "$R" -L rootfs "/a/out/$OUTNAME" ${SIZE_KB}k
+echo "  wrote $OUTNAME"
 '
 
 ls -l "$OUT/p5-lean.img" 2>/dev/null | awk '{printf "  %s  %.1f MB\n", $9, $5/1048576}'
