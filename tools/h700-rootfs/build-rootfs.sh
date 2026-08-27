@@ -151,6 +151,24 @@ for a in sh mount umount mkdir ln rm cp mv cat echo sleep usleep sync hostname i
 done
 ln -sf /bin/busybox "$R/sbin/init"
 
+# STRIP KERNEL MODULE DEBUG SYMBOLS. The donor ships them unstripped: mali_kbase.ko alone is
+# 17,586,616 bytes and becomes 720,624 (the size the running device actually has). The existing
+# denylist build has always done this (build-h700-stripped.sh:262); this builder did not, which is
+# the entire reason /lib/modules measured 20.5MB here against ~4MB on-device. Same tool, same flag.
+KOSTRIP=$(command -v aarch64-linux-gnu-strip 2>/dev/null || echo /opt/aarch64-linux-gnu/bin/aarch64-linux-gnu-strip)
+if [ -x "$KOSTRIP" ] || command -v "$KOSTRIP" >/dev/null 2>&1; then
+	_before=$(du -sk "$R/lib/modules" 2>/dev/null | cut -f1)
+	find "$R/lib/modules" -name "*.ko" -exec "$KOSTRIP" --strip-debug {} + 2>/dev/null || true
+	_after=$(du -sk "$R/lib/modules" 2>/dev/null | cut -f1)
+	echo "  kernel modules: ${_before}k -> ${_after}k after debug-strip"
+	# A strip that silently did nothing would quietly cost 17MB, so say so rather than assume.
+	if [ "${_after:-0}" -ge "${_before:-0}" ]; then
+		echo "  WARNING: strip had no effect; modules are still carrying debug symbols"
+	fi
+else
+	echo "  WARNING: no aarch64 strip found; modules keep their debug symbols (+17MB)"
+fi
+
 echo "  overlay (wins over everything)..."
 cp -a /a/overlay/. "$R/"
 cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
