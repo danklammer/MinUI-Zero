@@ -1,25 +1,17 @@
 #!/bin/sh
-# h700 GB/GBC pak — hosted-dev. minarch + gambatte, measured panel rate, ALSA-direct audio.
+# h700 GB pak. Standard MinUI boilerplate: the launcher entry point
+# (paks/MinUI.pak/launch.sh, or the OS-side minui-frontend.sh on our image) exports every path,
+# PATH, LD_LIBRARY_PATH, the measured panel rate and the ALSA driver, so a pak only names its core.
+# Normalized 2026-08-26 from bespoke per-pak scripts that re-exported all of it 15 times over.
+
+EMU_EXE=gambatte
+
+###############################
+
 EMU_TAG=$(basename "$(dirname "$0")" .pak)
 ROM="$1"
-
-export PLATFORM="h700"
-export SDCARD_PATH="/mnt/mmc"
-export SYSTEM_PATH="$SDCARD_PATH/.system/$PLATFORM"
-export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
-export LOGS_PATH="$USERDATA_PATH/logs"
-export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
-export SAVES_PATH="$SDCARD_PATH/Saves"
-export BIOS_PATH="$SDCARD_PATH/Bios"
-export CORES_PATH="$SYSTEM_PATH/cores"
-# make-built binaries link libmsettings.so (shipped in .system/h700/lib)
-export LD_LIBRARY_PATH="$SYSTEM_PATH/lib:$LD_LIBRARY_PATH"
-# Panel measured 59.9777 Hz (panelprobe 2026-08-04)
-export MINARCH_PANEL_FPS=59.9777
-# ALSA-direct audio (pipewire removed): SDL's alsa backend opens "default", which asound.conf
-# routes straight to the codec (plug -> hw:0,0). The codec is unmuted/routed at boot by the
-# trimmed pipewire.sh (alsactl restore); minui drives the digital-volume mixer.
-export SDL_AUDIODRIVER=alsa
-
-mkdir -p "$LOGS_PATH" "$SAVES_PATH/$EMU_TAG" "$SHARED_USERDATA_PATH/.minui"
-"$SYSTEM_PATH/bin/minarch.elf" "$CORES_PATH/gambatte_libretro.so" "$ROM" > "$LOGS_PATH/$EMU_TAG.txt" 2>&1
+mkdir -p "$BIOS_PATH/$EMU_TAG"
+mkdir -p "$SAVES_PATH/$EMU_TAG"
+HOME="$USERDATA_PATH"
+cd "$HOME"
+minarch.elf "$CORES_PATH/${EMU_EXE}_libretro.so" "$ROM" > "$LOGS_PATH/$EMU_TAG.txt" 2>&1

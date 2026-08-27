@@ -32,6 +32,13 @@ export PATH=/mnt/mmc/.system/h700/bin:$PATH
 # codec init (alsactl restore) at boot; ALSA routes default->hw directly (asound.conf); minui and
 # the emu paks use SDL_AUDIODRIVER=alsa. Nothing audio-related to do here.
 export SDL_VIDEODRIVER=dummy
+# DEVICE properties, not per-system ones, so they belong to the entry point rather than to each of
+# the 15 emu paks that used to repeat them verbatim (2026-08-26).
+# Panel measured 59.9777 Hz (panelprobe 2026-08-04); minarch paces against the real rate, not 60.
+export MINARCH_PANEL_FPS=59.9777
+# ALSA-direct: pipewire is stripped from the image, and asound.conf routes "default" straight to the
+# codec (plug -> hw:0,0). SDL must not go looking for a sound server that is not there.
+export SDL_AUDIODRIVER=alsa
 
 LOG=/mnt/mmc/minui-zero.log
 : > "$LOG" 2>/dev/null
