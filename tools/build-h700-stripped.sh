@@ -114,6 +114,23 @@ TOTAL=$((P6_LAST + 40))
 
 mkdir -p "$OUT_DIR"
 
+# ---- p5 -----------------------------------------------------------------------------------------
+# H700_P5 lets an externally built rootfs stand in for the denylist-stripped one, so the allowlist
+# build (tools/h700-rootfs/build-rootfs.sh) can be flashed without duplicating the boot chain, GPT
+# and FAT payload work that lives below. Everything after this point is identical either way.
+if [ -n "$H700_P5" ]; then
+	[ -f "$H700_P5" ] || { echo "ERROR: H700_P5=$H700_P5 does not exist"; exit 1; }
+	# It must fit the slot, or dd would silently write past p5 and corrupt p6.
+	_p5_bytes=$(stat -f%z "$H700_P5" 2>/dev/null || stat -c%s "$H700_P5" 2>/dev/null || echo 0)
+	_slot_bytes=$((P5_SECTORS * 512))
+	if [ "$_p5_bytes" -gt "$_slot_bytes" ]; then
+		echo "ERROR: $H700_P5 is $_p5_bytes bytes but the p5 slot is only $_slot_bytes"
+		exit 1
+	fi
+	echo "== using externally built p5: $H700_P5 ($((_p5_bytes / 1048576)) MB into a $((_slot_bytes / 1048576)) MB slot) =="
+	cp "$H700_P5" "$OUT_DIR/p5.img"
+else
+
 # ---- p5: extract muOS rootfs, strip, inject our launcher, rebuild (all in the container) ----
 echo "== extracting + stripping muOS rootfs (this takes a few minutes) =="
 cp "$REPO/tools/h700-strip/minui-frontend.sh" "$ASSETS/minui-frontend.sh"
@@ -399,6 +416,7 @@ echo "  stripped rootfs size: $(du -sh $R | cut -f1)"
 echo "  building lean p5 (${P5_KB}k)..."
 mke2fs -q -F -t ext4 -d "$R" -L rootfs /a/out/p5.img ${P5_KB}k
 '
+fi
 
 # ---- p6: FAT32 ROMS + our minui payload (mtools, no mount) ----
 echo "== building FAT ROMS payload (p6) =="

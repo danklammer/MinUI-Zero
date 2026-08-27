@@ -93,6 +93,89 @@ apply_volume
 echo schedutil > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
 echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)" >> "$LOG"
 
+# --- wifi + ssh, opt-in, and portable across OS layers -------------------------------------------
+# THIS LIVES HERE, NOT IN THE OS LAYER. It used to sit in the OS-side minui-frontend.sh, which meant
+# a rootfs that did not ship that script had no networking at all and, worse, no ssh, which is the
+# only diagnostic when a boot fails on a device whose kernel has no framebuffer console. Keeping it
+# on the card also means it works unchanged on any OS layer, since wifi.txt lives on the card too.
+#
+# Credentials are USER-SUPPLIED and never baked into an image: wifi.txt at the card root, one
+# "SSID:password" line, # comments. No wifi.txt means none of this runs and the radio stays down,
+# which is the efficient default MinUI wants anyway.
+WIFI_TXT="$SDCARD_PATH/wifi.txt"
+( if [ -f "$WIFI_TXT" ]; then
+	_line=$(sed '/^#/d;/^[[:space:]]*$/d' "$WIFI_TXT" | head -1)
+	_ssid=${_line%%:*}; _psk=${_line#*:}
+	if [ -n "$_ssid" ] && [ "$_ssid" != "$_line" ]; then
+		if [ -x /opt/muos/script/system/network.sh ] && [ -f /opt/muos/script/var/func.sh ]; then
+			# muOS layer: delegate to its proven bring-up (driver load, scan, wpa_passphrase, dhcp,
+			# validate, keepalive with the rtw_power_mgnt=0 idle-drop fix). Hand-rolling this is what
+			# broke wifi repeatedly, so on that layer we do not.
+			( . /opt/muos/script/var/func.sh
+			  SET_VAR "config" "network/ssid"   "$_ssid"
+			  SET_VAR "config" "network/pass"   "$_psk"
+			  SET_VAR "config" "network/hidden" "0"
+			  SET_VAR "config" "network/type"   "0"
+			  SET_VAR "config" "settings/network/con_retry"  "3"
+			  SET_VAR "config" "settings/network/monitor"    "1" )
+			/opt/muos/script/system/network.sh connect >> "$LOG" 2>&1 &
+		else
+			# Bare OS layer: wpa_supplicant directly. The module is already loaded by rcS when
+			# wifi.txt exists, so the interface should be present; wait briefly rather than assume.
+			for _i in 1 2 3 4 5 6 7 8 9 10; do
+				[ -d /sys/class/net/wlan0 ] && break
+				sleep 1
+			done
+			ifconfig wlan0 up 2>/dev/null
+			_conf=/tmp/wpa.conf
+			{ echo "ctrl_interface=/var/run/wpa_supplicant"
+			  echo "network={"
+			  echo "	ssid=\"$_ssid\""
+			  echo "	psk=\"$_psk\""
+			  echo "}"; } > "$_conf"
+			chmod 600 "$_conf"
+			wpa_supplicant -B -i wlan0 -c "$_conf" >> "$LOG" 2>&1
+			# udhcpc, not dhcpcd: busybox provides it and it is already in the rootfs.
+			udhcpc -i wlan0 -b -q >> "$LOG" 2>&1 &
+		fi
+		# RECONNECT MONITOR. The bring-up is one-shot on both layers, and one bad roll on early boot
+		# left the device offline until the next reboot (seen live 2026-08-10). NOTE: ifconfig, not
+		# `ip`: this busybox has no ip applet (verified 2026-08-27), so the old check silently
+		# succeeded forever and the monitor never fired.
+		( _down=0
+		  while : ; do
+			sleep 45
+			[ -f "$WIFI_TXT" ] || continue
+			if ifconfig wlan0 2>/dev/null | grep -q "inet addr"; then _down=0; continue; fi
+			_down=$((_down + 1))
+			if [ "$_down" -ge 2 ]; then
+				echo "wifi monitor: offline, retrying" >> "$LOG"
+				if [ -x /opt/muos/script/system/network.sh ]; then
+					/opt/muos/script/system/network.sh connect >> "$LOG" 2>&1
+				else
+					udhcpc -i wlan0 -b -q >> "$LOG" 2>&1
+				fi
+				_down=0
+			fi
+		  done ) &
+	fi
+  fi
+  # SSH via dropbear, key-auth only. A release image ships no key, so this is opt-in exactly like
+  # wifi: drop your public key at the card root as authorized_keys. The card is the only writable
+  # surface a user has before ssh works, so requiring them to edit /root/.ssh first is a
+  # chicken-and-egg. No key means no daemon at all rather than an idle listening port.
+  mkdir -p /root/.ssh 2>/dev/null
+  [ -s "$SDCARD_PATH/authorized_keys" ] && cp "$SDCARD_PATH/authorized_keys" /root/.ssh/authorized_keys 2>/dev/null
+  chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null
+  DBM="$SYSTEM_PATH/bin/dropbearmulti"
+  DBKEY="$USERDATA_PATH/dropbear_ed25519_host_key"
+  if [ -x "$DBM" ] && [ -s /root/.ssh/authorized_keys ] && ! pgrep dropbearmulti >/dev/null 2>&1; then
+	[ -f "$DBKEY" ] || "$DBM" dropbearkey -t ed25519 -f "$DBKEY" 2>/dev/null
+	"$DBM" dropbear -r "$DBKEY" -p 22 2>/dev/null
+  fi
+  echo "net: $(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p') ssh=$(pgrep dropbearmulti >/dev/null && echo up || echo down)" >> "$LOG"
+) &
+
 # --- boot-time readahead ----------------------------------------------------------------------
 # The FIRST launch after a boot is the slow one: everything it touches is cold on a ~10MB/s card.
 # MEASURED 2026-08-10: 4348ms cold vs 707ms warm. Pull that fixed cost into the seconds after boot
