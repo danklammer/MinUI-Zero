@@ -52,27 +52,92 @@ D=/work/donor
 R=/work/lean
 rm -rf "$D" "$R"; mkdir -p "$D" "$R"
 
-echo "  rdump donor (2.6GB, be patient)..."
-debugfs -R "rdump / $D" /a/muos-p5.img 2>/dev/null
+# CACHE THE RDUMP, AS A TAR. Extracting the 8GB donor takes minutes and its contents never change,
+# so it is done once and reused; iterating on the allowlist is the actual work and it must cost
+# seconds, not minutes.
+#
+# The cache is a TAR, not a directory tree, and that is deliberate. The first version rdumped
+# straight into the bind-mounted /a and SILENTLY LOST the real 44MB /usr/lib/libmali.so, leaving
+# only its dangling .so.0/.so.1 symlinks, so the next build reported seven allowlist entries as
+# "missing from the donor" that were present all along. A single tar written inside the container
+# and only then moved onto the shared volume avoids per-file behaviour differences entirely.
+# Errors from debugfs are NO LONGER discarded: hiding them is what made the loss silent.
+if [ -f /a/donor-cache.tar ]; then
+	echo "  restoring cached donor extract..."
+	mkdir -p "$D"
+	tar -xf /a/donor-cache.tar -C "$D"
+else
+	echo "  rdump donor (2.6GB, be patient; cached for next time)..."
+	debugfs -R "rdump / $D" /a/muos-p5.img 2> /tmp/rdump.err || true
+	if [ -s /tmp/rdump.err ]; then
+		echo "    debugfs reported:"; head -5 /tmp/rdump.err | sed "s/^/      /"
+	fi
+	echo "  caching the extract..."
+	tar -cf /tmp/donor-cache.tar -C "$D" . && mv /tmp/donor-cache.tar /a/donor-cache.tar
+fi
+
+# VALIDATE THE DONOR before trusting it. A truncated or partial extract must fail here, loudly,
+# rather than turn into a rootfs that is missing files nobody notices until the device will not boot.
+_want_big=$(find "$D/usr/lib" -maxdepth 1 -type f -size +30M 2>/dev/null | wc -l)
+_files=$(find "$D" -type f 2>/dev/null | wc -l)
+echo "  donor: $_files files, $_want_big large libs in /usr/lib"
+if [ "$_files" -lt 10000 ]; then
+	echo "ERROR: donor extract has only $_files files, which cannot be a full rootfs."
+	echo "       Delete /a/donor-cache.tar and re-run to re-extract."
+	exit 1
+fi
 
 echo "  copying the allowlist..."
+# SYMLINKS ARE KEPT AS SYMLINKS, AND THEIR TARGETS COME ALONG.
+# Every soname in this donor is a link to a versioned file (libz.so.1 -> libz.so.1.3.1), and
+# libmali.so has six aliases (libEGL.so, libGLESv2.so, ...) all pointing at the same 42.5MB blob.
+# cp -aH dereferences, which fixed the sonames but wrote SEVEN copies of libmali (297MB, overflowed
+# the partition). Plain cp -a fixed that and left 20 sonames dangling. So: copy the link verbatim,
+# then follow it and copy what it points at, recursively. One real file, links beside it, nothing
+# dangling, no duplication.
 MISSING=0
+copy_one() {
+	_p="$1"; _depth="${2:-0}"
+	[ "$_depth" -gt 8 ] && return 0          # symlink loop guard
+	_src="$D$_p"
+	[ -e "$_src" ] || [ -L "$_src" ] || { return 1; }
+	[ -e "$R$_p" ] || [ -L "$R$_p" ] && [ "$_depth" -gt 0 ] && return 0
+	mkdir -p "$R$(dirname "$_p")"
+	cp -a "$_src" "$R$_p" 2>/dev/null || true
+	if [ -L "$_src" ]; then
+		_t=$(readlink "$_src")
+		case "$_t" in
+			/*) _tp="$_t" ;;
+			*)  _tp="$(dirname "$_p")/$_t" ;;
+		esac
+		copy_one "$_tp" $((_depth + 1))
+	fi
+	return 0
+}
 while IFS= read -r p; do
-	src="$D$p"
-	if [ ! -e "$src" ]; then
+	if ! copy_one "$p" 0; then
 		echo "    MISSING FROM DONOR: $p"
 		MISSING=$((MISSING + 1))
-		continue
 	fi
-	mkdir -p "$R$(dirname "$p")"
-	# -a preserves the symlinks the loader depends on; -H follows a top-level symlinked dir so a
-	# soname path becomes a real file rather than a dangling link into a tree we did not copy.
-	cp -aH "$src" "$R$p" 2>/dev/null || cp -a "$src" "$R$p"
 done < /a/harvest.active
 if [ "$MISSING" -gt 0 ]; then
 	echo "ERROR: $MISSING allowlist entries are absent from the donor; the list and the donor disagree"
 	exit 1
 fi
+
+# NOTHING MAY DANGLE. Preserving symlinks is only safe if the allowlist also carries their targets;
+# a dangling libEGL.so is a third-party pak that dies at dlopen with a confusing message.
+echo "  dangling symlink check..."
+DANGLE=0
+find "$R" -type l > /tmp/links
+while IFS= read -r l; do
+	[ -e "$l" ] || { echo "    DANGLING: $(echo "$l" | sed "s|$R||") -> $(readlink "$l")"; DANGLE=$((DANGLE + 1)); }
+done < /tmp/links
+if [ "$DANGLE" -gt 0 ]; then
+	echo "ERROR: $DANGLE dangling symlinks. Add their targets to harvest.list."
+	exit 1
+fi
+echo "    no dangling symlinks"
 
 echo "  busybox applet symlinks..."
 mkdir -p "$R/bin" "$R/sbin" "$R/usr/bin" "$R/usr/sbin" "$R/etc/init.d" "$R/proc" "$R/sys" "$R/dev" \
@@ -136,6 +201,8 @@ done
 echo "    ok"
 
 echo "  size: $(du -sh $R | cut -f1)"
+echo "  biggest contributors:"
+du -a "$R" 2>/dev/null | sort -rn | head -12 | awk -v r="$R" "{ sub(r, \"\", \$2); printf \"    %8.1f MB  %s\\n\", \$1/1024, \$2 }"
 
 # 4.9-SAFE EXT4. mke2fs 1.47 defaults (metadata_csum, metadata_csum_seed, 64bit) are not mountable
 # by this vendor kernel, and the journal is REQUIRED because the vendor initramfs mounts root

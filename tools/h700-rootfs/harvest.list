@@ -45,8 +45,13 @@
 # ---- audio: ALSA direct, no sound server ------------------------------------------------------
 # pipewire is deliberately absent; asound.conf routes "default" straight to the codec (plug -> hw).
 /usr/lib/libasound.so.2
-/usr/lib/alsa-lib/
 /usr/share/alsa/
+# NOT /usr/lib/alsa-lib/. The donor keeps ALSA plugin modules there, and the only two it has are
+# libasound_module_{ctl,pcm}_pipewire.so, which reference a libpipewire we deliberately delete.
+# The allowlist build caught them as unresolved on its first run (2026-08-27) - the denylist image
+# has been shipping two broken plugins pointing at a library that is not there. We need NO plugins:
+# /etc/asound.conf uses only `type plug` and `type hw`, both built into libasound, and the shipping
+# device runs with that directory empty and audio working.
 /etc/asound.conf
 /usr/sbin/alsactl
 /usr/bin/amixer
