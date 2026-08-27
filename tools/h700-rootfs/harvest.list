@@ -3,9 +3,8 @@
 # WHY AN ALLOWLIST. Our shipping image is built by DENYLIST: rdump the muOS rootfs, then delete what
 # we remembered to name. That only removes what someone thought of, which is how bluetoothd (1.4MB)
 # and dbus-daemon are still sitting in a rootfs for a device with no Bluetooth feature. Enumerating
-# what we keep makes the omissions loud instead of silent. The idea is BaseOS's
-# (github.com/pvaibhav/BaseOS, docs/01-rootfs-and-init.md); the contents below are ours, computed
-# from our own binaries.
+# what we keep makes the omissions loud instead of silent. The contents below are computed from our
+# own binaries, not copied from anywhere.
 #
 # HOW THIS LIST WAS DERIVED, not guessed: ldd over minui.elf, minarch.elf and libmsettings.so on the
 # device (2026-08-26), plus the things ldd cannot see because they are dlopened or exec'd. 34 closure
@@ -17,8 +16,8 @@
 # Syntax: one path per line. A trailing / means the whole directory. '#' comments.
 
 # ---- dynamic loader + glibc core -------------------------------------------------------------
-# The interp symlink MUST exist or every dynamic binary on the system is dead (BaseOS learned this
-# the hard way; nothing reports it, the device just does not boot).
+# The interp symlink MUST exist or every dynamic binary on the system is dead. Nothing reports it;
+# the device simply does not boot.
 /lib/ld-linux-aarch64.so.1
 /lib/libc.so.6
 /lib/libm.so.6

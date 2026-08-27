@@ -8,7 +8,7 @@ their CPU-scaling design against ours.
 NextUI does **not** publish a formal temperature table. Their numbers live in two places:
 1. **A runtime debug HUD** — v2.5.1 (2025-03-24) "Added cpu temperature in celsius to debug HUD".
 2. **PR #695** (merged v6.11.0, 2026-05-14, "Replace userspace CPU governor with kernel scaling
-   governors", by pvaibhav). The money quote:
+   governors"). The money quote:
 
    > "the biggest positive impact of this PR is significant reduction in CPU usage by the
    > userspace governor thread and correspondingly **significant reduction in core temperature

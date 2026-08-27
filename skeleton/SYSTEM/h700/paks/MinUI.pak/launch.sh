@@ -8,13 +8,12 @@
 # card, which (a) breaks the MinUI pak contract every other platform honours and (b) makes the
 # frontend un-runnable on any OS layer other than our own muOS strip.
 #
-# PORTABLE ON PURPOSE. BaseOS (github.com/pvaibhav/BaseOS) is a minimal H700 OS that hands off with
-#     exec /bin/sh "$SD/.system/h700/paks/MinUI.pak/launch.sh"
-# which is exactly this path. Everything muOS-specific below is guarded by a file test, so this
-# script runs unmodified on our image and on a bare OS that only mounts the card and execs us.
+# PORTABLE ON PURPOSE. Everything muOS-specific below is guarded by a file test, so this script
+# runs unmodified on our own image and on any bare OS layer that merely mounts the card and execs
+# this path.
 # Things the OS layer owns and this script must NOT duplicate: wifi, ssh, kernel modules, mounts.
 
-# --- where is the card? muOS mounts it at /mnt/mmc, BaseOS at /mnt/sdcard --------------------
+# --- where is the card? muOS mounts it at /mnt/mmc; a bare OS layer may use /mnt/sdcard --------
 if [ -d /mnt/mmc/.system/h700 ]; then
 	export SDCARD_PATH="/mnt/mmc"
 elif [ -d /mnt/sdcard/.system/h700 ]; then

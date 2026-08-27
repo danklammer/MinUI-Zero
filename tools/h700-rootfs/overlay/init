@@ -4,8 +4,8 @@
 #
 # THIS MUST BE A REGULAR FILE, NOT A SYMLINK. The 2015-era switch_root in the vendor initramfs
 # fails on a symlink chain, and the failure is silent: no console (CONFIG_FRAMEBUFFER_CONSOLE is
-# off on this kernel), just a device that never boots. Learned from BaseOS docs/01, which lost a
-# flash round to exactly this.
+# off on this kernel), just a device that never boots. This is a known trap on this boot chain and
+# costs a whole flash round to rediscover, so it is written down here.
 #
 # All this does is hand over to busybox init, which reads /etc/inittab.
 exec /bin/busybox init

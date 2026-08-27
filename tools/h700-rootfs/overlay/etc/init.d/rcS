@@ -4,7 +4,7 @@
 #
 # CONTEXT: the shipping image inherits muOS's init, which reaches our frontend at kernel uptime
 # 4.82s (measured 2026-08-26). Roughly 3s of that is muOS bringing up a feature set we deleted.
-# BaseOS reaches frontend hand-off at 2.80s on the same silicon, so the target here is under 3.2s.
+# A purpose-built init reaches hand-off in under 3s on this silicon, so that is the target here.
 #
 # NO CONSOLE ON FAILURE. CONFIG_FRAMEBUFFER_CONSOLE is off on this 4.9 kernel, so a boot that dies
 # in here shows a frozen splash and nothing else. Every stage therefore writes a marker to the FAT
@@ -48,7 +48,7 @@ fi
 # GPU: MEASURED 2026-08-26 that our stack never touches it. SDL here has only the "mali" video
 # driver, we run SDL_VIDEODRIVER=dummy so video init fails outright, and we present through the DE
 # hardware scaler; neither the menu nor a running game maps libmali/libEGL/libGLES or opens
-# /dev/mali0. BaseOS measured this insmod at ~0.73s, which is a quarter of our entire budget.
+# /dev/mali0. This insmod costs ~0.73s, roughly a quarter of the entire boot budget.
 #
 # So it is loaded in the BACKGROUND, after the hand-off below: off the critical path, but present a
 # second later for any third-party pak that does want GLES. H700_NO_GPU=1 omits the module from the
@@ -71,7 +71,7 @@ mark modules
 # --- hand off ------------------------------------------------------------------------------------
 # The launcher entry point lives ON THE CARD and owns everything above the hardware: env, audio
 # codec, governor, wifi credentials, ssh, boot-to-game and the relaunch loop. This is the same
-# contract every other MinUI platform uses, and the same one BaseOS hands off to.
+# contract every other MinUI platform uses.
 LAUNCH=/mnt/mmc/.system/h700/paks/MinUI.pak/launch.sh
 if [ -f "$LAUNCH" ]; then
 	cat "$STAGE" >> /mnt/mmc/boot-stage.txt 2>/dev/null

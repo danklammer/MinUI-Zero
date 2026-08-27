@@ -5,8 +5,8 @@
 # list. That only removes what someone remembered to name: bluetoothd (1.4MB) and dbus-daemon are
 # still in the shipping image today, on a device with no Bluetooth feature. This builds the other
 # way round, from tools/h700-rootfs/harvest.list, so anything not enumerated is simply absent and
-# a missing dependency fails the BUILD instead of the device. Approach borrowed from BaseOS
-# (github.com/pvaibhav/BaseOS); the contents are ours, computed from our own binaries.
+# a missing dependency fails the BUILD instead of the device. The list is ours, computed from our
+# own binaries.
 #
 # Usage:
 #   sh tools/h700-rootfs/build-rootfs.sh                 # normal build, GPU blob included
@@ -323,7 +323,8 @@ du -a "$R" 2>/dev/null | sort -rn | head -12 | awk -v r="$R" "{ sub(r, \"\", \$2
 
 # 4.9-SAFE EXT4. mke2fs 1.47 defaults (metadata_csum, metadata_csum_seed, 64bit) are not mountable
 # by this vendor kernel, and the journal is REQUIRED because the vendor initramfs mounts root
-# data=ordered and the kernel rejects that on a journal-less fs. Both learned from BaseOS docs/00.
+# data=ordered and the kernel rejects that on a journal-less fs. Both are hard requirements of this
+# boot chain, discovered the expensive way.
 mke2fs -q -F -t ext4 \
 	-O ^metadata_csum,^metadata_csum_seed,^64bit,has_journal \
 	-d "$R" -L rootfs "/a/out/$OUTNAME" ${SIZE_KB}k

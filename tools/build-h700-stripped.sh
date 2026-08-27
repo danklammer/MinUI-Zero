@@ -396,9 +396,9 @@ fi
 # EVERY BOOT-CRITICAL SCRIPT MUST BE EXECUTABLE, asserted, not assumed. startup.sh calls
 # expand-roms.sh behind a [ -x ] guard, so a file that lands non-executable is not an error at
 # boot: the guard simply skips it, first boot never expands the card, and the failure is silent.
-# BaseOS shipped exactly this (expand-storage at 0644, guarded by [ -x ], first boot showed
-# NO SYSTEM FOUND) and closed it with a build-time guard. Borrowed, same reasoning: a chmod that
-# quietly did not take must fail the BUILD, not the device.
+# This exact failure (an expander shipped 0644, guarded by [ -x ], first boot showing NO SYSTEM
+# FOUND) is a known one on this class of image. Same reasoning applies: a chmod that quietly did
+# not take must fail the BUILD, not the device.
 for _crit in /opt/minui-zero/expand-roms.sh /opt/minui-zero/minui-frontend.sh \
              /opt/muos/script/system/startup.sh; do
 	if [ ! -f "$R$_crit" ]; then
