@@ -42,6 +42,21 @@ fi
 echo "  allowlist entries: $(wc -l < "$ASSETS/harvest.active" | tr -d ' ')"
 
 cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
+
+# DEV SSH KEY, same contract as build-h700-stripped.sh. A dev image bakes in the builder public key
+# so a freshly flashed card is reachable immediately; a release image ships none and the launcher
+# installs whatever key the user drops at the card root instead.
+#
+# This exists because H700_P5 skips the branch of build-h700-stripped.sh that used to do it, so an
+# allowlist image had no key, dropbear therefore refused to start (by design, it is key-auth only),
+# and every flash produced a device that ran perfectly and could not be reached (2026-08-27). Two
+# wasted flash cycles before the cause was obvious.
+MODE="${H700_MODE:-dev}"
+rm -f "$ASSETS/authorized_keys"
+if [ "$MODE" = dev ]; then
+	cp "$HOME/.ssh/tg5040_dev.pub" "$ASSETS/authorized_keys" 2>/dev/null || true
+	[ -s "$ASSETS/authorized_keys" ] && echo "  dev ssh key staged" || echo "  WARNING: no dev key at ~/.ssh/tg5040_dev.pub; image will be unreachable"
+fi
 # Collect the binaries that will live on the CARD so the container can check them against the
 # rootfs it is about to build (see the card-payload closure check).
 rm -rf "$ASSETS/cardbins"; mkdir -p "$ASSETS/cardbins"
@@ -57,7 +72,7 @@ rm -rf "$ASSETS/overlay"; cp -R "$OVERLAY" "$ASSETS/overlay"
 
 # NOTE: no apostrophes anywhere inside the docker block below. It is one single-quoted string and
 # an apostrophe closes it early, which is a confusing failure a long way from its cause.
-docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e SIZE_KB="$SIZE_KB" tg5040-toolchain /bin/bash -c '
+docker run --rm --platform linux/amd64 -v "$ASSETS:/a" -e SIZE_KB="$SIZE_KB" -e H700_MODE_IN="$MODE" tg5040-toolchain /bin/bash -c '
 set -e
 D=/work/donor
 R=/work/lean
@@ -193,6 +208,17 @@ else
 	echo "  WARNING: no aarch64 strip found; modules keep their debug symbols (+17MB)"
 fi
 
+echo "  ssh key..."
+mkdir -p "$R/root/.ssh"
+chmod 700 "$R/root/.ssh"
+if [ -s /a/authorized_keys ]; then
+	cp /a/authorized_keys "$R/root/.ssh/authorized_keys"
+	chmod 600 "$R/root/.ssh/authorized_keys"
+	echo "    dev key installed (image is reachable over ssh)"
+else
+	echo "    no key baked in (release, or none staged)"
+fi
+
 echo "  overlay (wins over everything)..."
 cp -a /a/overlay/. "$R/"
 cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
@@ -262,6 +288,12 @@ if [ "$CSEEN" -lt 3 ]; then
 	exit 1
 fi
 echo "    all $CSEEN card binaries resolve against this rootfs"
+
+if [ "$H700_MODE_IN" = release ] && [ -e "$R/root/.ssh/authorized_keys" ]; then
+	echo "ERROR: release rootfs carries an authorized_keys; that would authorize one developer key"
+	echo "       on every user device. Refusing to build."
+	exit 1
+fi
 
 echo "  boot-critical scripts must be present AND executable..."
 for c in /init /etc/init.d/rcS /etc/inittab /bin/busybox; do
