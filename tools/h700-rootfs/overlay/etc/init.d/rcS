@@ -1,0 +1,80 @@
+#!/bin/sh
+# The whole of MinUI Zero's h700 userspace boot. Mount the card, load only the modules this boot
+# actually needs, hand off to the launcher. Nothing else belongs here.
+#
+# CONTEXT: the shipping image inherits muOS's init, which reaches our frontend at kernel uptime
+# 4.82s (measured 2026-08-26). Roughly 3s of that is muOS bringing up a feature set we deleted.
+# BaseOS reaches frontend hand-off at 2.80s on the same silicon, so the target here is under 3.2s.
+#
+# NO CONSOLE ON FAILURE. CONFIG_FRAMEBUFFER_CONSOLE is off on this 4.9 kernel, so a boot that dies
+# in here shows a frozen splash and nothing else. Every stage therefore writes a marker to the FAT
+# partition once it is mounted, and the pre-mount stages write to /run and get flushed after. A
+# card reader is then enough to see how far we got.
+
+STAGE=/run/boot-stage
+mark() { echo "$1 $(cut -d' ' -f1 /proc/uptime)" >> "$STAGE" 2>/dev/null; }
+
+mark rcS-start
+
+# --- the card -----------------------------------------------------------------------------------
+# p6 is the FAT32 data partition: roms, saves, and .system/h700. Mount options copied from what
+# muOS actually uses at runtime (read off /proc/mounts on-device), so filename handling is
+# byte-identical to the shipping image and nothing renames on a user's card.
+mkdir -p /mnt/mmc
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+	mount -t vfat -o rw,noatime,fmask=0022,dmask=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,utf8,errors=remount-ro \
+		/dev/mmcblk0p6 /mnt/mmc 2>/dev/null && break
+	# The MMC controller can still be probing; a fixed sleep would pay the worst case every boot.
+	usleep 100000 2>/dev/null || sleep 1
+done
+if mountpoint -q /mnt/mmc 2>/dev/null; then mark card-mounted; else mark card-MISSING; fi
+
+# --- first boot: grow the data partition to fill the card ---------------------------------------
+# Runs before anything reads the card so a user who flashed a 256GB card has 256GB immediately.
+if [ -x /opt/minui-zero/expand-roms.sh ] && [ ! -f /opt/minui-zero/roms-expanded ]; then
+	/opt/minui-zero/expand-roms.sh >> /run/expand.log 2>&1
+	mark expanded
+fi
+
+# --- kernel modules, only the ones THIS boot needs -----------------------------------------------
+# WiFi costs 3.5MB of module and a radio that then idles. MinUI is offline by default, so the
+# driver is loaded ONLY when the user has actually asked for wifi by putting wifi.txt on the card.
+# This is the same opt-in the frontend already applies, moved early enough to skip the insmod too.
+if [ -f /mnt/mmc/wifi.txt ]; then
+	insmod /lib/modules/4.9.170/kernel/drivers/net/wireless/rtl8821cs/8821cs.ko 2>/dev/null
+	mark wifi-module
+fi
+
+# GPU: MEASURED 2026-08-26 that our stack never touches it. SDL here has only the "mali" video
+# driver, we run SDL_VIDEODRIVER=dummy so video init fails outright, and we present through the DE
+# hardware scaler; neither the menu nor a running game maps libmali/libEGL/libGLES or opens
+# /dev/mali0. BaseOS measured this insmod at ~0.73s, which is a quarter of our entire budget.
+#
+# So it is loaded in the BACKGROUND, after the hand-off below: off the critical path, but present a
+# second later for any third-party pak that does want GLES. H700_NO_GPU=1 omits the module from the
+# image entirely and this becomes a no-op.
+( [ -f /lib/modules/4.9.170/kernel/drivers/video/gpu/mali_kbase.ko ] && \
+  insmod /lib/modules/4.9.170/kernel/drivers/video/gpu/mali_kbase.ko 2>/dev/null ) &
+
+mark modules
+
+# --- hand off ------------------------------------------------------------------------------------
+# The launcher entry point lives ON THE CARD and owns everything above the hardware: env, audio
+# codec, governor, wifi credentials, ssh, boot-to-game and the relaunch loop. This is the same
+# contract every other MinUI platform uses, and the same one BaseOS hands off to.
+LAUNCH=/mnt/mmc/.system/h700/paks/MinUI.pak/launch.sh
+if [ -f "$LAUNCH" ]; then
+	cat "$STAGE" >> /mnt/mmc/boot-stage.txt 2>/dev/null
+	mark frontend-exec
+	cat "$STAGE" > /mnt/mmc/boot-stage.txt 2>/dev/null
+	sync
+	exec /bin/sh "$LAUNCH"
+fi
+
+# No launcher on the card. Do NOT power off: a user who pulled the card, or whose payload failed to
+# copy, gets a device that looks dead and a support question. Keep the system alive so ssh (if the
+# key is present) and a card reader can both still reach it.
+mark NO-FRONTEND
+cat "$STAGE" > /mnt/mmc/boot-stage.txt 2>/dev/null
+sync
+exec /bin/sh

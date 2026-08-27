@@ -1,0 +1,11 @@
+#!/bin/sh
+# PID 1 entry point. The kernel cmdline is `init=/init` and the vendor initramfs switch_roots into
+# this rootfs and execs us.
+#
+# THIS MUST BE A REGULAR FILE, NOT A SYMLINK. The 2015-era switch_root in the vendor initramfs
+# fails on a symlink chain, and the failure is silent: no console (CONFIG_FRAMEBUFFER_CONSOLE is
+# off on this kernel), just a device that never boots. Learned from BaseOS docs/01, which lost a
+# flash round to exactly this.
+#
+# All this does is hand over to busybox init, which reads /etc/inittab.
+exec /bin/busybox init

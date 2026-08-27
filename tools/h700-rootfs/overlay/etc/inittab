@@ -1,0 +1,30 @@
+# busybox inittab for MinUI Zero on h700.
+#
+# Compare with the muOS inittab this replaces: same first eight sysinit lines (they are stock
+# busybox boilerplate and all of them are load-bearing), then muOS calls its own
+# /opt/muos/script/init/sysinit, which is where the time goes. On a shipping device that script
+# ends up bind-mounting p6 roughly TWENTY-FIVE times, for openbor, ppsspp, drastic, syncthing,
+# themes, catalogue, screenshots, music and the rest of a feature set we do not have. We need the
+# card mounted once.
+#
+# Format: <id>:<runlevels>:<action>:<process>   (busybox ignores runlevels)
+
+::sysinit:/bin/busybox mount -t proc proc /proc
+::sysinit:/bin/busybox mount -t sysfs sysfs /sys
+::sysinit:/bin/busybox mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/busybox mount -o remount,rw /
+::sysinit:/bin/busybox mkdir -p /dev/pts /dev/shm /run /tmp
+::sysinit:/bin/busybox mount -t devpts devpts /dev/pts
+::sysinit:/bin/busybox mount -t tmpfs tmpfs /dev/shm
+::sysinit:/bin/busybox mount -t tmpfs tmpfs /tmp
+::sysinit:/bin/busybox mount -t tmpfs -o mode=755 tmpfs /run
+::sysinit:/bin/busybox hostname -F /etc/hostname
+
+# Everything else, including the hand-off to the launcher.
+::sysinit:/etc/init.d/rcS
+
+# rcS ends by exec-ing the launcher, so nothing below normally runs. These exist so a device whose
+# launcher died is still able to shut down cleanly rather than sitting on a dead frame.
+::ctrlaltdel:/bin/busybox reboot
+::shutdown:/bin/busybox sync
+::shutdown:/bin/busybox umount -a -r
