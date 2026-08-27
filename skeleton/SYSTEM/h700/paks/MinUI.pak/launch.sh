@@ -161,24 +161,40 @@ cd "$(dirname "$0")"
 
 #######################################
 
-EXEC_PATH="/tmp/minui_exec"
-NEXT_PATH="/tmp/next"
-touch "$EXEC_PATH" # tmpfs; a sync here would flush every filesystem for a file that never hits disk
-while [ -f "$EXEC_PATH" ]; do
-	apply_volume
-	minui.elf &> "$LOGS_PATH/minui.txt"
-	echo "$(date +'%F %T')" > "$DATETIME_PATH"
-	sync
-
-	if [ -f "$NEXT_PATH" ]; then
-		CMD=$(cat "$NEXT_PATH")
-		rm -f "$NEXT_PATH"
-		apply_volume
-		eval "$CMD"
+# THE LAUNCH LOOP. Ported verbatim from the h700 frontend script rather than from tg5040, because
+# the two platforms genuinely differ and the h700 semantics are the audited ones:
+#   - tg5040 ends the loop by unlinking /tmp/minui_exec in PLAT_powerOff.
+#   - h700 PLAT_powerOff drops /tmp/poweroff instead, so the loop can tell a real power-off request
+#     from an ordinary game or menu exit. Without that distinction an in-game power-off looked like
+#     a quit and relaunched the same game (audit 2026-08-07).
+# A first draft of this file used the tg5040 marker, which would have left the power-off path
+# working only by accident and dropped the fail-retry below entirely (caught 2026-08-26).
+FAILS=0
+while : ; do
+	rm -f /tmp/next /tmp/poweroff
+	minui.elf >> "$LOG" 2>&1
+	RC=$?
+	[ -f /tmp/poweroff ] && { echo "poweroff requested" >> "$LOG"; power_off; }
+	if [ -f /tmp/next ]; then
+		FAILS=0
+		CMD=$(cat /tmp/next)
+		echo "launch: $CMD" >> "$LOG"
+		apply_volume   # a mute left behind by the menu process must not follow us into the game
+		sh -c "$CMD"
+		echo "game exited rc=$?" >> "$LOG"
+		apply_volume   # ...nor back into the menu if the game was killed while muted
+		[ -f /tmp/poweroff ] && { echo "poweroff requested (in-game)" >> "$LOG"; power_off; }
 		echo "$(date +'%F %T')" > "$DATETIME_PATH"
 		sync
+	elif [ "$RC" = "0" ]; then
+		echo "clean exit, power off" >> "$LOG"
+		power_off
+	else
+		FAILS=$((FAILS+1))
+		echo "minui exited rc=$RC (fail $FAILS)" >> "$LOG"
+		# Retry so transient faults self-heal; persistent failure powers OFF rather than parking in
+		# an infinite sleep, which left a black, draining, unrecoverable device (audit).
+		[ $FAILS -ge 5 ] && { echo "$FAILS consecutive fails, powering off" >> "$LOG"; power_off; }
+		sleep 2
 	fi
-	[ -f /tmp/poweroff ] && { echo "poweroff requested" >> "$LOG"; power_off; }
 done
-
-power_off
