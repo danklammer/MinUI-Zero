@@ -146,7 +146,8 @@ mkdir -p "$R/bin" "$R/sbin" "$R/usr/bin" "$R/usr/sbin" "$R/etc/init.d" "$R/proc"
 for a in sh mount umount mkdir ln rm cp mv cat echo sleep usleep sync hostname insmod lsmod \
          killall pgrep pkill ps grep sed awk head tail cut tr basename dirname date df du \
          mountpoint poweroff reboot halt init udhcpc ip ifconfig route nc wc sort uniq find touch \
-         chmod stat readlink env printf test true false uname; do
+         chmod stat readlink env printf test true false uname \
+         fdisk mkfs.vfat partprobe blockdev dd; do
 	ln -sf /bin/busybox "$R/bin/$a" 2>/dev/null || true
 done
 ln -sf /bin/busybox "$R/sbin/init"

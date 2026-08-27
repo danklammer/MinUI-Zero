@@ -72,6 +72,22 @@
 /usr/lib/libncursesw.so.6
 /usr/lib/libtinfo.so.6
 
+# ---- first-boot partition expander -------------------------------------------------------------
+# expand-roms.sh grows the FAT32 ROMS partition to fill the card on first boot. It needs parted and
+# partx; fdisk, mkfs.vfat and partprobe come from busybox. Verified deps only (readelf), not guessed:
+# parted -> libparted, libuuid, libreadline, libtinfo (last two already above for wpa_cli);
+# partx  -> libblkid, libsmartcols. 592KB all in, for the difference between a 68MB ROMS partition
+# and the user's whole card. The script exits cleanly if a tool is absent, so this is not a boot
+# risk, only a silently unexpanded card.
+/usr/sbin/parted
+/usr/sbin/partx
+/usr/lib/libparted.so.2
+# These three live in /lib, not /usr/lib, in this donor (there is no merged-/usr here). The build
+# caught the wrong paths immediately, which is the allowlist doing its job.
+/lib/libuuid.so.1
+/lib/libblkid.so.1
+/lib/libsmartcols.so.1
+
 # ---- userland ---------------------------------------------------------------------------------
 # One static busybox provides init, sh, mount, insmod, udhcpc, killall and the first-boot expand
 # tools. Everything else in /bin and /sbin goes.
