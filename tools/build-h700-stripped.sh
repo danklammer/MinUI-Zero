@@ -502,6 +502,15 @@ sh "$REPO/workspace/all/cores/check-payload.sh" "$STAGE/.system/h700" h700
 # version.txt (minui about screen reads .system/version.txt as "release" + "commit"; a missing
 # file crashed minui on a home-screen MENU tap before the code guard, 2026-08-06)
 printf 'MinUI Zero (%s)\n%s\n' "$VERSION" "$(cd "$REPO" && git rev-parse --short HEAD)" > "$STAGE/.system/version.txt"
+
+# BOARD NAME, written at build time because the device cannot work it out at runtime. The launcher
+# used to read muOS's /opt/muos/device/config/board/name, which does not exist on a rootfs that is
+# not muOS, and the device-tree fallback cannot help either: this board reports "sun50iw9" for BOTH
+# the Plus and the H, matching neither. DEVICE therefore fell back to "plus" on every board,
+# silently correct on a Plus and WRONG on an H, which is the one where it decides whether the
+# analog sticks exist (found on the first allowlist boot, 2026-08-27). The image is already built
+# per device, so the answer belongs in the payload rather than in a guess.
+printf '%s\n' "${DEVICE#rg35xx-}" > "$STAGE/.system/h700/board"
 [ -n "$H700_TEST_ROM" ] && [ -f "$H700_TEST_ROM" ] && cp "$H700_TEST_ROM" "$STAGE/Roms/Game Boy Color (GBC)/"
 # example wifi.txt at the card root (commented out; user adds their own "SSID:password")
 printf '# WiFi: one network per line as SSID:password (# comments ignored). Example:\n# MyNetwork:mypassword\n' > "$STAGE/wifi.txt.example"

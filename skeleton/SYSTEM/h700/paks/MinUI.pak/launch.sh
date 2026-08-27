@@ -36,12 +36,18 @@ export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 export LOGS_PATH="$USERDATA_PATH/logs"
 export DATETIME_PATH="$SHARED_USERDATA_PATH/datetime.txt"
 
-# plus vs h are near-twins; the board name is how we tell them apart. muOS publishes it; BaseOS
-# does not, so fall back to the device tree model and finally to plus.
-if [ -f /opt/muos/device/config/board/name ]; then
-	export DEVICE=$(sed 's/^rg35xx-//' /opt/muos/device/config/board/name 2>/dev/null)
+# plus vs h are near-twins and the board name is how we tell them apart. Resolution order matters:
+#   1. .system/h700/board, written into the payload by the image build. The image is per-device, so
+#      this is the only source that is actually authoritative.
+#   2. muOS's own board file, for a rootfs that still has muOS under it.
+#   3. plus, as a last resort.
+# There is deliberately NO device-tree fallback: this board reports "sun50iw9" for both models, so
+# any match against it is a coin flip that reads as certainty (2026-08-27).
+DEVICE=""
+[ -f "$SYSTEM_PATH/board" ] && DEVICE=$(cat "$SYSTEM_PATH/board" 2>/dev/null | tr -d ' \n')
+if [ -z "$DEVICE" ] && [ -f /opt/muos/device/config/board/name ]; then
+	DEVICE=$(sed 's/^rg35xx-//' /opt/muos/device/config/board/name 2>/dev/null)
 fi
-[ -n "$DEVICE" ] || DEVICE=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null | grep -oiE "h$|plus" | tr 'A-Z' 'a-z')
 [ -n "$DEVICE" ] || DEVICE=plus
 export DEVICE
 
