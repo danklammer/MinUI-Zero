@@ -88,6 +88,20 @@
 /lib/libblkid.so.1
 /lib/libsmartcols.so.1
 
+# ---- libraries needed by CARD-side binaries -----------------------------------------------------
+# The closure check scans the ROOTFS, but the card carries executables too (minui.elf, minarch.elf,
+# the libretro cores, dropbearmulti) and the rootfs has to satisfy THEM as well. dropbearmulti needs
+# these two and nothing in the rootfs did, so ssh silently never started on the first allowlist boot
+# (2026-08-27): the device was on wifi with no way in. The build now checks the card payload too.
+/lib/libutil.so.1
+/lib/libcrypt.so.1
+# picodrive links Vorbis for Sega CD audio. Without these the CORE fails to load outright, which
+# would have taken Genesis, Master System and Game Gear down together. Caught by the card-payload
+# gate the moment it existed, rather than on hardware three systems later.
+/usr/lib/libvorbisfile.so.3
+/usr/lib/libvorbis.so.0
+/usr/lib/libogg.so.0
+
 # ---- userland ---------------------------------------------------------------------------------
 # One static busybox provides init, sh, mount, insmod, udhcpc, killall and the first-boot expand
 # tools. Everything else in /bin and /sbin goes.

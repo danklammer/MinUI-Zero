@@ -42,6 +42,17 @@ fi
 echo "  allowlist entries: $(wc -l < "$ASSETS/harvest.active" | tr -d ' ')"
 
 cp "$REPO/tools/h700-strip/expand-roms.sh" "$ASSETS/expand-roms.sh"
+# Collect the binaries that will live on the CARD so the container can check them against the
+# rootfs it is about to build (see the card-payload closure check).
+rm -rf "$ASSETS/cardbins"; mkdir -p "$ASSETS/cardbins"
+for _b in "$REPO/workspace/all/minui/build/h700/minui.elf" \
+          "$REPO/workspace/all/minarch/build/h700/minarch.elf" \
+          "$REPO/workspace/h700/libmsettings/libmsettings.so" \
+          "$REPO/skeleton/SYSTEM/tg5040/bin/dropbearmulti" \
+          "$REPO"/workspace/tg5040/cores/output/*_libretro.so; do
+	[ -f "$_b" ] && cp "$_b" "$ASSETS/cardbins/" 2>/dev/null
+done
+echo "  card binaries staged for the closure check: $(ls "$ASSETS/cardbins" | wc -l | tr -d ' ')"
 rm -rf "$ASSETS/overlay"; cp -R "$OVERLAY" "$ASSETS/overlay"
 
 # NOTE: no apostrophes anywhere inside the docker block below. It is one single-quoted string and
@@ -219,6 +230,38 @@ if [ "$SEEN" -lt 10 ]; then
 	exit 1
 fi
 echo "    all $SEEN retained binaries resolve"
+
+# THE CARD IS PART OF THE CLOSURE. The check above scans the ROOTFS, but the payload on the FAT
+# partition carries executables of its own (minui.elf, minarch.elf, the libretro cores,
+# dropbearmulti) and the rootfs is what has to satisfy them. Missing that cost a boot: dropbearmulti
+# needs libutil and libcrypt, neither was harvested, so ssh never started and the device came up on
+# wifi with no way in (2026-08-27). A rootfs is not "complete" on its own terms; it is complete
+# relative to what will run against it.
+echo "  card-payload closure check..."
+CBAD=0
+CSEEN=0
+for f in /a/cardbins/*; do
+	[ -f "$f" ] || continue
+	head -c 4 "$f" | grep -q ELF 2>/dev/null || continue
+	CSEEN=$((CSEEN + 1))
+	for need in $(readelf -d "$f" 2>/dev/null | sed -nE "s/.*NEEDED.*\[(.+)\]/\1/p"); do
+		# libmsettings ships on the card beside these binaries, not in the rootfs.
+		[ "$need" = "libmsettings.so" ] && continue
+		if [ ! -e "$R/lib/$need" ] && [ ! -e "$R/usr/lib/$need" ]; then
+			echo "    UNRESOLVED: $(basename "$f") needs $need"
+			CBAD=$((CBAD + 1))
+		fi
+	done
+done
+if [ "$CBAD" -gt 0 ]; then
+	echo "ERROR: $CBAD card-side dependencies are absent from the rootfs. Add them to harvest.list."
+	exit 1
+fi
+if [ "$CSEEN" -lt 3 ]; then
+	echo "ERROR: card-payload check only inspected $CSEEN binaries (vacuous pass)"
+	exit 1
+fi
+echo "    all $CSEEN card binaries resolve against this rootfs"
 
 echo "  boot-critical scripts must be present AND executable..."
 for c in /init /etc/init.d/rcS /etc/inittab /bin/busybox; do
