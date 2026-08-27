@@ -95,13 +95,17 @@ echo "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/d
 
 # --- boot-time readahead ----------------------------------------------------------------------
 # The FIRST launch after a boot is the slow one: everything it touches is cold on a ~10MB/s card.
-# MEASURED 2026-08-10: 4348ms cold vs 707ms warm, and the biggest single item is libmali.so
-# (42.5MB), which SDL dlopens because "mali" is its only video driver. Pull that fixed cost into
-# the seconds after boot while the user is reading the menu. Page cache only: nothing stays
-# resident, the kernel evicts under pressure, and it costs nothing the thesis measures.
+# MEASURED 2026-08-10: 4348ms cold vs 707ms warm. Pull that fixed cost into the seconds after boot
+# while the user is reading the menu. Page cache only: nothing stays resident, the kernel evicts
+# under pressure, and it costs nothing the thesis measures.
+#
+# NOT libmali.so (42.5MB): it was in this list on the assumption SDL dlopens it, but we run with
+# SDL_VIDEODRIVER=dummy, that driver is absent from this SDL build, video init fails and we present
+# through the DE hardware scaler. VERIFIED on-device 2026-08-26 in both the menu and a running game:
+# no libmali/EGL/GLES mapping, no /dev/mali0 fd. Reading it was pure waste at every boot.
 ( nice -n 19 sh -c '
 	sleep 3
-	for f in /usr/lib/libmali.so /usr/lib/libSDL2-2.0.so.0 /usr/lib/libSDL2_image-2.0.so.0 \
+	for f in /usr/lib/libSDL2-2.0.so.0 /usr/lib/libSDL2_image-2.0.so.0 \
 	         /usr/lib/libSDL2_ttf-2.0.so.0 "$SYSTEM_PATH/bin/minarch.elf" \
 	         "$SYSTEM_PATH/lib/libmsettings.so"; do
 		[ -f "$f" ] && cat "$f" > /dev/null 2>&1

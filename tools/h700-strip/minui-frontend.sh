@@ -197,18 +197,23 @@ WIFI_TXT=/mnt/mmc/wifi.txt
 [ -f /var/minui-zero-expand.log ] && cat /var/minui-zero-expand.log >> "$LOG" 2>/dev/null
 
 # BOOT-TIME READAHEAD. The FIRST game launch after a boot is the slow one: everything it touches
-# is cold on a ~10MB/s card. MEASURED 2026-08-10: the same game took 4348ms cold vs 707ms warm, and
-# the biggest single item is libmali.so (42.5MB) which SDL dlopens because "mali" is the only video
-# driver this SDL2 has. Pull the fixed cost into the seconds after boot, while the user is still
-# looking at the menu and the CPU is otherwise idle, so the first launch is as quick as the rest.
+# is cold on a ~10MB/s card. MEASURED 2026-08-10: the same game took 4348ms cold vs 707ms warm.
+# Pull the fixed cost into the seconds after boot, while the user is still looking at the menu and
+# the CPU is otherwise idle, so the first launch is as quick as the rest.
+#
+# libmali.so (42.5MB) WAS in this list and has been removed (2026-08-26). It was assumed to be the
+# biggest single item because SDL dlopens it, "mali" being the only video driver this SDL2 has. It
+# is not: we set SDL_VIDEODRIVER=dummy, that driver does not exist in this build, so SDL video init
+# fails outright and we present through the DE hardware scaler instead. VERIFIED on-device against
+# BOTH processes, menu and a running game: zero libmali/libEGL/libGLES mappings and no /dev/mali0
+# fd in either. The readahead was reading 42.5MB off the card at every boot that nothing ever loads.
 #
 # This is page cache only: no process stays resident, the kernel evicts it under pressure, and it
 # costs nothing the thesis measures (power, heat, resident memory). Reads are serialised and
 # niced so they never compete with the menu for the card or the CPU.
 ( nice -n 19 sh -c '
 	sleep 3                                   # let the menu draw first
-	for f in /usr/lib/libmali.so \
-	         /usr/lib/libSDL2-2.0.so.0 /usr/lib/libSDL2_image-2.0.so.0 /usr/lib/libSDL2_ttf-2.0.so.0 \
+	for f in 	         /usr/lib/libSDL2-2.0.so.0 /usr/lib/libSDL2_image-2.0.so.0 /usr/lib/libSDL2_ttf-2.0.so.0 \
 	         "$SYSTEM_PATH/bin/minarch.elf" "$SYSTEM_PATH/lib/libmsettings.so"; do
 		[ -f "$f" ] && cat "$f" > /dev/null 2>&1
 	done
