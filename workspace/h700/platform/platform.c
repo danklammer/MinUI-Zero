@@ -757,7 +757,9 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 	}
 }
 
+static int disp_warm = 0; // a completed present proves the mode-set settled; see settle_commits
 void PLAT_blitRenderer(GFX_Renderer* renderer) {
+	disp_warm = 1;
 	// The effect changes from the menu between frames; minarch caches the chosen scaler in
 	// renderer->blit, so re-resolve it when the selection moved (MMP pattern).
 	if (effect_type != next_effect) {
@@ -804,7 +806,12 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		if (trace && !fullframe) {
 			static uint32_t last_ui_flip = 0;
 			uint32_t t = SDL_GetTicks();
-			LOG_info("fliptrace: ui gap=%ums\n", last_ui_flip ? t - last_ui_flip : 0);
+			// cheap content hash: same hash on consecutive lines = pixel-identical repaint
+			uint32_t h = 2166136261u;
+			uint16_t* px = (uint16_t*)vid.screen->pixels;
+			int n = (vid.screen->pitch / 2) * vid.screen->h;
+			for (int i = 0; i < n; i += 97) h = (h ^ px[i]) * 16777619u;
+			LOG_info("fliptrace: ui gap=%ums hash=%08x\n", last_ui_flip ? t - last_ui_flip : 0, h);
 			last_ui_flip = t;
 		}
 	}
@@ -842,7 +849,14 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		// If the initial commit was eaten mid-mode-set, this one lands and replaces the boot
 		// logo; once the pipeline is warm it is two no-op ioctls and the counter never rearms.
 		static int settle_commits = 2;
-		if (settle_commits > 0) {
+		// Only while COLD. This guard exists for a boot-time race (a commit eaten mid-mode-set
+		// leaving the boot logo up), but it used to fire on the first two UI flips of the
+		// PROCESS - which for minarch is the in-game MENU OPEN, since game frames take the
+		// blitRenderer path and never consume it. Every first menu open paid a 20ms stall and a
+		// duplicate commit, a measurable hitch at the exact moment smoothness matters (found
+		// chasing Dan's menu-open jitter, 2026-08-27). A presented game frame proves the
+		// pipeline is warm, so the guard now stands down once one has happened.
+		if (settle_commits > 0 && !disp_warm) {
 			settle_commits--;
 			usleep(20000);
 			disp_commit(shown);

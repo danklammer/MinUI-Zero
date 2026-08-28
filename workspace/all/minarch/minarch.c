@@ -5580,6 +5580,17 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 	if (scaling==SCALE_CROPPED && DEVICE_WIDTH==HDMI_WIDTH) {
 		scaling = SCALE_NATIVE;
 	}
+#ifdef PLAT_PRESENT_SCALER
+	// The menu backdrop must reproduce the EXACT in-buffer geometry the game was just shown at.
+	// On a present-scaler platform the live frame is integer-scaled into the buffer at the
+	// renderer's rect and the display engine does the final fit, but this function's ASPECT
+	// branch re-scales the native frame to its own idea of aspect - a different size and a
+	// different (non-integer) filter. The paused image therefore visibly changed size the
+	// instant the menu opened, which is exactly "the UI is resizing on the fly" (Dan,
+	// 2026-08-27). The NATIVE branch below already computes the live rect from the renderer,
+	// so use it unconditionally here: the backdrop lands pixel-for-pixel where the game was.
+	scaling = SCALE_NATIVE;
+#endif
 	if (scaling==SCALE_NATIVE) {
 		// LOG_info("native\n");
 		
