@@ -5581,17 +5581,28 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		scaling = SCALE_NATIVE;
 	}
 #ifdef PLAT_PRESENT_SCALER
-	// The menu backdrop must reproduce the EXACT in-buffer geometry the game was just shown at.
-	// On a present-scaler platform the live frame is integer-scaled into the buffer at the
-	// renderer's rect and the display engine does the final fit, but this function's ASPECT
-	// branch re-scales the native frame to its own idea of aspect - a different size and a
-	// different (non-integer) filter. The paused image therefore visibly changed size the
-	// instant the menu opened, which is exactly "the UI is resizing on the fly" (Dan,
-	// 2026-08-27). The NATIVE branch below already computes the live rect from the renderer,
-	// so use it unconditionally here: the backdrop lands pixel-for-pixel where the game was.
-	scaling = SCALE_NATIVE;
+	// The menu backdrop must reproduce the ON-PANEL geometry, which on a present-scaler platform
+	// is NOT the in-buffer rect: the display engine aspect-fits the integer-scaled crop into the
+	// panel (eg. NES 2x = 512x448 in buffer, SHOWN as a 549x480 window). Two earlier attempts were
+	// both wrong in different directions (2026-08-27): the ASPECT branch rescaled the NATIVE frame
+	// by its own aspect math (4:3 of 256x240) and the NATIVE branch used the raw buffer rect
+	// (512x448 at 64,16) - each made the paused image visibly change size or position the moment
+	// the menu opened, which is the "resizing on the fly" Dan kept seeing. The truth is the DE's
+	// own fit: aspect-fit the INTEGER-SCALED dimensions into the device, centered. Reproduce that.
+	{
+		int cw = renderer.src_w, ch = renderer.src_h;
+		if (renderer.scale) { cw *= renderer.scale; ch *= renderer.scale; }
+		else { cw = renderer.dst_w; ch = renderer.dst_h; }
+		if (cw > 0 && ch > 0) {
+			int fw = dw, fh = dh;
+			if ((int64_t)cw * dh <= (int64_t)ch * dw) fw = (int)((int64_t)cw * dh / ch);
+			else fh = (int)((int64_t)ch * dw / cw);
+			rx = (dw - fw) / 2; ry = (dh - fh) / 2; rw = fw; rh = fh;
+			goto scale_ready;
+		}
+	}
 #endif
-	if (scaling==SCALE_NATIVE) {
+	if (0) {} else if (scaling==SCALE_NATIVE) {
 		// LOG_info("native\n");
 		
 		rx = renderer.dst_x;
@@ -5682,6 +5693,9 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		ry = (dh - rh) / 2;
 	}
 	
+#ifdef PLAT_PRESENT_SCALER
+scale_ready: ;
+#endif
 	// LOG_info("Menu_scale (r): %i,%i %ix%i\n",rx,ry,rw,rh);
 	// LOG_info("offset: %i,%i\n", renderer.src_x, renderer.src_y);
 
@@ -6097,6 +6111,7 @@ static void Menu_loop(void) {
 		PWR_update(&dirty, &show_setting, Menu_beforeSleep, Menu_afterSleep);
 		
 		if (dirty) {
+			uint32_t _mt0 = SDL_GetTicks(); // menutrace: cost of one menu redraw, ZERO_FLIP_TRACE-gated below
 			GFX_clear(screen);
 			
 			SDL_BlitSurface(backing, NULL, screen, NULL);
@@ -6245,6 +6260,11 @@ static void Menu_loop(void) {
 			}
 
 			GFX_flip(screen);
+			{
+				static int _mtr = -1;
+				if (_mtr < 0) { const char* e = getenv("ZERO_FLIP_TRACE"); _mtr = (e && e[0]=='1') ? 1 : 0; }
+				if (_mtr) LOG_info("menutrace: draw+flip=%ums\n", SDL_GetTicks() - _mt0);
+			}
 			dirty = 0;
 		}
 		else GFX_sync();

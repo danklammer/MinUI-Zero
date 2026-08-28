@@ -803,6 +803,15 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	{
 		static int trace = -1;
 		if (trace < 0) { const char* e = getenv("ZERO_FLIP_TRACE"); trace = (e && e[0]=='1') ? 1 : 0; }
+		if (trace && fullframe) {
+			// the OPEN jitter lives in the final GAME frames while menu setup runs on this same
+			// thread; log only irregular ones (>25ms) so 60fps play stays quiet
+			static uint32_t last_game_flip = 0;
+			uint32_t tg = SDL_GetTicks();
+			if (last_game_flip && tg - last_game_flip > 25)
+				LOG_info("fliptrace: GAME STUTTER gap=%ums\n", tg - last_game_flip);
+			last_game_flip = tg;
+		}
 		if (trace && !fullframe) {
 			static uint32_t last_ui_flip = 0;
 			uint32_t t = SDL_GetTicks();
