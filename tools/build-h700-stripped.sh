@@ -111,6 +111,20 @@ TOTAL=$((P6_LAST + 40))
 
 [ -f "$MUOS_ROOTFS" ] || { echo "ERROR: muOS rootfs dump not at $MUOS_ROOTFS"; exit 1; }
 [ -f "$REPO/workspace/all/minui/build/h700/minui.elf" ] || { echo "ERROR: run 'make h700-build' first"; exit 1; }
+# FRESHNESS, not just existence. Every flashed image carried a STALE minui.elf for a day because
+# this check passed on a binary older than the sources: the power-off logic had been fixed in
+# api.c, `make h700-build` said nothing to do, and the image builder happily shipped the old
+# binary while everyone debugged the device (2026-08-27). A build artifact older than any of its
+# shared or platform sources fails the build. Same class of gate as check-cores/check-payload:
+# the artifact must be checked against its own claim, and "exists" is not "current".
+_newest_src=$(find "$REPO/workspace/all/common" "$REPO/workspace/all/minui" "$REPO/workspace/all/minarch" 	"$REPO/workspace/h700" -name "*.c" -o -name "*.h" 2>/dev/null | xargs stat -f "%m" 2>/dev/null | sort -n | tail -1)
+_elf_time=$(stat -f "%m" "$REPO/workspace/all/minui/build/h700/minui.elf" 2>/dev/null || echo 0)
+if [ "${_newest_src:-0}" -gt "${_elf_time:-0}" ]; then
+	echo "ERROR: minui.elf is OLDER than the sources; run 'make h700-build' before building an image."
+	echo "       (a stale binary here ships silently and costs a device-debugging session)"
+	exit 1
+fi
+echo "  frontend binaries: current"
 
 mkdir -p "$OUT_DIR"
 
