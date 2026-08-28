@@ -2313,6 +2313,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	}
 	
 	if (PAD_justReleased(BTN_POWEROFF) || (power_pressed_at && now-power_pressed_at>=1000)) {
+		LOG_info("power: OFF branch (held %ums, poweroff_btn=%i)\n", power_pressed_at?now-power_pressed_at:0, PAD_justReleased(BTN_POWEROFF));
 		// Haptic power cue (idea from SpruceOS): a short buzz the moment the quicksave+
 		// shutdown commits — feel it and let go. Keep holding regardless and the PMIC
 		// hardware long-hold cut remains the force-off escape hatch. This system cue bypasses
@@ -2326,6 +2327,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 	
 	if (PAD_justPressed(BTN_POWER)) {
 		power_pressed_at = now;
+		LOG_info("power: DOWN edge seen\n");
 		// NOT gated on PLAT_supportsDeepSleep(). pwr.resume_tick is set at the end of PWR_sleep(),
 		// which is the COMMON path — faux sleep reaches it just as deep sleep does — so this
 		// debounce is meaningful on every platform. Gating it meant that on a device without deep
@@ -2345,6 +2347,7 @@ void PWR_update(int* _dirty, int* _show_setting, PWR_callback_t before_sleep, PW
 		(pwr.can_sleep && power_released && power_pressed_at && !power_press_is_wake) // manual sleep (resume-press guarded on EVERY platform)
 	) {
 		pwr.requested_sleep = 0;
+		LOG_info("power: SLEEP branch (req=%i idle=%i manual=%i held=%ums)\n", pwr.requested_sleep, now-last_input_at>=SLEEP_DELAY, power_released&&power_pressed_at&&!power_press_is_wake, power_pressed_at?now-power_pressed_at:0);
 		if (before_sleep) before_sleep();
 		PWR_sleep();
 		if (after_sleep) after_sleep();
