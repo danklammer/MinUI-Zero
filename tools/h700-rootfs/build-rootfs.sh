@@ -237,15 +237,18 @@ cp -a /a/overlay/. "$R/"
 cp /a/expand-roms.sh "$R/opt/minui-zero/expand-roms.sh"
 chmod +x "$R/init" "$R/etc/init.d/rcS" "$R/opt/minui-zero/expand-roms.sh"
 
-# NO ld.so.cache. The build host is amd64 and its ldconfig writes a cache the aarch64 loader cannot
-# read, which is WORSE than having none: with the bad cache in place the loader failed to find
-# libasound and even libm, so anything not launched with an explicit LD_LIBRARY_PATH was broken
-# (measured on-device 2026-08-27: amixer ran only when handed /usr/lib:/lib by hand, which is why
-# the launcher worked and everything else did not). With no cache, glibc falls back to its built-in
-# trusted directories, which are exactly /lib and /usr/lib on this layout.
-echo "  ld.so.conf (deliberately no cache: a host-built one is the wrong architecture)..."
+# ld.so.cache: use the DONOR cache, never a host-generated one, and never none.
+# Three states were tried and two are wrong (both found on-device 2026-08-27):
+#   - amd64 ldconfig output: unreadable by the aarch64 loader, and WORSE than nothing, because with
+#     a bad cache present the loader failed to find even libm.
+#   - no cache at all: this Buildroot glibc 2.38 does not fall back to /usr/lib without one, so
+#     bare binaries broke while the launcher survived only via its explicit LD_LIBRARY_PATH.
+#   - the donor own cache: built on-device by the vendor, aarch64-native, and it maps exactly the
+#     paths we preserve. Entries for libraries we deleted are harmless: nothing we ship links them.
+echo "  ld.so.cache: harvesting the donor native cache..."
 printf "/lib\n/usr/lib\n" > "$R/etc/ld.so.conf"
-rm -f "$R/etc/ld.so.cache"
+cp "$D/etc/ld.so.cache" "$R/etc/ld.so.cache"
+[ -s "$R/etc/ld.so.cache" ] || { echo "ERROR: donor ld.so.cache missing or empty"; exit 1; }
 
 echo "  closure check: every retained ELF must resolve inside this rootfs..."
 # Read into a list first: an unquoted $(find) word-splits, and one path with a space would report

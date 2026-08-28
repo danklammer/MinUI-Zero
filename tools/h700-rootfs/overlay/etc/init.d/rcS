@@ -16,6 +16,14 @@ mark() { echo "$1 $(cut -d' ' -f1 /proc/uptime)" >> "$STAGE" 2>/dev/null; }
 
 mark rcS-start
 
+# Brightness lives at /sys/kernel/debug/dispdbg (the disp engine's setbl command), so debugfs is
+# LOAD-BEARING here, not a debug convenience: without this mount the launcher's brightness writes
+# land on a nonexistent path and dimming silently does nothing. muOS mounted it in its own init,
+# which is why the denylist image never showed the gap (found live 2026-08-27). The backlight
+# kernel modules, by contrast, turned out to be irrelevant to this panel: the class loads and no
+# driver registers, and brightness never used it.
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+
 # --- the card -----------------------------------------------------------------------------------
 # p6 is the FAT32 data partition: roms, saves, and .system/h700. Mount options copied from what
 # muOS actually uses at runtime (read off /proc/mounts on-device), so filename handling is
