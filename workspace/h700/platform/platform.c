@@ -465,23 +465,6 @@ static int disp_commit(int page) {
 	return ret;
 }
 
-// Bridge a display-window geometry change with one BLACK frame. The DE window is reprogrammed
-// when presentation switches between the game fitted rect and the menu full screen, and if the
-// hardware latches the scaler and the buffer address on different vblanks the panel shows one
-// frame of content at the WRONG scale: everything visibly resizes for 1/60s. TrimUI never has
-// this problem because GLES scales in-shader and never touches scanout geometry; this is the
-// h700-only cost of the DE present path (isolated 2026-08-28 after five content-side fixes
-// changed nothing). Black is identical at every scale, so committing a black page TOGETHER with
-// the new geometry makes any latch skew invisible, and the transition reads as one clean cut.
-static void disp_shape_bridge(int cx, int cy, int cw, int ch) {
-	disp_wait_latch();
-	memset(vid.ionmmap[vid.page], 0, (size_t)vid.height * vid.width * FIXED_BPP);
-	disp_shape_rect(cx, cy, cw, ch);
-	disp_commit(vid.page);
-	vid.page = !vid.page;
-	disp_wait_latch();
-}
-
 static void disp_layer_off(void) {
 	if (vid.dispfd < 0) return;
 	struct disp_layer_config2_raw raw;
@@ -801,7 +784,7 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 		int ch = renderer->scale >= 1 ? renderer->src_h * renderer->scale : renderer->dst_h;
 		if (renderer->dst_x != vid.crop_x || renderer->dst_y != vid.crop_y ||
 		    cw != vid.crop_w || ch != vid.crop_h)
-			disp_shape_bridge(renderer->dst_x, renderer->dst_y, cw, ch); // see the bridge
+			disp_shape_rect(renderer->dst_x, renderer->dst_y, cw, ch);
 		return;
 	}
 	void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
@@ -866,7 +849,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		}
 		if (!fullframe) {
 			if (vid.crop_x || vid.crop_y || vid.crop_w != vid.width || vid.crop_h != vid.height)
-				disp_shape_bridge(0, 0, vid.width, vid.height); // UI owns the whole surface; see the bridge
+				disp_shape_rect(0, 0, vid.width, vid.height); // UI owns the whole surface
 		}
 		disp_commit(vid.page);
 		int shown = vid.page;
