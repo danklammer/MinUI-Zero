@@ -350,6 +350,10 @@ static void disp_pack(struct disp_layer_config2_raw* dst, const struct disp_laye
 	dst->dwords[54] = src->layer_id;
 }
 
+// The display-engine path always cycles exactly two ION pages (vid.page = !vid.page).
+// This is NOT vid.pages, which is the fbdev page count derived from yres_virtual and may be 1.
+#define DISP_PAGES 2
+
 static struct VID_Context {
 	SDL_Surface* screen;   // RGB565 render target handed to the frontend
 	GFX_Renderer* blit;
@@ -371,15 +375,22 @@ static struct VID_Context {
 	int dispfd;
 	int ionfd;
 	int ion_fds[2];        // dma-buf fds, one per page
-	void* ionmmap[2];
+	void* ionmmap[DISP_PAGES];
 	size_t ion_bytes;      // per-page capacity (panel W*H*2)
 	struct disp_layer_config2 lcfg;
 	struct disp_layer_config2_raw lraw;
 	// the rect within the render surface that actually holds the image this frame.
 	// minarch keeps the surface DEVICE-sized and centers the game (fit path, dst_x/dst_y);
 	// the layer CROPS this rect and the hardware scales it to screen_win.
-	int crop_x, crop_y, crop_w, crop_h;
+	int crop_x, crop_y, crop_w, crop_h;   // the DE crop: FIXED FULL SURFACE, never reprogrammed
+	int game_x, game_y, game_w, game_h;   // where the game image sits INSIDE that surface (HUD anchor)
 	int last_present_ui; // last flip was a UI frame -> PLAT_vsync must pace (see PLAT_vsync)
+	// Countdown of back-pages still to be blacked before their game-rect copy. Game frames rewrite
+	// ONLY their own rect, so whatever last wrote the letterbox stays there: closing the menu left
+	// the chrome framing the game (Dan's photo, 2026-08-28), and a rect change left the old image's
+	// border. Set to DISP_PAGES so each page is cleaned exactly once, on the frame it is the back
+	// buffer. Never memset a page the panel is scanning; that is a visible black flash.
+	int scrub_pages;
 } vid;
 
 // aspect-fit w x h into the panel, centered — the hardware scaler's output window
@@ -489,7 +500,7 @@ static int disp_open(void) {
 	#define DISP_MAX_W 1024
 	#define DISP_MAX_H 768
 	vid.ion_bytes = (size_t)DISP_MAX_W * DISP_MAX_H * 2;
-	for (int i = 0; i < 2; i++) {
+	for (int i = 0; i < DISP_PAGES; i++) {
 		struct ion_allocation_data_v1 alloc = { .len = vid.ion_bytes, .align = 4096, .heap_id_mask = ION_HEAP_DMA_MASK, .flags = 0 };
 		if (ioctl(vid.ionfd, ION_IOC_ALLOC_A64, &alloc) < 0) { LOG_info("disp: ION alloc %d failed (%s)\n", i, strerror(errno)); return -1; }
 		struct ion_fd_data_v1 share = { .handle = alloc.handle, .fd = -1 };
@@ -644,7 +655,7 @@ static void fb_pan(int page) {
 void PLAT_quitVideo(void) {
 	if (vid.use_disp) {
 		disp_layer_off(); // a guest must hand the display back — a leaked layer covers muOS
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < DISP_PAGES; i++) {
 			if (vid.ionmmap[i] && vid.ionmmap[i] != MAP_FAILED) munmap(vid.ionmmap[i], vid.ion_bytes);
 			if (vid.ion_fds[i] > 0) close(vid.ion_fds[i]);
 		}
@@ -700,6 +711,9 @@ SDL_Surface* PLAT_resizeVideo(int w, int h, int p) {
 			// scanned without them: the new shape only takes effect at the next disp_commit, and
 			// that commit always carries a freshly drawn frame at the new geometry.
 			disp_shape_rect(0, 0, w, h);
+			// forget the previous game rect: a new core with a coincidentally equal rect would
+			// otherwise skip the letterbox scrub and inherit stale borders.
+			vid.game_x = vid.game_y = vid.game_w = vid.game_h = 0;
 		}
 	}
 	// geometry changed: scrub both fb pages so old borders do not linger (fbdev path)
@@ -782,30 +796,29 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 		// a 3x 480x432), and only dst_x/dst_y locate the image
 		int cw = renderer->scale >= 1 ? renderer->src_w * renderer->scale : renderer->dst_w;
 		int ch = renderer->scale >= 1 ? renderer->src_h * renderer->scale : renderer->dst_h;
-		// PANEL-ASPECT ENVELOPE. The DE latches window geometry on a different vblank than the
-		// buffer, so any LARGE geometry change at a menu boundary shows one frame of content
-		// under the wrong mapping - the "resizing on the fly" that survived every content-side
-		// fix (proven by elimination 2026-08-28: zero reshapes = zero jitter, reshape = jitter,
-		// page pre-staging = still jitter). Instead of the tight game rect, the crop is padded
-		// to a panel-aspect envelope whose borders are the buffer black the resize scrub
-		// already guarantees. The DE maps the envelope to the FULL panel, the game looks
-		// pixel-identical to the old fit, and the game/menu geometries become nearly equal -
-		// a latch skew now shifts similar content by a few percent for one frame instead of
-		// jumping the whole window.
-		int ew = cw, eh = ch;
-		if (ew * vid.height < eh * vid.width) ew = (eh * vid.width) / vid.height;
-		else eh = (ew * vid.height + vid.width - 1) / vid.width;
-		if (ew > vid.width) ew = vid.width;
-		if (eh > vid.height) eh = vid.height;
-		ew &= ~1; eh &= ~1;
-		int ex = renderer->dst_x - (ew - cw) / 2;
-		int ey = renderer->dst_y - (eh - ch) / 2;
-		if (ex < 0) ex = 0;
-		if (ey < 0) ey = 0;
-		if (ex + ew > vid.width)  ex = vid.width - ew;
-		if (ey + eh > vid.height) ey = vid.height - eh;
-		if (ex != vid.crop_x || ey != vid.crop_y || ew != vid.crop_w || eh != vid.crop_h)
-			disp_shape_rect(ex, ey, ew, eh);
+		// NO RESHAPE, EVER. The DE window is programmed ONCE at init and never touched again:
+		// that is exactly what upstream MinUI does on this same sunxi disp (trimuismart sets
+		// screen_win at init and only ever updates fb.addr per frame). Reprogramming the window
+		// at menu boundaries was this port own invention, and it is the menu-open "resizing"
+		// artifact: the DE latches window geometry on a different vblank than the buffer, so one
+		// frame scans under the wrong mapping. Proven by elimination across seven builds
+		// (2026-08-28) and confirmed against the shipped reference.
+		//
+		// The game image is placed by the CPU inside the fixed full-screen surface, which is what
+		// minarch_screen_scaling = Native already asks for. Bonus: the old path silently
+		// OVERRODE Native with a non-integer hardware stretch (512x448 shown at 549x480, blurry);
+		// now integer scaling is pixel-exact as configured.
+		if (renderer->dst_x != vid.game_x || renderer->dst_y != vid.game_y ||
+		    cw != vid.game_w || ch != vid.game_h) {
+			// letterbox changed: queue a scrub so no stale pixels survive around the new image.
+			// Deferred, one page per frame, rather than memsetting both here: the panel is
+			// actively scanning one of them right now.
+			vid.scrub_pages = DISP_PAGES;
+			vid.game_x = renderer->dst_x; vid.game_y = renderer->dst_y;
+			vid.game_w = cw; vid.game_h = ch;
+			LOG_info("disp: game rect %d,%d %dx%d inside fixed %dx%d surface\n",
+				vid.game_x, vid.game_y, vid.game_w, vid.game_h, vid.width, vid.height);
+		}
 		return;
 	}
 	void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
@@ -816,6 +829,10 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
+	// MENU CLOSED (UI frame -> game frame). Every page currently holds full-surface menu chrome,
+	// and game frames only ever rewrite their own rect, so without this the chrome stays framing
+	// the game forever (Dan's photo, 2026-08-28). Queue one scrub per page.
+	if (fullframe && vid.last_present_ui) vid.scrub_pages = DISP_PAGES;
 	vid.last_present_ui = !fullframe;
 	// MENU-JITTER INSTRUMENTATION (ZERO_FLIP_TRACE=1): one line per UI flip with the inter-flip
 	// gap in ms. The in-game menu open reads as discrete snaps on video (measured 2026-08-27);
@@ -859,10 +876,16 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 			// it is system UI, not part of the game (Dan, 2026-08-28, correcting the
 			// squeeze experiment which proved the transition glitch lives in the DE window
 			// reprogram but shrank the menu to do it).
-			int cx = fullframe ? vid.crop_x : 0;
-			int cy = fullframe ? vid.crop_y : 0;
-			int cw = fullframe ? vid.crop_w : vid.width;
-			int ch = fullframe ? vid.crop_h : vid.height;
+			int cx = fullframe ? vid.game_x : 0;
+			int cy = fullframe ? vid.game_y : 0;
+			int cw = fullframe ? vid.game_w : vid.width;
+			int ch = fullframe ? vid.game_h : vid.height;
+			// Black the letterbox on this back page before the game rect lands on top of it.
+			// UI frames cover the whole surface themselves and never need it.
+			if (vid.scrub_pages > 0 && fullframe) {
+				vid.scrub_pages--;
+				memset(vid.ionmmap[vid.page], 0, (size_t)vid.height * vid.width * FIXED_BPP);
+			}
 			uint8_t* srcp = (uint8_t*)vid.screen->pixels + cy * vid.screen->pitch + cx * FIXED_BPP;
 			int rowbytes = vid.width * FIXED_BPP;
 			uint8_t* dstp = (uint8_t*)vid.ionmmap[vid.page] + cy * rowbytes + cx * FIXED_BPP;
@@ -870,22 +893,7 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 			for (int y = 0; y < ch; y++)
 				memcpy(dstp + y * rowbytes, srcp + y * vid.screen->pitch, copybytes);
 		}
-		if (!fullframe &&
-		    (vid.crop_x || vid.crop_y || vid.crop_w != vid.width || vid.crop_h != vid.height)) {
-			// SKEW-PROOF RESHAPE. Changing the DE window mid-session showed a one-frame
-			// glitch (the menu-open "jitter"): if the hardware latches the new geometry and
-			// the new buffer address on different vblanks, the panel scans one frame of the
-			// WRONG pairing - old content under new geometry or new content under old - and
-			// everything appears to resize for 1/60s. The squeeze experiment proved the
-			// glitch is exactly this moment (zero reshapes = zero jitter, 2026-08-28).
-			// Defense: make BOTH pages hold the same new frame before the geometry commit,
-			// so an address-side skew shows identical pixels either way, and the only
-			// remaining skew (new page under old window) lasts at most the one vblank the
-			// shadow-protected commit was designed to cover.
-			memcpy(vid.ionmmap[!vid.page], vid.ionmmap[vid.page],
-			       (size_t)vid.height * vid.width * FIXED_BPP);
-			disp_shape_rect(0, 0, vid.width, vid.height);
-		}
+		// UI needs no reshape: the window is fixed full-surface (see PLAT_blitRenderer).
 		disp_commit(vid.page);
 		int shown = vid.page;
 		vid.page = !vid.page;
@@ -1210,10 +1218,10 @@ static void dbg_compose(void) {
 	// outside the crop and was never displayed. That is the "HUD cut off" report, and it is why
 	// PS1 looked fine: its 320x240 at 2x filled the surface exactly, making crop == surface.
 	// Anchoring to the crop puts the text hard against the visible image edge on every system.
-	int cx = vid.crop_w > 0 ? vid.crop_x : 0;
-	int cy = vid.crop_h > 0 ? vid.crop_y : 0;
-	int cw = vid.crop_w > 0 ? vid.crop_w : vid.width;
-	int ch = vid.crop_h > 0 ? vid.crop_h : vid.height;
+	int cx = vid.game_w > 0 ? vid.game_x : 0;
+	int cy = vid.game_h > 0 ? vid.game_y : 0;
+	int cw = vid.game_w > 0 ? vid.game_w : vid.width;
+	int ch = vid.game_h > 0 ? vid.game_h : vid.height;
 	int dst_w = dbg.w * S;
 	int dst_h = dbg.h * S;
 	// A SMALL margin, not none: with the strip flush to the crop edge the panel sliced the text
@@ -1229,20 +1237,12 @@ static void dbg_compose(void) {
 	dbg_blit_strip(dbg.bottom, cx + margin, cy + ch - dst_h - margin, dst_w, dst_h);
 }
 void PLAT_getGameRect(int* x, int* y, int* w, int* h) {
-	// The rect the PANEL actually shows (the contract every caller relies on: menu backdrop via
-	// Menu_scale's PLAT_PRESENT_SCALER hook, HUD alignment). On the DE path the hardware scaler
-	// aspect-fits the rendered crop to the panel (disp_screen_win), so the on-screen rect is NOT
-	// the render-space crop — a GBC 3x renders 480x432 but the panel shows 533x480. Returning the
-	// raw crop made the in-game menu backdrop visibly smaller than the live game (Dan 2026-08-10).
-	if (vid.use_disp && vid.crop_w > 0 && vid.crop_h > 0) {
-		struct disp_rect win;
-		disp_screen_win(vid.crop_w, vid.crop_h, &win);
-		if (x) *x = win.x; if (y) *y = win.y; if (w) *w = win.width; if (h) *h = win.height;
-		return;
-	}
-	// fbdev fallback: render surface == panel, the crop rect is the truth
-	if (vid.crop_w > 0 && vid.crop_h > 0) {
-		if (x) *x = vid.crop_x; if (y) *y = vid.crop_y; if (w) *w = vid.crop_w; if (h) *h = vid.crop_h;
+	// The rect the PANEL actually shows, used for HUD alignment. The surface maps 1:1 to the panel
+	// (fixed full-surface window), so the answer is simply where the CPU scaler placed the game
+	// inside it. NOT vid.crop_*: that is the DE window, which is now permanently the whole screen,
+	// so reporting it would anchor the HUD to the panel edges instead of the game image.
+	if (vid.game_w > 0 && vid.game_h > 0) {
+		if (x) *x = vid.game_x; if (y) *y = vid.game_y; if (w) *w = vid.game_w; if (h) *h = vid.game_h;
 		return;
 	}
 	if (x) *x = 0; if (y) *y = 0; if (w) *w = FIXED_WIDTH; if (h) *h = FIXED_HEIGHT;

@@ -5580,16 +5580,6 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 	if (scaling==SCALE_CROPPED && DEVICE_WIDTH==HDMI_WIDTH) {
 		scaling = SCALE_NATIVE;
 	}
-#ifdef PLAT_PRESENT_SCALER
-	// The menu is FULL DEVICE RESOLUTION system UI (Dan, 2026-08-28): the paused-game backdrop
-	// fills this whole surface and the platform presents it fullscreen. Transition safety at the
-	// DE-window change is the platform side of the contract (see the skew-proof reshape in
-	// PLAT_flip), not a reason to shrink the menu.
-	{
-		rx = 0; ry = 0; rw = dw; rh = dh;
-		goto scale_ready;
-	}
-#endif
 	if (0) {} else if (scaling==SCALE_NATIVE) {
 		// LOG_info("native\n");
 		
@@ -5637,21 +5627,6 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		}
 	}
 	
-#ifdef PLAT_PRESENT_SCALER
-	// On a hardware-scaler platform the render-space rect computed above is NOT what the panel
-	// shows — the display engine aspect-fits the crop after us (h700: GBC 3x renders 480x432,
-	// panel shows 533x480). The platform mirrors that math in PLAT_getGameRect; use its answer
-	// so the menu backdrop matches the live game exactly (was visibly smaller, Dan 2026-08-10).
-	// dst is DEVICE-sized here except the halved thumbnail path, which scales down uniformly.
-	if (scaling==SCALE_NATIVE || scaling==SCALE_CROPPED) {
-		int px, py, pw_, ph_;
-		PLAT_getGameRect(&px, &py, &pw_, &ph_);
-		if (pw_ > 0 && ph_ > 0) {
-			rx = px; ry = py; rw = pw_; rh = ph_;
-			if (dw==DEVICE_WIDTH/2) { rx /= 2; ry /= 2; rw /= 2; rh /= 2; }
-		}
-	}
-#endif
 	if (scaling==SCALE_ASPECT || rw>dw || rh>dh) {
 		// LOG_info("aspect\n");
 		double fixed_aspect_ratio = ((double)DEVICE_WIDTH) / DEVICE_HEIGHT;
@@ -5681,10 +5656,15 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		ry = (dh - rh) / 2;
 	}
 	
-#ifdef PLAT_PRESENT_SCALER
-scale_ready: ;
-#endif
-	// LOG_info("Menu_scale (r): %i,%i %ix%i\n",rx,ry,rw,rh);
+	// The menu backdrop rect is computed EXACTLY as upstream computes it, on every platform.
+	// It must land on renderer.dst_x/dst_y at src*scale: the same pixels the live game occupies.
+	// That is what makes opening the menu geometrically a no-op: the game does not move or
+	// resize, it just dims and gains chrome. h700 briefly overrode this to fill the surface,
+	// which grew a 480x432 GBC to 640x480 the instant MENU was pressed. That growth WAS the
+	// "resizing on the fly" jitter (root-caused from Dan's 60fps capture, 2026-08-28).
+	// Twice per menu session, not per frame. Kept enabled because this one line is the receipt
+	// that the backdrop lands on the live game: it must match the platform's game rect exactly.
+	LOG_info("Menu_scale backdrop: %i,%i %ix%i (surface %ix%i)\n", rx,ry,rw,rh, dw,dh);
 	// LOG_info("offset: %i,%i\n", renderer.src_x, renderer.src_y);
 
 	// dumb nearest neighbor scaling

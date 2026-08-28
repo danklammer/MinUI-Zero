@@ -122,11 +122,12 @@
 // Panel: 640x480 MEASURED at 59.9777 Hz (see workspace/h700/README-BRINGUP.md). The render
 // surface is RGB565 like every other platform; the fb is ARGB8888 and platform.c converts on flip.
 
-// This platform presents through a HARDWARE scaler (the Allwinner DE aspect-fits the rendered
-// crop to the panel), so render-space geometry is NOT what the panel shows. Shared code that
-// reconstructs the on-screen game rect from renderer values (minarch Menu_scale backdrop) must
-// instead ask PLAT_getGameRect, which mirrors the DE math. Only define on hw-scaler platforms.
-#define PLAT_PRESENT_SCALER 1
+// NO hardware scaler in the present path (deliberate, 2026-08-28). The DE window is programmed
+// ONCE at init to the full surface and never reprogrammed, so the render surface maps 1:1 to the
+// panel and render-space geometry IS what the panel shows, exactly like every other software
+// platform. This is why there is no PLAT_PRESENT_SCALER define here any more: shared code must
+// use its ordinary upstream math, unmodified. Letting the DE aspect-fit per frame type cost this
+// port a week of menu-open jitter and silently defeated minarch_screen_scaling on top of it.
 
 // Platform folder name the wider pak scene publishes under for this hardware. MinUI/NextUI pak
 // authors have shipped "rg35xxplus" paks for years; our internal name is h700 (upstream-merge
