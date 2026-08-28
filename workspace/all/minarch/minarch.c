@@ -5581,25 +5581,13 @@ static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 		scaling = SCALE_NATIVE;
 	}
 #ifdef PLAT_PRESENT_SCALER
-	// The menu backdrop must reproduce the ON-PANEL geometry, which on a present-scaler platform
-	// is NOT the in-buffer rect: the display engine aspect-fits the integer-scaled crop into the
-	// panel (eg. NES 2x = 512x448 in buffer, SHOWN as a 549x480 window). Two earlier attempts were
-	// both wrong in different directions (2026-08-27): the ASPECT branch rescaled the NATIVE frame
-	// by its own aspect math (4:3 of 256x240) and the NATIVE branch used the raw buffer rect
-	// (512x448 at 64,16) - each made the paused image visibly change size or position the moment
-	// the menu opened, which is the "resizing on the fly" Dan kept seeing. The truth is the DE's
-	// own fit: aspect-fit the INTEGER-SCALED dimensions into the device, centered. Reproduce that.
+	// The menu is FULL DEVICE RESOLUTION system UI (Dan, 2026-08-28): the paused-game backdrop
+	// fills this whole surface and the platform presents it fullscreen. Transition safety at the
+	// DE-window change is the platform side of the contract (see the skew-proof reshape in
+	// PLAT_flip), not a reason to shrink the menu.
 	{
-		int cw = renderer.src_w, ch = renderer.src_h;
-		if (renderer.scale) { cw *= renderer.scale; ch *= renderer.scale; }
-		else { cw = renderer.dst_w; ch = renderer.dst_h; }
-		if (cw > 0 && ch > 0) {
-			int fw = dw, fh = dh;
-			if ((int64_t)cw * dh <= (int64_t)ch * dw) fw = (int)((int64_t)cw * dh / ch);
-			else fh = (int)((int64_t)ch * dw / cw);
-			rx = (dw - fw) / 2; ry = (dh - fh) / 2; rw = fw; rh = fh;
-			goto scale_ready;
-		}
+		rx = 0; ry = 0; rw = dw; rh = dh;
+		goto scale_ready;
 	}
 #endif
 	if (0) {} else if (scaling==SCALE_NATIVE) {

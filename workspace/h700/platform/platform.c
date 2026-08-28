@@ -782,9 +782,30 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 		// a 3x 480x432), and only dst_x/dst_y locate the image
 		int cw = renderer->scale >= 1 ? renderer->src_w * renderer->scale : renderer->dst_w;
 		int ch = renderer->scale >= 1 ? renderer->src_h * renderer->scale : renderer->dst_h;
-		if (renderer->dst_x != vid.crop_x || renderer->dst_y != vid.crop_y ||
-		    cw != vid.crop_w || ch != vid.crop_h)
-			disp_shape_rect(renderer->dst_x, renderer->dst_y, cw, ch);
+		// PANEL-ASPECT ENVELOPE. The DE latches window geometry on a different vblank than the
+		// buffer, so any LARGE geometry change at a menu boundary shows one frame of content
+		// under the wrong mapping - the "resizing on the fly" that survived every content-side
+		// fix (proven by elimination 2026-08-28: zero reshapes = zero jitter, reshape = jitter,
+		// page pre-staging = still jitter). Instead of the tight game rect, the crop is padded
+		// to a panel-aspect envelope whose borders are the buffer black the resize scrub
+		// already guarantees. The DE maps the envelope to the FULL panel, the game looks
+		// pixel-identical to the old fit, and the game/menu geometries become nearly equal -
+		// a latch skew now shifts similar content by a few percent for one frame instead of
+		// jumping the whole window.
+		int ew = cw, eh = ch;
+		if (ew * vid.height < eh * vid.width) ew = (eh * vid.width) / vid.height;
+		else eh = (ew * vid.height + vid.width - 1) / vid.width;
+		if (ew > vid.width) ew = vid.width;
+		if (eh > vid.height) eh = vid.height;
+		ew &= ~1; eh &= ~1;
+		int ex = renderer->dst_x - (ew - cw) / 2;
+		int ey = renderer->dst_y - (eh - ch) / 2;
+		if (ex < 0) ex = 0;
+		if (ey < 0) ey = 0;
+		if (ex + ew > vid.width)  ex = vid.width - ew;
+		if (ey + eh > vid.height) ey = vid.height - eh;
+		if (ex != vid.crop_x || ey != vid.crop_y || ew != vid.crop_w || eh != vid.crop_h)
+			disp_shape_rect(ex, ey, ew, eh);
 		return;
 	}
 	void* dst = renderer->dst + (renderer->dst_y * renderer->dst_p) + (renderer->dst_x * FIXED_BPP);
@@ -833,9 +854,11 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 		// blitRenderer, so this only adds pacing where none existed: the in-game menu.
 		if (!fullframe) disp_wait_latch();
 		{
-			// stream the live rect from the cached surface into the back ION page.
-			// UI = full surface; game = just the crop rect (416KB for GBC at 3x, one
-			// sequential pass — the write-combine-friendly shape).
+			// UI = full surface; game = just the crop rect (one sequential pass, the
+			// write-combine-friendly shape). The MENU IS FULL DEVICE RESOLUTION, always -
+			// it is system UI, not part of the game (Dan, 2026-08-28, correcting the
+			// squeeze experiment which proved the transition glitch lives in the DE window
+			// reprogram but shrank the menu to do it).
 			int cx = fullframe ? vid.crop_x : 0;
 			int cy = fullframe ? vid.crop_y : 0;
 			int cw = fullframe ? vid.crop_w : vid.width;
@@ -847,9 +870,21 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 			for (int y = 0; y < ch; y++)
 				memcpy(dstp + y * rowbytes, srcp + y * vid.screen->pitch, copybytes);
 		}
-		if (!fullframe) {
-			if (vid.crop_x || vid.crop_y || vid.crop_w != vid.width || vid.crop_h != vid.height)
-				disp_shape_rect(0, 0, vid.width, vid.height); // UI owns the whole surface
+		if (!fullframe &&
+		    (vid.crop_x || vid.crop_y || vid.crop_w != vid.width || vid.crop_h != vid.height)) {
+			// SKEW-PROOF RESHAPE. Changing the DE window mid-session showed a one-frame
+			// glitch (the menu-open "jitter"): if the hardware latches the new geometry and
+			// the new buffer address on different vblanks, the panel scans one frame of the
+			// WRONG pairing - old content under new geometry or new content under old - and
+			// everything appears to resize for 1/60s. The squeeze experiment proved the
+			// glitch is exactly this moment (zero reshapes = zero jitter, 2026-08-28).
+			// Defense: make BOTH pages hold the same new frame before the geometry commit,
+			// so an address-side skew shows identical pixels either way, and the only
+			// remaining skew (new page under old window) lasts at most the one vblank the
+			// shadow-protected commit was designed to cover.
+			memcpy(vid.ionmmap[!vid.page], vid.ionmmap[vid.page],
+			       (size_t)vid.height * vid.width * FIXED_BPP);
+			disp_shape_rect(0, 0, vid.width, vid.height);
 		}
 		disp_commit(vid.page);
 		int shown = vid.page;
