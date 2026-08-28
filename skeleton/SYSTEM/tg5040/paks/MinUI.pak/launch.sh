@@ -230,6 +230,21 @@ echo $CPU_SPEED_PERF > $CPU_PATH 2>/dev/null || true
 
 # networking: DEV MODE (wifi + SSH for testing) only if the opt-in flag exists,
 # otherwise block all radios (default runs-cold behavior).
+# WIFI OPT-IN, one visible file at the card root, matching h700: "SSID:password" in wifi.txt.
+# The old way needed TWO files inside the hidden .userdata/shared folder (an empty enable-ssh
+# flag plus a shell-syntax wifi.conf), which is a lot to ask of someone who just wants ssh, and
+# it diverged from the Anbernic build for no reason (Dan, 2026-08-28). wifi.txt is translated to
+# the existing pair here, so dev-net.sh and everything downstream are untouched, and the old
+# files keep working for anyone already set up.
+if [ -f "$SDCARD_PATH/wifi.txt" ]; then
+	_w=$(sed '/^#/d;/^[[:space:]]*$/d' "$SDCARD_PATH/wifi.txt" | head -1)
+	_ssid=${_w%%:*}; _psk=${_w#*:}
+	if [ -n "$_ssid" ] && [ "$_ssid" != "$_w" ]; then
+		mkdir -p "$SHARED_USERDATA_PATH"
+		printf 'SSID=%s\nPSK=%s\n' "$_ssid" "$_psk" > "$SHARED_USERDATA_PATH/wifi.conf"
+		touch "$SHARED_USERDATA_PATH/enable-ssh"
+	fi
+fi
 if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then
 	sh "$SYSTEM_PATH/bin/dev-net.sh" &
 else

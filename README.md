@@ -124,8 +124,9 @@ for your device and write it with [Raspberry Pi Imager](https://www.raspberrypi.
 
 Nothing is written to the device itself, so flash a spare card and swap cards to switch systems.
 First boot expands the ROMS partition to fill the card, and that partition mounts on any PC or Mac.
-On Anbernic, Wi-Fi and SSH stay off until you ask for them, via `wifi.txt` and `authorized_keys` at
-the card root.
+Wi-Fi and SSH stay off until you ask for them: rename `wifi.txt.example` to `wifi.txt` at the card
+root and put your network in it as `SSID:password`. Same file on every device. An idle radio is
+battery you did not agree to spend, and nothing here needs the network.
 
 **One card per device.** Upstream MinUI ships every platform in a single zip, so one card boots
 anything it supports. Zero builds and ships each platform separately, so **a card serves the device
