@@ -913,10 +913,19 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 			usleep(20000);
 			disp_commit(shown);
 		}
-		if (!fullframe) {
-			// keep pages coherent for partial UI redraws (same reasoning as the fbdev path)
-			memcpy(vid.ionmmap[vid.page], vid.ionmmap[shown], (size_t)vid.height * vid.width * FIXED_BPP);
-		}
+		// NEVER write a page here. disp_commit() returns as soon as the ioctls are issued; the DE
+		// does not latch until the next vblank, so until then the panel is STILL scanning the page
+		// we just swapped away from, which is vid.page now. A UI page-coherency memcpy used to sit
+		// here, and it dropped menu pixels into that page mid-scanout: a torn band across the middle
+		// of the screen for the two frames of the menu open, which is exactly where the two pages
+		// differ most (Dan's capture, 2026-08-28).
+		//
+		// It was redundant as well as harmful. It was cargo-culted from the fbdev path ("same
+		// reasoning as the fbdev path"), but THIS path copies the FULL surface on every UI frame
+		// (cx/cy = 0, cw/ch = the whole surface, above), so the back page is completely rewritten
+		// each time and has nothing to inherit. vid.screen is a plain in-RAM SDL_SWSURFACE that
+		// accumulates every draw, so it always holds the complete UI image; the "partial UI redraw"
+		// rationale never applied here. Game frames get the letterbox scrub instead.
 		vid.blit = NULL;
 		return;
 	}
