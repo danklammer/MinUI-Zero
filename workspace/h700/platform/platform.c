@@ -794,6 +794,20 @@ void PLAT_blitRenderer(GFX_Renderer* renderer) {
 void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	int fullframe = vid.blit != NULL; // renderer path = the game redraws its whole rect every frame
 	vid.last_present_ui = !fullframe;
+	// MENU-JITTER INSTRUMENTATION (ZERO_FLIP_TRACE=1): one line per UI flip with the inter-flip
+	// gap in ms. The in-game menu open reads as discrete snaps on video (measured 2026-08-27);
+	// this decides between "frames land unpaced/irregular" and "the transition only draws 2-3
+	// frames". Env-gated, zero cost when unset.
+	{
+		static int trace = -1;
+		if (trace < 0) { const char* e = getenv("ZERO_FLIP_TRACE"); trace = (e && e[0]=='1') ? 1 : 0; }
+		if (trace && !fullframe) {
+			static uint32_t last_ui_flip = 0;
+			uint32_t t = SDL_GetTicks();
+			LOG_info("fliptrace: ui gap=%ums\n", last_ui_flip ? t - last_ui_flip : 0);
+			last_ui_flip = t;
+		}
+	}
 	dbg_compose();   // HUD rides the frame: composited before the copy, scaled by the DE with it
 	if (vid.use_disp) {
 		// UI frames must honor the same latch invariant as the game path (PLAT_blitRenderer):

@@ -5545,6 +5545,18 @@ static int Menu_options(MenuList* list) {
 	return 0;
 }
 
+// 50% darken, in place, pure RGB565 arithmetic. This replaces the menu.overlay alpha blit as the
+// menu's dim layer: SDLX_SetAlpha + a 16bpp alpha-mod blit depends on the platform SDL build
+// honouring per-surface alpha on 565 surfaces, and on the h700 SDL2 it silently does nothing, so
+// the in-game menu drew raw over the undimmed game art and every ~1s repaint read as a visible
+// flash (Dan video, measured 2026-08-27). A shift-and-mask halving cannot be skipped by any SDL.
+static void Menu_dim(SDL_Surface* dst) {
+	uint16_t* d = dst->pixels;
+	int dp = dst->pitch / FIXED_BPP;
+	for (int y = 0; y < dst->h; y++, d += dp)
+		for (int x = 0; x < dst->w; x++)
+			d[x] = (d[x] >> 1) & 0x7BEF; // halve R,G,B in place (565)
+}
 static void Menu_scale(SDL_Surface* src, SDL_Surface* dst) {
 	// LOG_info("Menu_scale src: %ix%i dst: %ix%i\n", src->w,src->h,dst->w,dst->h);
 	
@@ -5894,6 +5906,7 @@ static void Menu_loop(void) {
 	
 	SDL_Surface* backing = SDL_CreateRGBSurface(SDL_SWSURFACE,DEVICE_WIDTH,DEVICE_HEIGHT,FIXED_DEPTH,RGBA_MASK_565); 
 	Menu_scale(menu.bitmap, backing);
+	Menu_dim(backing); // the dim IS the backdrop; see Menu_dim for why the overlay blit is gone
 	
 	int restore_w = screen->w;
 	int restore_h = screen->h;
@@ -6055,6 +6068,7 @@ static void Menu_loop(void) {
 						
 							SDL_FillRect(backing, NULL, 0);
 							Menu_scale(menu.bitmap, backing);
+							Menu_dim(backing);
 						}
 						dirty = 1;
 					}
@@ -6075,7 +6089,8 @@ static void Menu_loop(void) {
 			GFX_clear(screen);
 			
 			SDL_BlitSurface(backing, NULL, screen, NULL);
-			SDL_BlitSurface(menu.overlay, NULL, screen, NULL);
+			// menu.overlay blit removed: the backing is pre-dimmed by Menu_dim (see there). The
+			// alpha-mod blit was platform-dependent and no-opped on the h700 SDL build.
 
 			int ox, oy;
 			int ow = GFX_blitHardwareGroup(screen, show_setting);
