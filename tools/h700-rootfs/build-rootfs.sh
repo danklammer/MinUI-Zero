@@ -214,6 +214,13 @@ else
 	echo "  WARNING: no aarch64 strip found; modules keep their debug symbols (+17MB)"
 fi
 
+# The donor alsa.conf.d carries pipewire configs (50-pipewire.conf, 99-pipewire-default.conf)
+# that redefine "default" to a plugin we do not ship. The overlay already replaces /etc/asound.conf;
+# these must go too or the conf.d definitions win the merge and audio dies exactly as before.
+rm -f "$R/usr/share/alsa/alsa.conf.d/50-pipewire.conf" \
+      "$R/usr/share/alsa/alsa.conf.d/99-pipewire-default.conf"
+echo "  pipewire alsa configs removed"
+
 echo "  ssh key..."
 mkdir -p "$R/root/.ssh"
 chmod 700 "$R/root/.ssh"
