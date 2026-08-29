@@ -10,6 +10,12 @@
 ///////////////////////////////
 
 extern int is_brick;
+// The Brick Pro (TG4040) is its OWN device, not a Brick. It shares the Brick's 1024x768 panel and
+// @3x assets, and its volume/stick buttons sit at the Brick's joystick indices rather than the
+// Smart Pro's, so those read (is_brick||is_brickpro). It differs where it differs: a lower rumble
+// drive voltage, plus L4/R4/HOME buttons the Brick does not have. Split mirrors NextUI's shipped
+// tg5040 support, which is the only tested Brick Pro reference (checked 2026-08-30).
+extern int is_brickpro;
 
 ///////////////////////////////
 
@@ -87,13 +93,13 @@ extern int is_brick;
 #define JOY_R1			5
 #define JOY_L2			JOY_NA
 #define JOY_R2			JOY_NA
-#define JOY_L3			(is_brick?9:JOY_NA)
-#define JOY_R3			(is_brick?10:JOY_NA)
+#define JOY_L3			(is_brick||is_brickpro?9:JOY_NA)
+#define JOY_R3			(is_brick||is_brickpro?10:JOY_NA)
 
 #define JOY_MENU		8
 #define JOY_POWER		102
-#define JOY_PLUS		(is_brick?14:128)
-#define JOY_MINUS		(is_brick?13:129)
+#define JOY_PLUS		(is_brick||is_brickpro?14:128)
+#define JOY_MINUS		(is_brick||is_brickpro?13:129)
 
 ///////////////////////////////
 
@@ -117,9 +123,9 @@ extern int is_brick;
 
 ///////////////////////////////
 
-#define FIXED_SCALE 	(is_brick?3:2)
-#define FIXED_WIDTH		(is_brick?1024:1280)
-#define FIXED_HEIGHT	(is_brick?768:720)
+#define FIXED_SCALE 	(is_brick||is_brickpro?3:2)
+#define FIXED_WIDTH		(is_brick||is_brickpro?1024:1280)
+#define FIXED_HEIGHT	(is_brick||is_brickpro?768:720)
 #define FIXED_BPP		2
 #define FIXED_DEPTH		(FIXED_BPP * 8)
 #define FIXED_PITCH		(FIXED_WIDTH * FIXED_BPP)
@@ -127,8 +133,8 @@ extern int is_brick;
 
 ///////////////////////////////
 
-#define MAIN_ROW_COUNT (is_brick?7:10) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
-#define PADDING (is_brick?5:10) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
+#define MAIN_ROW_COUNT (is_brick||is_brickpro?7:10) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
+#define PADDING (is_brick||is_brickpro?5:10) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
 
 ///////////////////////////////
 

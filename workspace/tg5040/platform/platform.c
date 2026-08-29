@@ -21,6 +21,7 @@
 #include "scaler.h"
 
 int is_brick = 0;
+int is_brickpro = 0;
 
 ///////////////////////////////
 
@@ -145,6 +146,7 @@ static void PLAT_flipFB_game(void) {
 SDL_Surface* PLAT_initVideo(void) {
 	char* device = getenv("DEVICE");
 	is_brick = exactMatch("brick", device);
+	is_brickpro = exactMatch("brickpro", device);
 	// LOG_info("DEVICE: %s is_brick: %i\n", device, is_brick);
 	
 	SDL_InitSubSystem(SDL_INIT_VIDEO);
@@ -780,7 +782,7 @@ void PLAT_getBatteryStatus(int* is_charging, int* charge) {
 void PLAT_enableBacklight(int enable) {
 	if (enable) {
 		// putInt(BLANK_PATH,0);
-		if (is_brick) SetRawBrightness(8);
+		if (is_brick || is_brickpro) SetRawBrightness(8);
 		SetBrightness(GetBrightness());
 	}
 	else {
@@ -1250,8 +1252,13 @@ static void setRumble(int strength, int respect_mute) {
 	// the motor needs a drive voltage before the enable pin does anything — the Brick
 	// boots with a usable default, the Smart Pro with none (silent motor). 1.5V per
 	// NextUI's tg5040 implementation. Set once, lazily, only when rumble is first used.
+	// The Brick Pro drives its motor at 0.9V, not 1.5V (NextUI's tg5040 keymon, the only tested
+	// Brick Pro reference). Same enable pin, different drive; 1.5V here would over-drive it.
 	static int motor_powered = 0;
-	if (strength && !motor_powered) { putInt(RUMBLE_VOLTAGE_PATH, 1500000); motor_powered = 1; }
+	if (strength && !motor_powered) {
+		putInt(RUMBLE_VOLTAGE_PATH, is_brickpro ? 900000 : 1500000);
+		motor_powered = 1;
+	}
 	putInt(RUMBLE_PATH, (strength && (!respect_mute || !GetMute()))?1:0);
 }
 void PLAT_setRumble(int strength) { setRumble(strength, 1); }

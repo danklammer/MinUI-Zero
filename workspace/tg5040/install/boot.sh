@@ -51,17 +51,18 @@ if [ -f "$UPDATE_PATH" ]; then
 	export PATH=/usr/trimui/bin:$PATH
 
 	TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
-	# MATCH THE FAMILY, NOT ONE EXACT STRING. The Brick Pro reports "Trimui Brick Pro" (read off
-	# the device 2026-08-28), so an exact test left DEVICE empty and it silently ran as a Smart Pro:
-	# `show.elf ./$DEVICE/$ACTION.png` resolved to the Smart Pro boot image instead of ./brick/.
-	# Its panel is 1024 wide, same as the Brick.
+	# The Brick Pro reports "Trimui Brick Pro" and is its OWN device (see is_brickpro in
+	# platform.h): same 1024x768 panel and @3x assets as the Brick, but a different rumble drive
+	# and extra buttons. Naming it "brick" would have silently over-driven its motor. Split taken
+	# from NextUI's shipped tg5040 support, the only tested Brick Pro reference.
 	case "$TRIMUI_MODEL" in
-		"Trimui Brick"*) DEVICE="brick" ;;
+		"Trimui Brick Pro") DEVICE="brickpro" ;;
+		"Trimui Brick")     DEVICE="brick" ;;
 	esac
 
 	# leds_off
 	echo 0 > /sys/class/led_anim/max_scale
-	if [ "$DEVICE" = "brick" ]; then
+	if [ "$DEVICE" = "brick" ] || [ "$DEVICE" = "brickpro" ]; then
 		echo 0 > /sys/class/led_anim/max_scale_lr
 		echo 0 > /sys/class/led_anim/max_scale_f1f2
 	fi
@@ -72,7 +73,12 @@ if [ -f "$UPDATE_PATH" ]; then
 	else
 		ACTION=installing
 	fi
-	./show.elf ./$DEVICE/$ACTION.png
+	# $DEVICE is NOT a valid artwork folder on its own: we ship ./brick/ and the Smart Pro images
+	# at the root, and there is no ./brickpro/. The Brick Pro shares the Brick's 1024x768 panel,
+	# so it shares its artwork; interpolating $DEVICE raw would 404 to a blank splash.
+	IMG_DIR="$DEVICE"
+	[ "$IMG_DIR" = "brickpro" ] && IMG_DIR="brick"
+	./show.elf ./$IMG_DIR/$ACTION.png
 	
 	# CRC-test the whole archive before touching the installed system (audit 2026-07-12:
 	# extracting unverified and unconditionally deleting the package could leave a partial

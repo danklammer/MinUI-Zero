@@ -111,11 +111,13 @@ fi
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
 # so it must be read fresh each boot. (A cache shipped briefly on 2026-07-02 — reverted.)
 export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
-# MATCH THE FAMILY, NOT ONE EXACT STRING. The Brick Pro reports "Trimui Brick Pro" (read off the
-# device 2026-08-28), so this exact test left DEVICE empty and platform.h is_brick picked Smart Pro
-# geometry: 1280x720 with @2x assets and 10 menu rows, which is the squashed menu Dan photographed.
+# The Brick Pro reports "Trimui Brick Pro". An exact test for "Trimui Brick" left DEVICE empty and
+# platform.h is_brick then picked Smart Pro geometry: 1280x720 at @2x with 10 menu rows, which is
+# the squashed menu Dan photographed (2026-08-28). It gets its OWN device rather than being called
+# a Brick: same 1024x768 panel and @3x assets, but a lower rumble drive voltage. See is_brickpro.
 case "$TRIMUI_MODEL" in
-	"Trimui Brick"*) export DEVICE="brick" ;;
+	"Trimui Brick Pro") export DEVICE="brickpro" ;;
+	"Trimui Brick")     export DEVICE="brick" ;;
 esac
 rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
 # NEW-HARDWARE DIAGNOSTIC. The test above is an EXACT match, so any TrimUI that is not literally
@@ -164,7 +166,7 @@ export PATH=$SYSTEM_PATH/bin:/usr/trimui/bin:$PATH
 
 # leds_off
 echo 0 > /sys/class/led_anim/max_scale
-if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
+if [ "$DEVICE" = "brick" ] || [ "$DEVICE" = "brickpro" ]; then
 	echo 0 > /sys/class/led_anim/max_scale_lr
 	echo 0 > /sys/class/led_anim/max_scale_f1f2
 fi

@@ -41,6 +41,15 @@ LOG="$SHARED/ssh-ip.txt"
     mkdir -p /root/.ssh
     cp "$SHARED/authorized_keys" /root/.ssh/authorized_keys
     chmod 700 /root/.ssh 2>/dev/null; chmod 600 /root/.ssh/authorized_keys 2>/dev/null
+    # SAY whether it landed. /root is not writable on every firmware, and a silent failure here
+    # looks exactly like a wrong key from the other end.
+    if [ -s /root/.ssh/authorized_keys ]; then
+      echo "authorized_keys: installed ($(wc -c < /root/.ssh/authorized_keys 2>/dev/null) bytes)"
+    else
+      echo "authorized_keys: FAILED to install into /root/.ssh (read-only or full?)"
+    fi
+  else
+    echo "authorized_keys: none provided in $SHARED"
   fi
 
   # 5) start the SSH daemon. Try the device's own dropbear first (the Brick's firmware has
@@ -51,12 +60,20 @@ LOG="$SHARED/ssh-ip.txt"
     || dropbear -p 2022 2>/dev/null \
     || /usr/sbin/dropbear -p 2022 2>/dev/null \
     || true
-  if ! pgrep dropbear >/dev/null 2>&1 && ! netstat -tln 2>/dev/null | grep -q ':22 '; then
+  # Start OUR OWN daemon on 2022 whenever the binary exists, regardless of what holds :22.
+  # The old guard skipped it if ANYTHING was listening on :22, which assumed a foreign daemon
+  # would accept the key installed above. The Brick Pro disproves that: its firmware ships
+  # OpenSSH on :22, that daemon refused our key, and the guard then declined to start the one
+  # daemon we actually control, leaving no way in at all (read off the card 2026-08-30).
+  # A second listener is free in dev mode and is the difference between debuggable and not.
+  if ! pgrep -f "dropbear.*2022" >/dev/null 2>&1; then
     DBM="$SD/.system/tg5040/bin/dropbearmulti"
     KEY="$SHARED/dropbear_ed25519_host_key"
     if [ -x "$DBM" ]; then
       [ -f "$KEY" ] || "$DBM" dropbearkey -t ed25519 -f "$KEY" 2>/dev/null
       "$DBM" dropbear -r "$KEY" -p 2022 2>/dev/null || true
+    else
+      echo "dropbearmulti: MISSING at $DBM"
     fi
   fi
 
@@ -71,5 +88,7 @@ LOG="$SHARED/ssh-ip.txt"
   done
   echo "wlan0 IP: ${ip:-<none — check wifi.conf / signal>}"
   echo "dropbear: $(pgrep dropbear >/dev/null 2>&1 && echo running || echo NOT-running)"
+  echo "listening: $(netstat -tln 2>/dev/null | grep -E ':(22|2022) ' | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
   echo "connect:  ssh -i ~/.ssh/tg5040_dev -p 2022 root@${ip:-<ip>}"
+  echo "or (stock daemon on 22): ssh -i ~/.ssh/tg5040_dev root@${ip:-<ip>}"
 } >> "$LOG" 2>&1
