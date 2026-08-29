@@ -1408,6 +1408,7 @@ static void ChargingScreen(SDL_Surface* screen) {
 	SetBrightness(0); // lowest visible step; restored on exit
 	uint32_t rendered_at = 0;
 	uint32_t entered_at = SDL_GetTicks();
+	uint32_t power_down_at = 0; // for hold-to-power-off; see the held branch below
 	while (PWR_isCharging()) {
 		PAD_poll();
 		// NOTE: this loop CONSUMES the button down-edge. PWR_update's manual-sleep test requires
@@ -1419,10 +1420,29 @@ static void ChargingScreen(SDL_Surface* screen) {
 		// means PWR_sleep starts, and the release of that very same press wakes it straight back
 		// up. PWR_update's own manual-sleep test keys on `power_released` for exactly this reason.
 		// So: swallow the POWER press, then act on its release.
-		if (PAD_justReleased(BTN_POWER)) { PWR_requestSleep(); break; }
+		if (PAD_justPressed(BTN_POWER)) power_down_at = SDL_GetTicks();
+		if (PAD_justReleased(BTN_POWER)) { power_down_at = 0; PWR_requestSleep(); break; }
 		// Held: wait for the release above. Delay explicitly — the loop's own SDL_Delay is at the
 		// BOTTOM, so a bare `continue` would spin hot for as long as the button is down.
-		if (PAD_isPressed(BTN_POWER)) { SDL_Delay(100); continue; }
+		//
+		// HOLD-TO-POWER-OFF has to work here too. This screen owns the input loop and never calls
+		// PWR_update, so the shared 1s hold in PWR_update's OFF branch simply could not run:
+		// holding POWER on the charging screen did nothing at all, and the only way out was to tap
+		// some OTHER button, which breaks to the menu where the shared path works. That is the
+		// "we need to tap something else before poweroff works" report (Dan, 2026-08-28), and it
+		// only ever showed up plugged in, because this screen needs 30s idle ON THE CHARGER.
+		// Same 1s threshold and haptic cue as PWR_update, so the gesture means one thing everywhere.
+		if (PAD_isPressed(BTN_POWER)) {
+			if (power_down_at && SDL_GetTicks()-power_down_at >= 1000) {
+				SetBrightness(old_brightness); // this screen dimmed the panel; the notice must be readable
+				PLAT_setSystemRumble(1);
+				SDL_Delay(150);
+				PLAT_setSystemRumble(0);
+				PWR_powerOff();
+			}
+			SDL_Delay(100);
+			continue;
+		}
 		if (PAD_anyJustPressed()) break;
 		uint32_t now = SDL_GetTicks();
 		// after 5 minutes of showing the charge state, hand the device to sleep: charging
