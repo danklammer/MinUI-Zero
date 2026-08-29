@@ -400,7 +400,10 @@ package: tidy check-payload
 	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
 	@if [ -e ./releases/$(RELEASE_NAME).zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME).zip already exists — refusing to overwrite a release"; exit 1; fi
 	# BOOT_DIR is the per-family bootstrap folder that must sit at the card root
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools LICENSES $(BOOT_DIR) MinUI.zip README.txt .metadata_never_index .fseventsd
+	# NOTE: this list is EXPLICIT, so anything added to skeleton/BASE is silently dropped from the
+	# release until it is named here. wifi.txt.example shipped into build/BASE on 2026-08-28 and
+	# never reached a single card for exactly that reason (caught preparing the Brick Pro card).
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools LICENSES $(BOOT_DIR) MinUI.zip README.txt wifi.txt.example .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################
