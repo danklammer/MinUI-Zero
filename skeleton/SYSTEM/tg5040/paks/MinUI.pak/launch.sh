@@ -95,8 +95,9 @@ if [ ! -f "$_fc_migration" ]; then
 fi
 unset _cfg _fc_tmp _fc_has_low _fc_has_high _fc_migration _fc_migration_failed
 
-# dev: Stay Awake tool persistence (workspace/tg5040/dev-tools/, never shipped) — the
-# /tmp flag resets each boot, so re-arm from the shared flag. Inert unless a dev armed it.
+# Stay Awake persistence (Tools/tg5040/Stay Awake.pak, shipped since 2026-08-28). The /tmp flag
+# that PWR_preventAutosleep() reads is cleared every boot, so re-arm it from the card-side flag.
+# Inert unless the tool was turned on; the tool writes both files so it also works without a reboot.
 if [ -f "$SHARED_USERDATA_PATH/dev-stay-awake" ]; then
 	touch /tmp/stay_awake
 	iw dev wlan0 set power_save off 2>/dev/null
