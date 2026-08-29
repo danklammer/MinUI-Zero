@@ -23,7 +23,7 @@ Resolution order (`getEmuPath`, `workspace/all/common/utils.c`; `hasEmu` + Tools
 
 | Device | MinOS platform | Scene folder | Needs alias |
 |---|---|---|---|
-| TrimUI Brick / Smart Pro | `tg5040` | `tg5040` | no — identical |
+| TrimUI Brick / Brick Pro / Smart Pro | `tg5040` | `tg5040` | no — identical |
 | Miyoo Mini Plus | `miyoomini` | `miyoomini` | no — identical |
 | Anbernic RG35XX Plus/H (+ H700 family) | `h700` | `rg35xxplus` | **yes** (`PLATFORM_ALIAS`) |
 

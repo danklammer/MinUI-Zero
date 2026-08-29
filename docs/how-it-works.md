@@ -20,9 +20,13 @@ that knows the target:
 4. If a demanding scene needs more, the ceiling rises again within about a second.
 5. A clock that failed to hold full speed is remembered and not immediately retried.
 
-Every game gets its own answer. Zelda DX settles at 408 MHz; Bloody Roar II pays 1800 only in the
-scenes that need it. That is why the CPU Speed setting is gone: the machine answers the question a
-menu used to ask, per game, continuously.
+Every system ships a clock bracket measured on real hardware, and the loop above runs wherever that
+bracket has room: Bloody Roar II pays 1800 only in the scenes that need it. Six of the lightest
+systems (Game Boy, GBC, NES, Master System, Game Gear, TurboGrafx-16) ship a FIXED bracket of
+1008 MHz instead, because measurement found nothing useful below it; with `MINARCH_FMIN` equal to
+`MINARCH_FMAX` the controller has no room to move and the cap stays flat by design. Either way the
+CPU Speed setting is gone: the machine answers the question a menu used to ask, per system, and
+per game wherever that still buys something.
 
 Design notes and the closed-loop model: [`thermal-governor-design.md`](thermal-governor-design.md).
 How this differs from NextUI's approach: [`nextui-comparison.md`](nextui-comparison.md).

@@ -3,7 +3,7 @@
 ## Same simple MinUI. Runs cooler, lasts longer, plays smoother.
 
 **MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI
-Brick** and **TrimUI Smart Pro**, with alpha builds for the **Anbernic RG35XX Plus / H** and the
+Brick**, **Brick Pro** and **Smart Pro**, with alpha builds for the **Anbernic RG35XX Plus / H** and the
 **Miyoo Mini family**. It keeps MinUI's fast, distraction-free experience and tunes everything
 underneath to use only the power each game actually needs.
 
@@ -56,7 +56,7 @@ philosophy.
 | Features | Minimal by design: no box art, store, themes, or accounts | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor, plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes | Yes |
-| Devices | Brick, Smart Pro (+ alpha Anbernic RG35XX Plus / H and Miyoo Mini family) | Brick, Smart Pro, Smart Pro S |
+| Devices | Brick, Brick Pro, Smart Pro (+ alpha Anbernic RG35XX Plus / H and Miyoo Mini family) | Brick, Brick Pro, Smart Pro, Smart Pro S |
 
 Measured at MinUI Zero v1.5 and NextUI v6.14.0. Source lines count each firmware's own `.c`/`.h` and
 exclude the emulator cores both ship; download sizes are each project's base release zip. The NextUI
@@ -66,10 +66,12 @@ these projects: deep sleep shares a lineage, and NextUI is credited in this code
 
 ## How it works
 
-There is no CPU Speed setting because the machine answers that question itself, per game,
-continuously: the frontend watches whether a game is holding its target frame rate and moves the CPU
-ceiling to the lowest clock that still does. Zelda DX settles at 408 MHz; Bloody Roar II pays 1800
-only in the scenes that need it. **Deep sleep** suspends to RAM rather than idling behind a dark
+There is no CPU Speed setting because the machine answers that question itself. Each system ships
+with a clock bracket measured on real hardware. Where a bracket has room, the frontend watches
+whether the game is holding its target frame rate and moves the CPU ceiling to the lowest clock that
+still does, so Bloody Roar II pays 1800 only in the scenes that need it. The lightest systems
+(Game Boy, GBC, NES, Master System, Game Gear, TurboGrafx-16) are simply pinned at a flat 1008 MHz,
+because measurement showed the loop had nothing left to find below it. **Deep sleep** suspends to RAM rather than idling behind a dark
 screen, and on TrimUI, **Optimize CPU** measures your specific chip's lowest safe voltage for about
 20% less CPU power at identical clocks.
 
@@ -100,7 +102,7 @@ artifacts, and they are not interchangeable.
 
 | Device | Status | Download | Install |
 |---|---|---|---|
-| TrimUI Brick / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
+| TrimUI Brick / Brick Pro / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
 | Miyoo Mini / Plus / Flip | Alpha | `MinUI-Zero-miyoo-*-alpha.zip` | Copy onto a card |
 | Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
 | Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
@@ -158,7 +160,7 @@ for ARMv7/NEON. One card serves all three models and the firmware detects which 
 **Plus** is the model this is developed and verified on; the **Mini** and **Flip** are code-complete
 but **never tested on real hardware**.
 
-| | TrimUI Brick / Smart Pro | Miyoo Mini Plus |
+| | TrimUI Brick / Brick Pro / Smart Pro | Miyoo Mini Plus |
 |---|---|---|
 | Closed-loop governor | Yes | Yes |
 | Emulator cores | 11 | 11 (same pinned versions) |
