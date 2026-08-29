@@ -111,9 +111,12 @@ fi
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
 # so it must be read fresh each boot. (A cache shipped briefly on 2026-07-02 — reverted.)
 export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
-if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
-	export DEVICE="brick"
-fi
+# MATCH THE FAMILY, NOT ONE EXACT STRING. The Brick Pro reports "Trimui Brick Pro" (read off the
+# device 2026-08-28), so this exact test left DEVICE empty and platform.h is_brick picked Smart Pro
+# geometry: 1280x720 with @2x assets and 10 menu rows, which is the squashed menu Dan photographed.
+case "$TRIMUI_MODEL" in
+	"Trimui Brick"*) export DEVICE="brick" ;;
+esac
 rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
 # NEW-HARDWARE DIAGNOSTIC. The test above is an EXACT match, so any TrimUI that is not literally
 # "Trimui Brick" leaves DEVICE unset and is treated as a Smart Pro, which picks 1280x720 instead of

@@ -51,9 +51,13 @@ if [ -f "$UPDATE_PATH" ]; then
 	export PATH=/usr/trimui/bin:$PATH
 
 	TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
-	if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
-		DEVICE="brick"
-	fi
+	# MATCH THE FAMILY, NOT ONE EXACT STRING. The Brick Pro reports "Trimui Brick Pro" (read off
+	# the device 2026-08-28), so an exact test left DEVICE empty and it silently ran as a Smart Pro:
+	# `show.elf ./$DEVICE/$ACTION.png` resolved to the Smart Pro boot image instead of ./brick/.
+	# Its panel is 1024 wide, same as the Brick.
+	case "$TRIMUI_MODEL" in
+		"Trimui Brick"*) DEVICE="brick" ;;
+	esac
 
 	# leds_off
 	echo 0 > /sys/class/led_anim/max_scale
