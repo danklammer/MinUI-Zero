@@ -88,8 +88,19 @@ int main (int argc, char *argv[]) {
 	// with no evdev event and no claimed-GPIO change; PH19/gpio243 never toggles). The 5Hz poll
 	// thread only serves devices where PH19 is a live software-mute line — skip it on the Brick
 	// (launcher exports DEVICE=brick) so idle keymon schedules zero wakeups.
+	//
+	// The Brick Pro skips it too (2026-08-30). Both readings of that hardware lead to the same
+	// answer, which is why this is safe without a mute-flip receipt:
+	//   * it advertises an evdev mute switch (/proc/bus/input/devices "TRIMUI Player1" B: SW=2,
+	//     i.e. bit 1 = CODE_MUTE), and the poll() loop below already handles EV_SW/CODE_MUTE at
+	//     zero extra wakeup cost, so a live switch is delivered without polling; or
+	//   * it is a hardware mute like the Brick, in which case there is nothing to poll: gpio243
+	//     read a stable 0 across repeated samples on the device.
+	// Either way the 5Hz thread observes nothing and costs a permanent +5 wakeups/sec, the exact
+	// class the D21/D22 sweep drove to zero. If mute ever stops responding on a Brick Pro, this
+	// gate is the first thing to revert.
 	char* device = getenv("DEVICE");
-	if (device && strcmp(device, "brick")==0) {
+	if (device && (strcmp(device, "brick")==0 || strcmp(device, "brickpro")==0)) {
 		SetMute(getInt(MUTE_STATE_PATH)); // still honor the boot-time state once
 	}
 	else {

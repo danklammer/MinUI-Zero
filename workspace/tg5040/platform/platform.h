@@ -95,6 +95,10 @@ extern int is_brickpro;
 #define JOY_R2			JOY_NA
 #define JOY_L3			(is_brick||is_brickpro?9:JOY_NA)
 #define JOY_R3			(is_brick||is_brickpro?10:JOY_NA)
+// The Brick Pro has a HOME button the Brick does not; NextUI maps it to joystick button 15.
+// Exposed as MENU_ALT so it reaches the menu the same way the Smart Pro S's HOME does.
+// L4/R4 (11/12) are left unmapped: we have no button-assignment feature for them to drive.
+#define JOY_MENU_ALT	(is_brickpro?15:JOY_NA)
 
 #define JOY_MENU		8
 #define JOY_POWER		102

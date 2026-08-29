@@ -44,6 +44,10 @@ fi
 echo 0 > /sys/class/led_anim/max_scale 2>/dev/null
 echo 0 > /sys/class/led_anim/max_scale_lr 2>/dev/null
 echo 0 > /sys/class/led_anim/max_scale_f1f2 2>/dev/null
+	# Brick Pro only: the shoulder LEDs are a FOURTH zone and ship lit at 40. This is the block
+	# that runs on EVERY boot; the copy inside the install branch below was fixed first and this one
+	# was missed, leaving the shoulders lit from power-on until the launcher finally zeroes them.
+	echo 0 > /sys/class/led_anim/max_scale_rear 2>/dev/null
 
 # install/update
 if [ -f "$UPDATE_PATH" ]; then

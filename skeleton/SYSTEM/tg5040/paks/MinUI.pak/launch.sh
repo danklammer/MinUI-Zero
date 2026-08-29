@@ -120,11 +120,12 @@ case "$TRIMUI_MODEL" in
 	"Trimui Brick")     export DEVICE="brick" ;;
 esac
 rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
-# NEW-HARDWARE DIAGNOSTIC. The test above is an EXACT match, so any TrimUI that is not literally
-# "Trimui Brick" leaves DEVICE unset and is treated as a Smart Pro, which picks 1280x720 instead of
-# the Brick's 1024x768 (FIXED_WIDTH/HEIGHT in tg5040/platform.h). That is fine for the two models we
-# have measured and unknown for a third: the Brick Pro (TG4040) reports some other string we have
-# never seen. Rather than guess its panel, record what the device ACTUALLY said plus the real fb0
+# HARDWARE DIAGNOSTIC. The model test above is exact, so a TrimUI whose string we have never seen
+# leaves DEVICE unset and is treated as a Smart Pro. That is now a real third-model risk rather
+# than a hypothetical: the Brick Pro reports "Trimui Brick Pro" and was mis-sized exactly that way
+# until it got its own branch (2026-08-30, panel since measured at 1024x768). Keep recording what
+# the device ACTUALLY reports so the NEXT unknown model is diagnosable from the card instead of
+# guessed. Rather than guess its panel, record what the device ACTUALLY said plus the real fb0
 # geometry, so first boot on new hardware is diagnosable from the card. One line per boot.
 # virtual_size alone is NOT enough: on the Brick Pro it read "1024,16384", where 16384 is the
 # virtual scrollback height, not the visible one (2026-08-28). Record the visible mode too.
@@ -269,12 +270,17 @@ if [ -f "$SDCARD_PATH/wifi.txt" ]; then
 		touch "$SHARED_USERDATA_PATH/enable-ssh"
 	fi
 fi
+# These three are USB and clock daemons with NOTHING to do with wifi or SSH, and they used to sit
+# in the else branch below: turning on wifi therefore left adbd, MtpDaemon and ntpd running for the
+# whole session. MtpDaemon is the expensive one, indexing the entire card while games stream from
+# it. Killing them is right on every device and in both modes; only the RADIO stack is conditional.
+# (Found on the Brick Pro with wifi enabled, 2026-08-30: all three alive at the menu.)
+killall MtpDaemon 2>/dev/null
+killall adbd 2>/dev/null
+killall ntpd 2>/dev/null # MinUI keeps its own clock
 if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then
 	sh "$SYSTEM_PATH/bin/dev-net.sh" &
 else
-	killall MtpDaemon
-	killall adbd 2>/dev/null
-	killall ntpd 2>/dev/null # MinUI keeps its own clock; no network to sync from anyway
 	killall wpa_supplicant
 	killall udhcpc
 	rfkill block bluetooth

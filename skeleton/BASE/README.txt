@@ -1,4 +1,4 @@
-MinUI Zero is a performance-focused fork of MinUI for the TrimUI Brick and TrimUI Smart Pro. Runs cool, sleeps deep, lasts longer — same simple MinUI, tuned underneath, every change measured on real hardware.
+MinUI Zero is a performance-focused fork of MinUI for the TrimUI Brick, Brick Pro and Smart Pro. Runs cool, sleeps deep, lasts longer — same simple MinUI, tuned underneath, every change measured on real hardware.
 
 Source and releases:
 https://github.com/danklammer/MinUI-Zero
@@ -8,7 +8,8 @@ https://github.com/danklammer/MinUI-Zero
 What's different
 
   Closed-loop governor  the lowest clock that holds frame rate, per game — never overclocks
-  GPU-dark menu         the launcher renders in software so the GPU powers down (Brick only)
+  GPU-dark menu         the launcher renders in software so the GPU powers down (Brick only;
+                        unverified on Brick Pro, so it stays off there)
   Zero idle waste       no polling daemons, radios and LEDs off, audio closed in sleep, USB charge-only
   Deep sleep            on by default — suspends to RAM, wakes instantly (opt-out tool included)
   Stock bugs fixed      NES ran hot with crackling audio, quit menus hung, LEDs re-lit themselves
@@ -23,7 +24,7 @@ There is no CPU Speed setting: the governor measures each game's real frame rate
 ----------------------------------------
 Installing
 
-Only the TrimUI Brick and TrimUI Smart Pro are supported.
+Only the TrimUI Brick, TrimUI Brick Pro and TrimUI Smart Pro are supported.
 
 Use a reputable SD card, freshly formatted as FAT32 (MBR). Preload the "Bios" and "Roms" folders (see below), then copy everything in this zip — the "trimui" folder, "MinUI.zip" (without unzipping), "Bios", "Roms", "Saves", and this README — to the root of the card. Insert the card and power on; MinUI Zero installs automatically.
 

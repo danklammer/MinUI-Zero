@@ -65,10 +65,16 @@ int exactMatch(char* str1, char* str2) {
 }
 
 static int is_brick = 0;
+// The Brick Pro shares the Brick's backlight curve, NOT the Smart Pro's. NextUI's scaleBrightness
+// carries a brickpro branch whose table is byte-identical to its brick branch and different from
+// smartpro (checked 2026-08-30). Without this a Brick Pro fell to the else branch and its lowest
+// step was raw 4 instead of raw 1, so "minimum brightness" was visibly brighter than it should be.
+static int is_brickpro = 0;
 
 void InitSettings(void) {	
 	char* device = getenv("DEVICE");
 	is_brick = exactMatch("brick", device);
+	is_brickpro = exactMatch("brickpro", device);
 	
 	sprintf(SettingsPath, "%s/msettings.bin", getenv("USERDATA_PATH"));
 	
@@ -132,7 +138,7 @@ void SetBrightness(int value) {
 	if (!settings) return;
 
 	int raw;
-	if (is_brick) {
+	if (is_brick || is_brickpro) {
 		switch (value) {
 			case 0: raw=1; break; 		// 0
 			case 1: raw=8; break; 		// 8
