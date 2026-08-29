@@ -36,8 +36,20 @@ case "$TARGET" in
 	*:*) PORT=${TARGET##*:}; TARGET=${TARGET%:*} ;;
 esac
 
+# TWO PAYLOAD ROOTS, not one. `make <platform>` stages BOTH build/PAYLOAD/.system/<platform> and
+# build/PAYLOAD/Tools/<platform>, which land on the card at /mnt/SDCARD/.system/<platform> and
+# /mnt/SDCARD/Tools/<platform>. Syncing only the first is the same partial-deploy bug this script
+# was written to prevent, and it bit exactly that way on 2026-08-30: the Tools paks draw their UI
+# with their OWN binaries (Clock.pak/clock.elf, Input.pak/minput.elf, plus the confirm.elf and
+# say.elf the others call), all of which compute geometry from platform.h. A Brick Pro therefore
+# kept rendering Tools at Smart Pro size after a "successful" deploy that reported a full match,
+# because the entire Tools half of the payload was never examined. Worse, MinUI.pak/launch.sh
+# re-arms the undervolt harness from Tools/ at every boot, so the consumer updated while the
+# producer did not. Sync every root or the "whole-tree" guarantee in the header above is a lie.
 SRC=./build/PAYLOAD/.system/$PLATFORM
 DST=/mnt/SDCARD/.system/$PLATFORM
+SRC2=./build/PAYLOAD/Tools/$PLATFORM
+DST2=/mnt/SDCARD/Tools/$PLATFORM
 
 [ -d "$SRC" ] || { echo "no build payload at $SRC — run: make PLATFORMS=$PLATFORM $PLATFORM"; exit 1; }
 [ -f ./build/latest.txt ] || { echo "no build/latest.txt — build did not complete"; exit 1; }
@@ -68,6 +80,18 @@ $SSH "$TARGET" true 2>/dev/null || {
 }
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+GRAND_TOTAL=0
+GRAND_SENT=0
+
+# sync_root <src> <dst> <label>
+sync_root() {
+SRC=$1; DST=$2; LABEL=$3
+if [ ! -d "$SRC" ]; then
+	# A platform without curated Tools is legitimate; say so rather than silently skipping.
+	echo "--- $LABEL: no staged payload at $SRC, skipping"
+	return 0
+fi
+echo "--- $LABEL: $SRC -> $DST"
 
 REMOTE_MANIFEST="cd $DST 2>/dev/null && find . -type f | sed 's|^\./||' | sort | while IFS= read -r f; do echo \"\$(md5sum \"\$f\" | cut -d' ' -f1)  \$f\"; done"
 
@@ -88,9 +112,11 @@ done < "$WORK/local.txt"
 N=$(wc -l < "$CHANGED" | tr -d ' ')
 TOTAL=$(wc -l < "$WORK/local.txt" | tr -d ' ')
 echo "files  : $N of $TOTAL differ"
+GRAND_TOTAL=$((GRAND_TOTAL + TOTAL))
+GRAND_SENT=$((GRAND_SENT + N))
 if [ "$N" -eq 0 ]; then
-	echo "nothing to do — device already matches this build"
-	exit 0
+	echo "  nothing to do for $LABEL"
+	return 0
 fi
 
 echo "--- deploying ---"
@@ -136,8 +162,22 @@ BAD=0
 while IFS= read -r line; do
 	grep -qxF "$line" "$WORK/after.txt" || { echo "  FAIL ${line#*  }"; BAD=1; }
 done < "$WORK/local.txt"
-if [ "$BAD" -ne 0 ]; then exit 1; fi
-echo "  ok   all $TOTAL files match the build"
+if [ "$BAD" -ne 0 ]; then return 1; fi
+echo "  ok   $LABEL: all $TOTAL files match the build"
+return 0
+}
+
+# Every staged root, in order. .system is required; Tools is skipped when a platform ships none.
+# Report the UNION at the end: a per-root "nothing to do" printed alone is the same false green
+# that let the Tools half go unexamined for a whole day.
+sync_root "$SRC"  "$DST"  ".system" || exit 1
+sync_root "$SRC2" "$DST2" "Tools"   || exit 1
+
+if [ "$GRAND_SENT" -eq 0 ]; then
+	echo "nothing to do — device already matches this build ($GRAND_TOTAL files across all roots)"
+else
+	echo "deployed $GRAND_SENT of $GRAND_TOTAL files across all payload roots"
+fi
 
 cat <<EOF
 

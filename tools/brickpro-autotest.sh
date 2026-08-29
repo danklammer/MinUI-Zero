@@ -102,9 +102,15 @@ launch() {
 check_log() { # <name> <TAG>
 	rsh "cat $LOGS/$2.txt 2>/dev/null" > "$ART/$1.log" 2>/dev/null
 	if [ ! -s "$ART/$1.log" ]; then fail "$name: no log captured"; return; fi
-	# geometry receipt: the frontend must have used Brick Pro dimensions
-	if grep -q "1024x768" "$ART/$1.log" 2>/dev/null; then
-		pass "$1: log shows 1024x768 surface"
+	# GEOMETRY RECEIPT. This had no else branch, so it could only ever PASS: a log showing Smart
+	# Pro geometry produced silence, not a failure, and the suite reported 21/22 green while three
+	# Tools rendered at the wrong size (2026-08-30). An assertion that cannot fail is not a test.
+	# Also assert the WRONG geometry is absent, because the vendor prints panel modes of its own
+	# and a bare "1024x768" match can come from a line the frontend did not write.
+	if grep -q "1024x768" "$ART/$1.log" 2>/dev/null && ! grep -q "1280x720" "$ART/$1.log" 2>/dev/null; then
+		pass "$1: 1024x768 surface, no Smart Pro geometry"
+	else
+		fail "$1: geometry receipt missing or shows 1280x720"
 	fi
 	E=$(grep -ciE "\[ERROR\]|Segmentation|core.load_game failed|failed to load" "$ART/$1.log" 2>/dev/null)
 	if [ "${E:-0}" = "0" ]; then pass "$1: no errors in log"; else fail "$1: $E error line(s) in log"; fi
@@ -126,6 +132,33 @@ if [ -n "$PS_ROM" ]; then
 else
 	fail "PS: no .cue found under Ace Combat 2"
 fi
+
+# --- TOOLS PAKS: the surface that actually broke ------------------------------------------------
+# Every launch above is an Emus pak, so the suite passed while Optimize CPU / Deep Sleep / Stay
+# Awake rendered at Smart Pro size. Those paks draw with their OWN binaries (clock.elf, minput.elf,
+# and the confirm.elf/say.elf the others call), which live under Tools/ and are deployed by a
+# DIFFERENT payload root. Assert the binaries on the card are the ones this build produced; that is
+# what a stale-payload bug actually looks like from here, and it needs no screen to detect.
+note ""
+note "=== Tools payload freshness (the stale-binary class)"
+for f in ".system/tg5040/bin/confirm.elf" ".system/tg5040/bin/say.elf" \
+         "Tools/tg5040/Clock.pak/clock.elf" "Tools/tg5040/Input.pak/minput.elf"; do
+	LOCAL=""
+	case "$f" in
+		.system/*) LOCAL="build/PAYLOAD/${f#.system/}" ; LOCAL="build/PAYLOAD/.system/${f#.system/}" ;;
+		Tools/*)   LOCAL="build/PAYLOAD/$f" ;;
+	esac
+	if [ ! -f "$LOCAL" ]; then
+		note "  skip $f (not staged locally; run make tg5040 first)"
+		continue
+	fi
+	L=$( (md5 -q "$LOCAL" 2>/dev/null || md5sum "$LOCAL" | cut -d' ' -f1) )
+	R=$(rsh "md5sum '$SD/$f' 2>/dev/null | cut -d' ' -f1")
+	if [ -z "$R" ]; then fail "$f: MISSING on device"
+	elif [ "$L" = "$R" ]; then pass "$f: matches this build"
+	else fail "$f: STALE on device (build $L, card $R)"
+	fi
+done
 
 note ""
 note "=== $PASS passed, $FAIL failed   (artifacts in $ART)"

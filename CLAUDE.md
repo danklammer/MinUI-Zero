@@ -164,8 +164,13 @@ gcc minui.c -o build/macos/minui -I. -I../common/ -I../../macos/platform/ \
 make tg5040                 # builds tg5040 in MinUI's docker toolchain; zip → ./releases/
 make shell PLATFORM=tg5040  # drop into the toolchain container
 ```
-**On-device iteration:** MinUI runs from SD + SSH. Iterate by `scp`-ing the rebuilt
-`minarch.elf` / pak and relaunching — no reflashing per change.
+**On-device iteration:** MinUI runs from SD + SSH, so no reflashing per change. ALWAYS deploy with
+`sh tools/deploy-device.sh <platform> root@<ip> -i ~/.ssh/tg5040_dev`. It md5-syncs EVERY staged
+payload root (`.system/<platform>` and `Tools/<platform>`), refuses a build older than the working
+tree, and verifies afterwards. Do NOT scp individual files: this line used to say "scp the rebuilt
+minarch.elf / pak", which contradicts the never-hand-pick rule above and caused exactly that bug on
+2026-08-30 (a hand-picked deploy left stale `confirm.elf`/`say.elf` on a Brick Pro, so three Tools
+rendered at Smart Pro resolution while the menu and games looked perfect).
 
 ## Direction & status — see `docs/project-direction.md` for the authoritative plan
 Five pillars: (1) thermals/battery, (2) perfect gameplay **at the lowest clock that achieves it**
