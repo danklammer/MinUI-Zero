@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <linux/input.h>
+#include <sys/ioctl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <poll.h>
@@ -100,8 +101,15 @@ int main (int argc, char *argv[]) {
 	// class the D21/D22 sweep drove to zero. If mute ever stops responding on a Brick Pro, this
 	// gate is the first thing to revert.
 	char* device = getenv("DEVICE");
-	if (device && (strcmp(device, "brick")==0 || strcmp(device, "brickpro")==0)) {
-		SetMute(getInt(MUTE_STATE_PATH)); // still honor the boot-time state once
+	int is_brickpro = device && strcmp(device, "brickpro")==0;
+	if (device && (strcmp(device, "brick")==0 || is_brickpro)) {
+		// The BRICK reads its boot state from the GPIO, which is the truth there (hardware mute).
+		// The BRICK PRO must NOT: gpio243 reads a permanent 0 on it, so trusting it would boot
+		// muted-as-unmuted whenever the switch is already engaged at power-on. Input events are
+		// edge-delivered, so the poll() loop below only ever sees LATER changes; the current state
+		// has to be queried once with EVIOCGSW. Deferred until after the devices are open, just
+		// below. (Caught in review 2026-08-30.)
+		if (!is_brickpro) SetMute(getInt(MUTE_STATE_PATH));
 	}
 	else {
 		pthread_create(&mute_pt, NULL, &watchMute, NULL);
@@ -112,6 +120,24 @@ int main (int argc, char *argv[]) {
 	for (int i=0; i<INPUT_COUNT; i++) {
 		sprintf(path, "/dev/input/event%i", i);
 		inputs[i] = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	}
+
+	// Brick Pro: seed mute from the CURRENT evdev switch state, once, at zero ongoing cost.
+	// EVIOCGSW returns a bitmap of every SW_* the device holds right now, which is the only way
+	// to learn a switch that was already engaged before we opened it. Whichever node carries the
+	// mute switch answers; the rest report no such bit and are skipped. If nothing reports it,
+	// leave mute untouched rather than guessing.
+	if (is_brickpro) {
+		unsigned long swbits[(SW_CNT + (8 * sizeof(long)) - 1) / (8 * sizeof(long))];
+		for (int i=0; i<INPUT_COUNT; i++) {
+			if (inputs[i] < 0) continue;
+			memset(swbits, 0, sizeof(swbits));
+			if (ioctl(inputs[i], EVIOCGSW(sizeof(swbits)), swbits) < 0) continue;
+			int muted = (swbits[CODE_MUTE / (8 * sizeof(long))] >> (CODE_MUTE % (8 * sizeof(long)))) & 1;
+			printf("mute: initial evdev state %i (event%i)\n", muted, i); fflush(stdout);
+			SetMute(muted);
+			break;
+		}
 	}
 	
 	uint32_t input;

@@ -132,7 +132,7 @@ rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
 printf 'model=%s\ndevice=%s\nvirtual_size=%s\nmodes=%s\nstride=%s\n' \
 	"${TRIMUI_MODEL:-<none>}" "${DEVICE:-<unset, using Smart Pro geometry>}" \
 	"$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo '<unreadable>')" \
-	"$(cat /sys/class/graphics/fb0/modes 2>/dev/null | tr '\n' ' ' || echo '<unreadable>')" \
+	"$(m=$(cat /sys/class/graphics/fb0/modes 2>/dev/null) && [ -n "$m" ] && printf '%s' "$m" | tr '\n' ' ' || echo '<unreadable>')" \
 	"$(cat /sys/class/graphics/fb0/stride 2>/dev/null || echo '<unreadable>')" \
 	> "$LOGS_PATH/model.txt" 2>/dev/null
 
@@ -228,18 +228,33 @@ if [ ! -f "$FIRSTRUN" ]; then
 	else
 		LOGO="" # unknown model: leave the vendor logo alone
 	fi
+	# Track whether the device writes actually landed. The marker used to be written
+	# unconditionally, so a logo that could NOT be copied (full or erroring boot partition) was
+	# recorded as done and never retried on any later boot. Retrying next boot is free; a
+	# permanently-wrong boot logo is not. Copy to a TEMP name and rename into place so a failure
+	# or power cut cannot leave bootlogo.bmp half-overwritten.
+	POLISH_OK=1
 	if [ -n "$LOGO" ] && [ -f "$LOGO" ]; then
 		BOOTMNT=/tmp/zero-boot
 		mkdir -p "$BOOTMNT"
 		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
-			cp "$LOGO" "$BOOTMNT/bootlogo.bmp" 2>/dev/null
-			sync
+			if cp "$LOGO" "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null &&
+			   mv "$BOOTMNT/bootlogo.bmp.new" "$BOOTMNT/bootlogo.bmp" 2>/dev/null; then
+				sync
+			else
+				rm -f "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null
+				POLISH_OK=0
+			fi
 			umount "$BOOTMNT" 2>/dev/null
+		else
+			POLISH_OK=0
 		fi
 		rmdir "$BOOTMNT" 2>/dev/null
 	fi
-	touch "$FIRSTRUN"
-	sync
+	if [ "$POLISH_OK" = "1" ]; then
+		touch "$FIRSTRUN"
+		sync
+	fi
 fi
 
 # match stock audio
@@ -287,11 +302,15 @@ fi
 # it. Killing them is right on every device and in both modes; only the RADIO stack is conditional.
 # (Found on the Brick Pro with wifi enabled, 2026-08-30: all three alive at the menu.)
 killall MtpDaemon 2>/dev/null
-killall adbd 2>/dev/null
 killall ntpd 2>/dev/null # MinUI keeps its own clock
 if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then
+	# adbd SURVIVES in dev mode on purpose: the USB block above keeps stock "data" mode precisely
+	# so adb is available as a wifi-less fallback when ssh cannot be reached. Killing it here too
+	# quietly removed that escape hatch (caught in review, 2026-08-30). MtpDaemon still dies either
+	# way; it is the one that indexes the whole card while games stream from it.
 	sh "$SYSTEM_PATH/bin/dev-net.sh" &
 else
+	killall adbd 2>/dev/null
 	killall wpa_supplicant
 	killall udhcpc
 	rfkill block bluetooth
