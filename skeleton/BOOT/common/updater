@@ -7,8 +7,13 @@ case $INFO in
 *"SStar"*)
 	PLATFORM="miyoomini" # Miyoo Mini Plus (SigmaStar SSD202D) — /proc/cpuinfo reports "SStar Soc"
 	;;
-*"TG5040"*|*"TG3040"*)
-	PLATFORM="tg5040" # Trimui Smart Pro or Brick — the only platforms MinUI Zero supports
+*"TG5040"*|*"TG3040"*|*"TG4040"*)
+	# Trimui Smart Pro, Brick, and Brick Pro all run the tg5040 platform. TG4040 is the Brick Pro;
+	# the mapping is NextUI's (skeleton/BOOT/common/updater), which ships on that hardware. Without
+	# this it only reached tg5040 through the runtrimui.sh fallback below, which is a recovery-
+	# firmware workaround, not a device match. Note TG5050 (Smart Pro S) is a DIFFERENT platform
+	# and is deliberately absent: we do not build for it, so it must not land here.
+	PLATFORM="tg5040"
 	;;
 esac
 

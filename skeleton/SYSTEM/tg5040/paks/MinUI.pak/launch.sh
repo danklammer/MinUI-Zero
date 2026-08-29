@@ -115,6 +115,16 @@ if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	export DEVICE="brick"
 fi
 rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
+# NEW-HARDWARE DIAGNOSTIC. The test above is an EXACT match, so any TrimUI that is not literally
+# "Trimui Brick" leaves DEVICE unset and is treated as a Smart Pro, which picks 1280x720 instead of
+# the Brick's 1024x768 (FIXED_WIDTH/HEIGHT in tg5040/platform.h). That is fine for the two models we
+# have measured and unknown for a third: the Brick Pro (TG4040) reports some other string we have
+# never seen. Rather than guess its panel, record what the device ACTUALLY said plus the real fb0
+# geometry, so first boot on new hardware is diagnosable from the card. One line per boot.
+printf 'model=%s\ndevice=%s\npanel=%s\n' \
+	"${TRIMUI_MODEL:-<none>}" "${DEVICE:-<unset, using Smart Pro geometry>}" \
+	"$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo '<unreadable>')" \
+	> "$LOGS_PATH/model.txt" 2>/dev/null
 
 #######################################
 
