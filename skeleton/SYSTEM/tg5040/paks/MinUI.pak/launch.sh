@@ -210,8 +210,13 @@ usb_device.sh &
 FIRSTRUN="$SHARED_USERDATA_PATH/.minui/zero-firstrun-${DEVICE:-smartpro}"
 rm -f "$SHARED_USERDATA_PATH/.minui/zero-firstrun-done" # retire the old unscoped flag
 if [ ! -f "$FIRSTRUN" ]; then
+	POLISH_OK=1
 	# Remove Loading: drop the stock splash line so boot goes straight to MinUI (no flash).
-	[ -f /etc/init.d/runtrimui ] && sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null
+	# A failure here must also block the marker, or a read-only/full rootfs is recorded as done
+	# and the splash is never removed on any later boot (review, 2026-08-30).
+	if [ -f /etc/init.d/runtrimui ]; then
+		sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null || POLISH_OK=0
+	fi
 	# Bootlogo: replace the vendor boot logo on the eMMC boot partition (once).
 	# MODEL-SPECIFIC assets: each bootloader expects its own BMP geometry, and writing the wrong
 	# one renders garbled (learned the hard way on the SP, 2026-07-05). Dimensions below are
@@ -231,14 +236,22 @@ if [ ! -f "$FIRSTRUN" ]; then
 	# Track whether the device writes actually landed. The marker used to be written
 	# unconditionally, so a logo that could NOT be copied (full or erroring boot partition) was
 	# recorded as done and never retried on any later boot. Retrying next boot is free; a
-	# permanently-wrong boot logo is not. Copy to a TEMP name and rename into place so a failure
-	# or power cut cannot leave bootlogo.bmp half-overwritten.
-	POLISH_OK=1
-	if [ -n "$LOGO" ] && [ -f "$LOGO" ]; then
+	# permanently-wrong boot logo is not.
+	#
+	# The temp-name + rename below stops a failed copy from truncating a good logo, and makes the
+	# swap atomic against a CONCURRENT reader. It is NOT a power-cut guarantee: VFAT has no
+	# journal, so sync the finished temp file BEFORE the rename and sync again after, which is the
+	# best this filesystem offers. Do not describe it as crash-proof (review, 2026-08-30).
+	#
+	# A model we DO have a logo for, whose asset is missing, is a broken install, not a no-op:
+	# fail so a later repair retries. An empty LOGO (unknown model) stays a legitimate success.
+	if [ -n "$LOGO" ] && [ ! -f "$LOGO" ]; then
+		POLISH_OK=0
+	elif [ -n "$LOGO" ]; then
 		BOOTMNT=/tmp/zero-boot
 		mkdir -p "$BOOTMNT"
 		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
-			if cp "$LOGO" "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null &&
+			if cp "$LOGO" "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null && sync &&
 			   mv "$BOOTMNT/bootlogo.bmp.new" "$BOOTMNT/bootlogo.bmp" 2>/dev/null; then
 				sync
 			else
@@ -296,11 +309,12 @@ if [ -f "$SDCARD_PATH/wifi.txt" ]; then
 		touch "$SHARED_USERDATA_PATH/enable-ssh"
 	fi
 fi
-# These three are USB and clock daemons with NOTHING to do with wifi or SSH, and they used to sit
-# in the else branch below: turning on wifi therefore left adbd, MtpDaemon and ntpd running for the
-# whole session. MtpDaemon is the expensive one, indexing the entire card while games stream from
-# it. Killing them is right on every device and in both modes; only the RADIO stack is conditional.
-# (Found on the Brick Pro with wifi enabled, 2026-08-30: all three alive at the menu.)
+# MtpDaemon and ntpd are USB/clock daemons with NOTHING to do with wifi or SSH, and they used to
+# sit in the else branch below, so turning on wifi left them running for the whole session.
+# MtpDaemon is the expensive one, indexing the entire card while games stream from it. Those two
+# die in BOTH modes. adbd does NOT: dev mode keeps stock USB "data" mode on purpose so adb is a
+# wifi-less fallback, so it is killed only in the non-dev branch below.
+# (Found on the Brick Pro with wifi enabled, 2026-08-30; adbd carve-out added in review.)
 killall MtpDaemon 2>/dev/null
 killall ntpd 2>/dev/null # MinUI keeps its own clock
 if [ -f "$SHARED_USERDATA_PATH/enable-ssh" ]; then

@@ -123,17 +123,28 @@ int main (int argc, char *argv[]) {
 	}
 
 	// Brick Pro: seed mute from the CURRENT evdev switch state, once, at zero ongoing cost.
-	// EVIOCGSW returns a bitmap of every SW_* the device holds right now, which is the only way
-	// to learn a switch that was already engaged before we opened it. Whichever node carries the
-	// mute switch answers; the rest report no such bit and are skipped. If nothing reports it,
-	// leave mute untouched rather than guessing.
+	// Input events are edge-delivered, so a switch already engaged before we opened the device is
+	// never announced; EVIOCGSW is the only way to learn it.
+	//
+	// CAPABILITY FIRST, then state. EVIOCGSW SUCCEEDS on a device that supports no switches at
+	// all: the kernel just hands back that device's all-zero current-state bitmap. So testing the
+	// state ioctl's return value identifies "first node we could open", NOT "the node that owns
+	// the mute switch", and on this hardware event0 is a plain keyboard that would answer first,
+	// seed mute=0 and stop the scan. EVIOCGBIT(EV_SW, ...) is the ownership question.
+	// (Both this file's author and an independent review walked into the same trap, 2026-08-30.)
 	if (is_brickpro) {
-		unsigned long swbits[(SW_CNT + (8 * sizeof(long)) - 1) / (8 * sizeof(long))];
+		#define SW_LONGS ((SW_CNT + (8 * sizeof(long)) - 1) / (8 * sizeof(long)))
+		#define SW_HAS(bits, code) \
+			((bits[(code) / (8 * sizeof(long))] >> ((code) % (8 * sizeof(long)))) & 1)
+		unsigned long swcaps[SW_LONGS], swbits[SW_LONGS];
 		for (int i=0; i<INPUT_COUNT; i++) {
 			if (inputs[i] < 0) continue;
+			memset(swcaps, 0, sizeof(swcaps));
+			if (ioctl(inputs[i], EVIOCGBIT(EV_SW, sizeof(swcaps)), swcaps) < 0) continue;
+			if (!SW_HAS(swcaps, CODE_MUTE)) continue; // this node does not own the mute switch
 			memset(swbits, 0, sizeof(swbits));
 			if (ioctl(inputs[i], EVIOCGSW(sizeof(swbits)), swbits) < 0) continue;
-			int muted = (swbits[CODE_MUTE / (8 * sizeof(long))] >> (CODE_MUTE % (8 * sizeof(long)))) & 1;
+			int muted = SW_HAS(swbits, CODE_MUTE);
 			printf("mute: initial evdev state %i (event%i)\n", muted, i); fflush(stdout);
 			SetMute(muted);
 			break;
