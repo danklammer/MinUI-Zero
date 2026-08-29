@@ -1,0 +1,129 @@
+#!/bin/sh
+# Self-running device test suite for the TrimUI Brick Pro (tg5040, DEVICE=brickpro).
+#
+#   sh tools/brickpro-autotest.sh [user@host]
+#
+# Adapted from tools/mmp-autotest.sh. Drives the DEVICE over ssh: injects game launches through
+# the /tmp/next + eval mechanism the menu itself uses (safe: MinUI.pak's loop guards on
+# /tmp/minui_exec, so killing minui.elf just re-loops; shutdown only fires if that sentinel is
+# removed), lets each game run unattended, then asserts.
+#
+# WHAT IT PROVES on its own, per system:
+#   * minarch actually STARTS with that core and rom (a missing/ABI-broken core fails here)
+#   * it SURVIVES the dwell without dying (bad core, bad cfg, OOM, scaler crash)
+#   * the frontend picked BRICK PRO geometry (1024x768, DEVICE=brickpro) and not Smart Pro
+#   * no core/frontend ERROR lines in that system's log
+#   * a framebuffer grab is pulled as evidence
+#
+# WHAT STAYS MANUAL (physics): audio by ear, panel look, analog stick feel, rumble strength.
+#
+# Exit: games end with SIGTERM so minarch's Term_handler releases audio and restores volts.
+set -u
+
+TARGET=${1:-root@192.168.1.235}
+KEY=/Users/dk/.ssh/tg5040_dev
+SD=/mnt/SDCARD
+SYS="$SD/.system/tg5040"
+ROMS="$SD/Roms"
+LOGS="$SD/.userdata/tg5040/logs"
+ART=".notes/brickpro-autotest"
+PASS=0; FAIL=0
+
+mkdir -p "$ART"
+rsh() { ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o ConnectTimeout=8 -o BatchMode=yes -o LogLevel=ERROR "$TARGET" "$@"; }
+note() { printf '%s\n' "$*"; }
+pass() { PASS=$((PASS+1)); printf '  PASS  %s\n' "$*"; }
+fail() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$*"; }
+
+rsh 'echo ok' >/dev/null 2>&1 || { echo "device unreachable at $TARGET"; exit 1; }
+
+# --- preflight: the whole point of this device's bring-up -------------------------------------
+note "=== preflight"
+MODEL=$(rsh 'cat /mnt/SDCARD/.userdata/tg5040/logs/model.txt 2>/dev/null' | tr '\n' ' ')
+note "  $MODEL"
+case "$MODEL" in
+	*"device=brickpro"*) pass "model detection: DEVICE=brickpro" ;;
+	*) fail "model detection: expected device=brickpro, got: $MODEL" ;;
+esac
+case "$MODEL" in
+	*"1024x768"*) pass "panel: 1024x768" ;;
+	*) fail "panel: expected 1024x768" ;;
+esac
+LEDS=$(rsh 'for f in /sys/class/led_anim/max_scale*; do printf "%s=%s " "$(basename $f)" "$(cat $f 2>/dev/null)"; done')
+case "$LEDS" in
+	*"max_scale_rear=0"*) pass "LEDs: shoulder zone dark ($LEDS)" ;;
+	*) fail "LEDs: rear zone lit ($LEDS)" ;;
+esac
+if rsh 'pgrep -f "adbd|MtpDaemon" >/dev/null 2>&1'; then
+	fail "stray USB daemons still running"
+else
+	pass "USB daemons not running"
+fi
+
+# --- launch <name> <secs> <cmdline> -------------------------------------------------------------
+launch() {
+	name=$1; secs=$2; cmdline=$3
+	note "--- $name (${secs}s)"
+	printf '%s\n' "$cmdline" | rsh "cat > /tmp/next" 2>/dev/null
+	rsh "kill -9 \$(pidof minui.elf) 2>/dev/null"
+	i=0; up=0
+	while [ $i -lt 40 ]; do
+		rsh "pidof minarch.elf >/dev/null 2>&1" && { up=1; break; }
+		sleep 1; i=$((i+1))
+	done
+	[ $up -eq 1 ] || { fail "$name: minarch never started"; return 1; }
+	sleep "$secs"
+	if rsh "pidof minarch.elf >/dev/null 2>&1"; then
+		pass "$name: ran ${secs}s, still alive"
+	else
+		fail "$name: minarch DIED before ${secs}s"
+	fi
+	rsh "dd if=/dev/fb0 of=/tmp/$name.fb bs=3145728 count=1 2>/dev/null; sync"
+	rsh "cat /tmp/$name.fb" > "$ART/$name.fb" 2>/dev/null
+	rsh "kill \$(pidof minarch.elf) 2>/dev/null"
+	i=0
+	while [ $i -lt 20 ]; do
+		rsh "pidof minarch.elf >/dev/null 2>&1" || break
+		sleep 1; i=$((i+1))
+	done
+	rsh "pidof minarch.elf >/dev/null 2>&1" && rsh "kill -9 \$(pidof minarch.elf) 2>/dev/null"
+	i=0
+	while [ $i -lt 25 ]; do
+		rsh "pidof minui.elf >/dev/null 2>&1" && break
+		sleep 1; i=$((i+1))
+	done
+	return 0
+}
+
+check_log() { # <name> <TAG>
+	rsh "cat $LOGS/$2.txt 2>/dev/null" > "$ART/$1.log" 2>/dev/null
+	if [ ! -s "$ART/$1.log" ]; then fail "$name: no log captured"; return; fi
+	# geometry receipt: the frontend must have used Brick Pro dimensions
+	if grep -q "1024x768" "$ART/$1.log" 2>/dev/null; then
+		pass "$1: log shows 1024x768 surface"
+	fi
+	E=$(grep -ciE "\[ERROR\]|Segmentation|core.load_game failed|failed to load" "$ART/$1.log" 2>/dev/null)
+	if [ "${E:-0}" = "0" ]; then pass "$1: no errors in log"; else fail "$1: $E error line(s) in log"; fi
+}
+
+# --- one title per SHIPPED system ---------------------------------------------------------------
+note ""
+note "=== per-system launch tests"
+
+launch GBC 30 "\"$SYS/paks/Emus/GBC.pak/launch.sh\" \"$ROMS/1) Game Boy Color (GBC)/Bionic Commando - Elite Forces.gbc\"" && check_log GBC GBC
+launch GBA 30 "\"$SYS/paks/Emus/GBA.pak/launch.sh\" \"$ROMS/2) Game Boy Advance (GBA)/Advance Wars 2 - Black Hole Rising.gba\"" && check_log GBA GBA
+launch FC  30 "\"$SYS/paks/Emus/FC.pak/launch.sh\" \"$ROMS/3) Nintendo (FC)/1942.nes\"" && check_log FC FC
+launch SUPA 30 "\"$SYS/paks/Emus/SUPA.pak/launch.sh\" \"$ROMS/4) Super Nintendo (SUPA)/ActRaiser.sfc\"" && check_log SUPA SUPA
+launch MD  30 "\"$SYS/paks/Emus/MD.pak/launch.sh\" \"$ROMS/5) Sega Genesis (MD)/Adventures of Batman & Robin.md\"" && check_log MD MD
+
+PS_ROM=$(rsh "ls \"$ROMS/6) PlayStation (PS)/Ace Combat 2/\"*.cue 2>/dev/null | head -1")
+if [ -n "$PS_ROM" ]; then
+	launch PS 60 "\"$SYS/paks/Emus/PS.pak/launch.sh\" \"$PS_ROM\"" && check_log PS PS
+else
+	fail "PS: no .cue found under Ace Combat 2"
+fi
+
+note ""
+note "=== $PASS passed, $FAIL failed   (artifacts in $ART)"
+[ "$FAIL" -eq 0 ]

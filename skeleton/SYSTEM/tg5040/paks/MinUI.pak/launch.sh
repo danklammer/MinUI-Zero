@@ -202,16 +202,27 @@ usb_device.sh &
 
 # First-boot polish (baked in from the old Bootlogo + Remove Loading tools — see git history).
 # Runs once, guarded by a flag; every step is non-fatal so a failure never blocks boot.
-FIRSTRUN="$SHARED_USERDATA_PATH/.minui/zero-firstrun-done"
+# SCOPED PER MODEL, deliberately. The flag lives on the CARD but everything it guards is written
+# to the DEVICE (/etc/init.d/runtrimui, the eMMC boot partition), so a single unscoped flag meant
+# the first machine a card touched consumed the polish for every later one. The Brick Pro hit this
+# exactly: its first boot spent the flag while the model was still unrecognised and LOGO was empty,
+# so it could never get a boot logo afterwards no matter how many times it booted (2026-08-30).
+FIRSTRUN="$SHARED_USERDATA_PATH/.minui/zero-firstrun-${DEVICE:-smartpro}"
+rm -f "$SHARED_USERDATA_PATH/.minui/zero-firstrun-done" # retire the old unscoped flag
 if [ ! -f "$FIRSTRUN" ]; then
 	# Remove Loading: drop the stock splash line so boot goes straight to MinUI (no flash).
 	[ -f /etc/init.d/runtrimui ] && sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null
 	# Bootlogo: replace the vendor boot logo on the eMMC boot partition (once).
-	# MODEL-SPECIFIC assets: the two bootloaders expect different BMP formats (Brick:
-	# 216x237x24; Smart Pro: 396x66x32). Writing the wrong one renders garbled (learned
-	# the hard way on the SP, 2026-07-05) — never write a logo the model did not ask for.
+	# MODEL-SPECIFIC assets: each bootloader expects its own BMP geometry, and writing the wrong
+	# one renders garbled (learned the hard way on the SP, 2026-07-05). Dimensions below are
+	# MEASURED from the shipped assets and from the Brick Pro's own vendor logo, not assumed:
+	#   Brick     216x237x24    Smart Pro  128x128x32    Brick Pro  396x66x24
+	# (the old comment claimed the Smart Pro wanted 396x66x32; that was wrong on both counts,
+	# and 396x66 is in fact the Brick Pro's shape.) Never write a logo the model did not ask for.
 	if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 		LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
+	elif [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
+		LOGO="$SYSTEM_PATH/dat/bootlogo-brickpro.bmp"
 	elif [ "$TRIMUI_MODEL" = "Trimui Smart Pro" ]; then
 		LOGO="$SYSTEM_PATH/dat/bootlogo-smartpro.bmp"
 	else
