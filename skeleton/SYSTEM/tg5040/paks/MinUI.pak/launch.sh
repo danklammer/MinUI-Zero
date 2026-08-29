@@ -121,9 +121,13 @@ rm -f "$SHARED_USERDATA_PATH/.minui/model" # clean up the briefly-shipped cache
 # have measured and unknown for a third: the Brick Pro (TG4040) reports some other string we have
 # never seen. Rather than guess its panel, record what the device ACTUALLY said plus the real fb0
 # geometry, so first boot on new hardware is diagnosable from the card. One line per boot.
-printf 'model=%s\ndevice=%s\npanel=%s\n' \
+# virtual_size alone is NOT enough: on the Brick Pro it read "1024,16384", where 16384 is the
+# virtual scrollback height, not the visible one (2026-08-28). Record the visible mode too.
+printf 'model=%s\ndevice=%s\nvirtual_size=%s\nmodes=%s\nstride=%s\n' \
 	"${TRIMUI_MODEL:-<none>}" "${DEVICE:-<unset, using Smart Pro geometry>}" \
 	"$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo '<unreadable>')" \
+	"$(cat /sys/class/graphics/fb0/modes 2>/dev/null | tr '\n' ' ' || echo '<unreadable>')" \
+	"$(cat /sys/class/graphics/fb0/stride 2>/dev/null || echo '<unreadable>')" \
 	> "$LOGS_PATH/model.txt" 2>/dev/null
 
 #######################################
