@@ -169,6 +169,10 @@ echo 0 > /sys/class/led_anim/max_scale
 if [ "$DEVICE" = "brick" ] || [ "$DEVICE" = "brickpro" ]; then
 	echo 0 > /sys/class/led_anim/max_scale_lr
 	echo 0 > /sys/class/led_anim/max_scale_f1f2
+	# The Brick Pro has a FOURTH zone the Brick does not: max_scale_rear, the shoulder LEDs, which
+	# ship lit at 40 and stayed on through every other zone being zeroed (read off the device
+	# 2026-08-30). Absent on the Brick, where the write simply fails and costs nothing.
+	echo 0 > /sys/class/led_anim/max_scale_rear 2>/dev/null
 fi
 # ...and keep them off: trimui_inputd re-arms the scales from /mnt/UDISK/system.json on every
 # button press (verified on-device 2026-07-01 — first keypress after boot relit the LEDs at
@@ -178,6 +182,7 @@ if [ -f "$STOCK_JSON" ]; then
 	sed -i -e "s/\"topled\":[[:space:]]*[0-9]*/\"topled\":\t0/" \
 	       -e "s/\"shoulderled\":[[:space:]]*[0-9]*/\"shoulderled\":\t0/" \
 	       -e "s/\"f1f2led\":[[:space:]]*[0-9]*/\"f1f2led\":\t0/" \
+	       -e "s/\"joystickled\":[[:space:]]*[0-9]*/\"joystickled\":\t0/" \
 	       -e "s/\"ledswitch\":[[:space:]]*[0-9]*/\"ledswitch\":\t0/" "$STOCK_JSON"
 fi
 

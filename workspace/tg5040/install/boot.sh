@@ -65,6 +65,8 @@ if [ -f "$UPDATE_PATH" ]; then
 	if [ "$DEVICE" = "brick" ] || [ "$DEVICE" = "brickpro" ]; then
 		echo 0 > /sys/class/led_anim/max_scale_lr
 		echo 0 > /sys/class/led_anim/max_scale_f1f2
+		# Brick Pro only: the shoulder LEDs live in their own zone and ship lit at 40.
+		echo 0 > /sys/class/led_anim/max_scale_rear 2>/dev/null
 	fi
 	
 	cd $(dirname "$0")/$PLATFORM
