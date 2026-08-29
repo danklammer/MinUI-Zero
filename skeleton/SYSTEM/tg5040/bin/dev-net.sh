@@ -91,4 +91,12 @@ LOG="$SHARED/ssh-ip.txt"
   echo "listening: $(netstat -tln 2>/dev/null | grep -E ':(22|2022) ' | tr -s ' ' | cut -d' ' -f4 | tr '\n' ' ')"
   echo "connect:  ssh -i ~/.ssh/tg5040_dev -p 2022 root@${ip:-<ip>}"
   echo "or (stock daemon on 22): ssh -i ~/.ssh/tg5040_dev root@${ip:-<ip>}"
+
+  # ntpd is HOTPLUG-spawned: MinUI.pak/launch.sh kills it at boot, but that runs BEFORE wifi is
+  # up, and ntpd-hotplug starts a fresh one the moment wlan0 gets an address. So in dev mode it
+  # always came back (observed after a clean reboot, 2026-08-30). Kill it here instead, once the
+  # interface is actually up, which is the only point where the race is settled. MinUI keeps its
+  # own clock; nothing in this fork wants a time daemon.
+  killall ntpd 2>/dev/null
+  echo "ntpd: $(pgrep ntpd >/dev/null 2>&1 && echo STILL-RUNNING || echo stopped)"
 } >> "$LOG" 2>&1

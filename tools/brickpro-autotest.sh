@@ -55,10 +55,13 @@ case "$LEDS" in
 	*"max_scale_rear=0"*) pass "LEDs: shoulder zone dark ($LEDS)" ;;
 	*) fail "LEDs: rear zone lit ($LEDS)" ;;
 esac
-if rsh 'pgrep -f "adbd|MtpDaemon" >/dev/null 2>&1'; then
-	fail "stray USB daemons still running"
+# pidof matches the BINARY NAME. `pgrep -f "adbd|MtpDaemon"` matched the ssh shell running the
+# check itself and reported a permanent false FAIL on a clean device (2026-08-30).
+STRAY=$(rsh 'for d in adbd MtpDaemon ntpd; do pidof $d >/dev/null 2>&1 && printf "%s " $d; done')
+if [ -n "$STRAY" ]; then
+	fail "stray daemons still running: $STRAY"
 else
-	pass "USB daemons not running"
+	pass "no stray USB/clock daemons"
 fi
 
 # --- launch <name> <secs> <cmdline> -------------------------------------------------------------
