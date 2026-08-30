@@ -6,9 +6,40 @@ SDCARD_PATH="/mnt/SDCARD"
 UPDATE_PATH="$SDCARD_PATH/MinUI.zip"
 SYSTEM_PATH="$SDCARD_PATH/.system"
 
+# LEDS OFF, FIRST THING. This used to sit ~35 lines down, after the remounts, the governor setup
+# and the radio teardown. None of those need to happen first, and every line before this one is
+# time the LEDs are lit for no reason. They are still lit BEFORE this script runs at all (the
+# firmware's own init owns the boot-logo phase), which is what /mnt/UDISK/system.json is for; this
+# just closes our half of the window as early as we possibly can. Writes to a zone the device does
+# not have fail harmlessly, which is why max_scale_rear (Brick Pro only) is safe here unguarded.
+# Ambient RGB LEDs off every boot (not just on install) — Zero has no ambient-LED feature, so they're
+# a rail we never use. Cheap insurance in case an OFW update re-enables them.
+echo 0 > /sys/class/led_anim/max_scale 2>/dev/null
+echo 0 > /sys/class/led_anim/max_scale_lr 2>/dev/null
+echo 0 > /sys/class/led_anim/max_scale_f1f2 2>/dev/null
+	# Brick Pro only: the shoulder LEDs are a FOURTH zone and ship lit at 40. This is the block
+	# that runs on EVERY boot; the copy inside the install branch below was fixed first and this one
+	# was missed, leaving the shoulders lit from power-on until the launcher finally zeroes them.
+	echo 0 > /sys/class/led_anim/max_scale_rear 2>/dev/null
+
 # for Brick (noatime: nothing reads atime, so skip the per-access metadata writeback to SD)
 mount -o remount,rw,async,noatime "$SDCARD_PATH"
 mount -o remount,rw,async,noatime "/mnt/UDISK"
+
+# Persist "LEDs off" where the FIRMWARE reads it, not just in sysfs. The sysfs writes above hold
+# only for this boot and only from the moment this script runs; the boot-logo phase belongs to the
+# firmware's own init, which configures LEDs from /mnt/UDISK/system.json. MinUI.pak/launch.sh
+# already sweeps these keys, but that is ~a second later and does not run at all on a boot that
+# ends early, so do it here too, as soon as UDISK is writable. Idempotent: a no-op once zeroed.
+# (Brick Pro showed lit stick rings and strip LEDs through the boot logo, 2026-08-30.)
+STOCK_JSON=/mnt/UDISK/system.json
+if [ -f "$STOCK_JSON" ]; then
+	sed -i -e "s/\"topled\":[[:space:]]*[0-9]*/\"topled\":\t0/" \
+	       -e "s/\"shoulderled\":[[:space:]]*[0-9]*/\"shoulderled\":\t0/" \
+	       -e "s/\"f1f2led\":[[:space:]]*[0-9]*/\"f1f2led\":\t0/" \
+	       -e "s/\"joystickled\":[[:space:]]*[0-9]*/\"joystickled\":\t0/" \
+	       -e "s/\"ledswitch\":[[:space:]]*[0-9]*/\"ledswitch\":\t0/" "$STOCK_JSON" 2>/dev/null
+fi
 
 # Hybrid CPU control: prefer schedutil (the governor sets a scaling_max_freq cap and the
 # kernel picks beneath it). Verify by read-back; if schedutil is unavailable, fall back to
@@ -39,15 +70,6 @@ if [ ! -f "$SHARED_UD/enable-ssh" ]; then
 	done
 fi
 
-# Ambient RGB LEDs off every boot (not just on install) — Zero has no ambient-LED feature, so they're
-# a rail we never use. Cheap insurance in case an OFW update re-enables them.
-echo 0 > /sys/class/led_anim/max_scale 2>/dev/null
-echo 0 > /sys/class/led_anim/max_scale_lr 2>/dev/null
-echo 0 > /sys/class/led_anim/max_scale_f1f2 2>/dev/null
-	# Brick Pro only: the shoulder LEDs are a FOURTH zone and ship lit at 40. This is the block
-	# that runs on EVERY boot; the copy inside the install branch below was fixed first and this one
-	# was missed, leaving the shoulders lit from power-on until the launcher finally zeroes them.
-	echo 0 > /sys/class/led_anim/max_scale_rear 2>/dev/null
 
 # install/update
 if [ -f "$UPDATE_PATH" ]; then
