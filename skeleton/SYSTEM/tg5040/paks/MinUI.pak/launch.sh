@@ -242,7 +242,12 @@ fi
 if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
 elif [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
-	LOGO="$SYSTEM_PATH/dat/bootlogo-brickpro.bmp"
+	# Shares the BRICK's asset, deliberately. The Brick Pro's vendor logo is a 396x66 banner, and
+	# a purpose-made 396x66 file was tried first on the assumption that the bootloader demanded
+	# those dimensions. It does not: writing the Brick's own 216x237 mark to this device's boot
+	# partition renders correctly (tested on hardware 2026-08-30). So the bootloader parses the
+	# BMP header and there is no reason to carry a second, smaller, differently-drawn asset.
+	LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
 elif [ "$TRIMUI_MODEL" = "Trimui Smart Pro" ]; then
 	LOGO="$SYSTEM_PATH/dat/bootlogo-smartpro.bmp"
 else
