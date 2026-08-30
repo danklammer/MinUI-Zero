@@ -57,11 +57,22 @@ case "$LEDS" in
 esac
 # pidof matches the BINARY NAME. `pgrep -f "adbd|MtpDaemon"` matched the ssh shell running the
 # check itself and reported a permanent false FAIL on a clean device (2026-08-30).
-STRAY=$(rsh 'for d in adbd MtpDaemon ntpd; do pidof $d >/dev/null 2>&1 && printf "%s " $d; done')
+#
+# DEV-MODE cards (enable-ssh flag set) legitimately differ (learned 2026-08-31, when this check
+# false-FAILed the only card it can actually reach):
+#   adbd  SURVIVES BY DESIGN in dev mode -- the wifi-less fallback (launch.sh's documented
+#         carve-out). Only a non-dev card should have it dead.
+#   ntpd  is respawned by ntpd-hotplug on every wlan0 address event; launch.sh and dev-net.sh
+#         both kill it and hotplug wins the race eventually. Dev-only (non-dev kills wifi
+#         entirely, so there is no hotplug), tolerated rather than whack-a-moled.
+# MtpDaemon must be dead in BOTH modes -- it indexes the card while games stream from it.
+DEVMODE=$(rsh 'test -f /mnt/SDCARD/.userdata/shared/enable-ssh && echo yes || echo no')
+if [ "$DEVMODE" = "yes" ]; then EXPECT="MtpDaemon"; else EXPECT="adbd MtpDaemon ntpd"; fi
+STRAY=$(rsh "for d in $EXPECT; do pidof \$d >/dev/null 2>&1 && printf '%s ' \$d; done")
 if [ -n "$STRAY" ]; then
-	fail "stray daemons still running: $STRAY"
+	fail "stray daemons still running: $STRAY (dev-mode=$DEVMODE)"
 else
-	pass "no stray USB/clock daemons"
+	pass "no stray daemons (dev-mode=$DEVMODE: adbd/ntpd tolerated in dev)"
 fi
 
 # --- launch <name> <secs> <cmdline> -------------------------------------------------------------
