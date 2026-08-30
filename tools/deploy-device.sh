@@ -56,6 +56,13 @@ DST2=/mnt/SDCARD/Tools/$PLATFORM
 # LED-timing fix appeared to do nothing after a "successful" deploy (2026-08-30). Third root.
 SRC3=./build/PAYLOAD/.tmp_update
 DST3=/mnt/SDCARD/.tmp_update
+# .system/res is the SHARED asset root -- the sprite sheets, the font, the grid/line art. It sits
+# beside .system/<platform>, not inside it, so the per-platform root above walks straight past it.
+# That was invisible while the sheets never changed; the Brick Pro's assets@2.5x.png broke the
+# assumption, and a binary that selects a sheet its card does not carry does not degrade, it
+# segfaults (api.c calls IMG_Load then hands the result to SDLX_SetAlpha). Fourth root.
+SRC4=./build/PAYLOAD/.system/res
+DST4=/mnt/SDCARD/.system/res
 
 [ -d "$SRC" ] || { echo "no build payload at $SRC — run: make PLATFORMS=$PLATFORM $PLATFORM"; exit 1; }
 [ -f ./build/latest.txt ] || { echo "no build/latest.txt — build did not complete"; exit 1; }
@@ -186,6 +193,7 @@ return 0
 sync_root "$SRC"  "$DST"  ".system"     || exit 1
 sync_root "$SRC2" "$DST2" "Tools"       || exit 1
 sync_root "$SRC3" "$DST3" ".tmp_update" || exit 1
+sync_root "$SRC4" "$DST4" ".system/res" || exit 1
 
 if [ "$GRAND_SENT" -eq 0 ]; then
 	echo "nothing to do — device already matches this build ($GRAND_TOTAL files across all roots)"

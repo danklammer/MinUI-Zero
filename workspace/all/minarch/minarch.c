@@ -6124,7 +6124,10 @@ static void Menu_loop(void) {
 			GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OKAY", NULL }, 1, screen, 1);
 			
 			// list
-			oy = ((UNSCALE1(DEVICE_HEIGHT) - PADDING * 2) - (MENU_ITEM_COUNT * ROW_PITCH)) / 2;
+			// N rows occupy (N-1) pitches plus one pill, not N pitches -- the last row ends at its own
+			// height, not a full pitch later. Identical wherever ROW_PITCH==PILL_SIZE (every device but
+			// the Brick Pro); there it stops the block sitting a row-gap high.
+			oy = ((UNSCALE1(DEVICE_HEIGHT) - PADDING * 2) - ((MENU_ITEM_COUNT-1) * ROW_PITCH + PILL_SIZE)) / 2;
 			for (int i=0; i<MENU_ITEM_COUNT; i++) {
 				char* item = menu.items[i];
 				SDL_Color text_color = COLOR_WHITE;

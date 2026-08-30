@@ -196,9 +196,19 @@ SDL_Surface* GFX_init(int mode) {
 	asset_rects[ASSET_HOLE]				= (SDL_Rect){SCALE4( 1,63,20,20)};
 	
 	char asset_path[MAX_PATH];
+	// The sheet is picked by SCALE_NAME, which can now name a sheet an older card does not carry
+	// (the Brick Pro's 2.5x). Everything downstream -- SDLX_SetAlpha in PWR_initOverlay first --
+	// dereferences gfx.assets without checking, so a miss here is a segfault at boot, not a
+	// degraded UI. Fall back to the integer sheet, which has shipped since forever: wrong size
+	// beats no launcher, and the log names the sheet that was missing.
 	sprintf(asset_path, RES_PATH "/assets@%sx.png", SCALE_NAME);
-	if (!exists(asset_path)) LOG_info("missing assets, you're about to segfault dummy!\n");
 	gfx.assets = IMG_Load(asset_path);
+	if (!gfx.assets) {
+		LOG_info("missing/unreadable %s, falling back to @%ix\n", asset_path, FIXED_SCALE);
+		sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
+		gfx.assets = IMG_Load(asset_path);
+	}
+	if (!gfx.assets) LOG_info("no asset sheet at all, you're about to segfault dummy!\n");
 	GFX_sampleAssetRGBs(); // fills must match the sheet they're capped with; see above
 
 	TTF_Init();
@@ -739,17 +749,23 @@ void GFX_blitPill(int asset, SDL_Surface* dst, SDL_Rect* dst_rect) {
 
 	if (h==0) h = asset_rects[asset].h;
 	
-	int r = h / 2;
+	// The two caps must ACCOUNT FOR EVERY COLUMN of h, which h/2 twice does not when h is odd:
+	// at the Brick Pro's 2.5x a pill is 75px, both caps came out 37, and the pill rendered a pixel
+	// narrow with the right cap's outermost column dropped from the sheet. Give the odd pixel to
+	// the right cap so rl+rr==h and the two source spans tile [0,h) exactly. For even h (every
+	// other device: 60px at 2x, 90px at 3x) rr==rl==h/2 and this is the same code it always was.
+	int rl = h / 2;
+	int rr = h - rl;
 	if (w < h) w = h;
 	w -= h;
 	
-	GFX_blitAsset(asset, &(SDL_Rect){0,0,r,h}, dst, &(SDL_Rect){x,y});
-	x += r;
+	GFX_blitAsset(asset, &(SDL_Rect){0,0,rl,h}, dst, &(SDL_Rect){x,y});
+	x += rl;
 	if (w>0) {
 		SDL_FillRect(dst, &(SDL_Rect){x,y,w,h}, asset_rgbs[asset]);
 		x += w;
 	}
-	GFX_blitAsset(asset, &(SDL_Rect){r,0,r,h}, dst, &(SDL_Rect){x,y});
+	GFX_blitAsset(asset, &(SDL_Rect){rl,0,rr,h}, dst, &(SDL_Rect){x,y});
 }
 void GFX_blitRect(int asset, SDL_Surface* dst, SDL_Rect* dst_rect) {
 	int x = dst_rect->x;
@@ -857,7 +873,7 @@ void GFX_blitButton(char* hint, char*button, SDL_Surface* dst, SDL_Rect* dst_rec
 		GFX_blitPill(ASSET_BUTTON, dst, &(SDL_Rect){dst_rect->x,dst_rect->y,SCALE1(BUTTON_SIZE)/2+text->w,SCALE1(BUTTON_SIZE)});
 		ox += SCALE1(BUTTON_SIZE)/4;
 		
-		int oy = special_case ? SCALE1(-2) : 0;
+		int oy = special_case ? -SCALE1(2) : 0; // scale the magnitude: SCALE1's +DEN/2 rounds the wrong way below zero
 		SDL_BlitSurface(text, NULL, dst, &(SDL_Rect){ox+dst_rect->x,oy+dst_rect->y+(SCALE1(BUTTON_SIZE)-text->h)/2,text->w,text->h});
 		ox += text->w;
 		ox += SCALE1(BUTTON_SIZE)/4;

@@ -43,7 +43,7 @@ int main(int argc , char* argv[]) {
 #define CHAR_COLON 11
 	while (c = chars[i]) {
 		digit = TTF_RenderUTF8_Blended(font.large, c, COLOR_WHITE);
-		int y = i==CHAR_COLON ? SCALE1(-1.5) : 0; // : sits too low naturally
+		int y = i==CHAR_COLON ? -SCALE1(1.5) : 0; // : sits too low naturally (scale the magnitude, then negate)
 		// TODO: y offset is wrong here
 		// printf("%s x:%i y:%i SCALE1(DIGIT_HEIGHT):%i SCALE1(DIGIT_HEIGHT) - digit->h:%i\n", c, (i * SCALE1(DIGIT_WIDTH)), y, SCALE1(DIGIT_HEIGHT), SCALE1(DIGIT_HEIGHT) - digit->h); fflush(stdout);
 		SDL_BlitSurface(digit, NULL, digits, &(SDL_Rect){ (i * SCALE1(DIGIT_WIDTH)) + (SCALE1(DIGIT_WIDTH) - digit->w)/2, y + (SCALE1(DIGIT_HEIGHT) - digit->h)/2 });
@@ -266,7 +266,10 @@ int main(int argc , char* argv[]) {
 			
 			// datetime
 			int x = ox;
-			int y = SCALE1(((UNSCALE1(FIXED_HEIGHT)-PILL_SIZE-DIGIT_HEIGHT)/2));
+			// Centre in DEVICE pixels. Going down to logical units and back rounds twice, and at a
+			// fractional scale the two roundings do not cancel (768 -> 307 -> 130 -> 325, one short of
+			// the true 326). Every integer-scale device divides exactly, so this is a no-op there.
+			int y = (FIXED_HEIGHT - SCALE1(PILL_SIZE) - SCALE1(DIGIT_HEIGHT)) / 2;
 			
 			x = blitNumber(year_selected, x,y);
 			x = blit(CHAR_SLASH, x,y);
