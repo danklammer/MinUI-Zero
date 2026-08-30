@@ -1977,7 +1977,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYHATMOTION) {
 			int hats[4] = {-1,-1,-1,-1}; // -1=no change,0=up,1=down,2=left,3=right btn_ids
 			int hat = event.jhat.value;
-			// LOG_info("hat event: %i\n", hat);
+			if (zero_input_debug()) LOG_info("input: HAT value=%i\n", hat);
 			// TODO: safe to assume hats will always be the primary dpad?
 			// TODO: this is literally a bitmask, make it one (oh, except there's 3 states...)
 			switch (hat) {
@@ -2013,7 +2013,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYAXISMOTION) {
 			int axis = event.jaxis.axis;
 			int val = event.jaxis.value;
-			// LOG_info("axis: %i (%i)\n", axis,val);
+			if (zero_input_debug()) LOG_info("input: AXIS axis=%i value=%i\n", axis, val);
 			
 			// triggers on tg5040
 			if (axis==AXIS_L2) {
