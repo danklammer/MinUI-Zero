@@ -3,7 +3,7 @@
 ## Same simple MinUI. Runs cooler, lasts longer, plays smoother.
 
 **MinUI Zero** is a low-power [MinUI](https://github.com/shauninman/MinUI) fork for the **TrimUI
-Brick**, **Brick Pro** and **Smart Pro**, with alpha builds for the **Anbernic RG35XX Plus / H** and the
+Brick** and **Smart Pro**, with alpha builds for the **Anbernic RG35XX Plus / H** and the
 **Miyoo Mini family**. It keeps MinUI's fast, distraction-free experience and tunes everything
 underneath to use only the power each game actually needs.
 
@@ -56,7 +56,7 @@ philosophy.
 | Features | Minimal by design: no box art, store, themes, or accounts | Box art, WiFi, Bluetooth audio, cheats, game switcher, Pak Store, LED effects, themes |
 | Background services in-game | keymon only, rewritten for zero idle wakeups | keymon, battery monitor, audio monitor, plus WiFi and Bluetooth stacks when enabled |
 | Deep sleep | Yes | Yes |
-| Devices | Brick, Brick Pro, Smart Pro (+ alpha Anbernic RG35XX Plus / H and Miyoo Mini family) | Brick, Brick Pro, Smart Pro, Smart Pro S |
+| Devices | Brick, Smart Pro (+ alpha Anbernic RG35XX Plus / H and Miyoo Mini family) | Brick, Brick Pro, Smart Pro, Smart Pro S |
 
 Measured at MinUI Zero v1.5 and NextUI v6.14.0. Source lines count each firmware's own `.c`/`.h` and
 exclude the emulator cores both ship; download sizes are each project's base release zip. The NextUI
@@ -102,10 +102,14 @@ artifacts, and they are not interchangeable.
 
 | Device | Status | Download | Install |
 |---|---|---|---|
-| TrimUI Brick / Brick Pro / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
+| TrimUI Brick / Smart Pro | Stable | `MinUI-Zero-trimui-*.zip` | Copy onto a card |
 | Miyoo Mini / Plus / Flip | Alpha | `MinUI-Zero-miyoo-*-alpha.zip` | Copy onto a card |
 | Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
 | Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
+
+The **TrimUI Brick Pro** is not in this list yet. Support for it is written and running on hardware,
+but it has not shipped in a release, so the current `MinUI-Zero-trimui-*.zip` does not know the
+device exists. It lands in the next release.
 
 ## Install
 
@@ -160,7 +164,7 @@ for ARMv7/NEON. One card serves all three models and the firmware detects which 
 **Plus** is the model this is developed and verified on; the **Mini** and **Flip** are code-complete
 but **never tested on real hardware**.
 
-| | TrimUI Brick / Brick Pro / Smart Pro | Miyoo Mini Plus |
+| | TrimUI Brick / Smart Pro | Miyoo Mini Plus |
 |---|---|---|
 | Closed-loop governor | Yes | Yes |
 | Emulator cores | 11 | 11 (same pinned versions) |
