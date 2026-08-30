@@ -50,6 +50,12 @@ SRC=./build/PAYLOAD/.system/$PLATFORM
 DST=/mnt/SDCARD/.system/$PLATFORM
 SRC2=./build/PAYLOAD/Tools/$PLATFORM
 DST2=/mnt/SDCARD/Tools/$PLATFORM
+# .tmp_update is the BOOT DISPATCH (tg5040.sh, updater, the boot artwork). It is not per-platform:
+# the staged directory is shared, and it is what runs before the launcher on every boot. Omitting
+# it meant a change to install/boot.sh could never reach a device, which is precisely how the
+# LED-timing fix appeared to do nothing after a "successful" deploy (2026-08-30). Third root.
+SRC3=./build/PAYLOAD/.tmp_update
+DST3=/mnt/SDCARD/.tmp_update
 
 [ -d "$SRC" ] || { echo "no build payload at $SRC — run: make PLATFORMS=$PLATFORM $PLATFORM"; exit 1; }
 [ -f ./build/latest.txt ] || { echo "no build/latest.txt — build did not complete"; exit 1; }
@@ -67,7 +73,14 @@ NEWER=$(find workspace skeleton -newer ./build/latest.txt -type f \
 	exit 1
 }
 
-SSH="ssh -p $PORT -o ConnectTimeout=8 $IDENT"
+# Host keys: these are OUR dev handhelds on a LAN, and their key changes every time a card is
+# reflashed or a fresh dropbear host key is generated. With the defaults, ssh refuses a host it has
+# never seen ("Host key verification failed") and a NON-INTERACTIVE deploy simply dies, which is
+# exactly what happened deploying to the Brick Pro on 2026-08-30 while a plain ssh with these two
+# options connected fine. accept-new is not enough either: it still rejects a CHANGED key, which is
+# the normal case after a reflash. Same reasoning, and the same two options, as the h700 dev
+# wrapper. Do not copy this pattern to anything reachable off the LAN.
+SSH="ssh -p $PORT -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR $IDENT"
 
 echo "target : $TARGET:$PORT  ($PLATFORM)"
 echo "build  : $(cat ./build/latest.txt)"
@@ -170,8 +183,9 @@ return 0
 # Every staged root, in order. .system is required; Tools is skipped when a platform ships none.
 # Report the UNION at the end: a per-root "nothing to do" printed alone is the same false green
 # that let the Tools half go unexamined for a whole day.
-sync_root "$SRC"  "$DST"  ".system" || exit 1
-sync_root "$SRC2" "$DST2" "Tools"   || exit 1
+sync_root "$SRC"  "$DST"  ".system"     || exit 1
+sync_root "$SRC2" "$DST2" "Tools"       || exit 1
+sync_root "$SRC3" "$DST3" ".tmp_update" || exit 1
 
 if [ "$GRAND_SENT" -eq 0 ]; then
 	echo "nothing to do — device already matches this build ($GRAND_TOTAL files across all roots)"
