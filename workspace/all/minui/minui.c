@@ -1851,7 +1851,7 @@ int main (int argc, char *argv[]) {
 						if (j==selected_row) {
 							GFX_blitPill(ASSET_WHITE_PILL, screen, &(SDL_Rect){
 								SCALE1(PADDING),
-								SCALE1(PADDING+(j*PILL_SIZE)),
+								SCALE1(PADDING+(j*ROW_PITCH)),
 								max_width,
 								SCALE1(PILL_SIZE)
 							});
@@ -1870,7 +1870,7 @@ int main (int argc, char *argv[]) {
 								text->h
 							}, screen, &(SDL_Rect){
 								SCALE1(PADDING+BUTTON_PADDING),
-								SCALE1(PADDING+(j*PILL_SIZE)+4)
+								SCALE1(PADDING+(j*ROW_PITCH)+4)
 							});
 						
 							GFX_truncateText(font.large, entry_name, display_name, available_width, SCALE1(BUTTON_PADDING*2));
@@ -1883,7 +1883,7 @@ int main (int argc, char *argv[]) {
 							text->h
 						}, screen, &(SDL_Rect){
 							SCALE1(PADDING+BUTTON_PADDING),
-							SCALE1(PADDING+(j*PILL_SIZE)+4)
+							SCALE1(PADDING+(j*ROW_PITCH)+4)
 						});
 						SDL_FreeSurface(text);
 					}

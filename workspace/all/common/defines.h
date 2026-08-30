@@ -62,6 +62,16 @@
 #ifndef PILL_SIZE
 #define PILL_SIZE 30
 #endif
+// ROW PITCH, separate from PILL height. Rows were positioned at j*PILL_SIZE, so the spacing
+// between list items was welded to the size of the highlight pill. That is fine when the pill
+// height divides the screen neatly and wasteful when it does not: the Brick Pro at 2.5x fits 8
+// rows of 75px, leaving 67px of dead space above the footer. Widening PILL_SIZE to absorb it is
+// the wrong lever, because the pill's rounded caps come from a fixed 30-unit sprite and would
+// clip (the h700 learned this). Widening the PITCH just spreads the same pills further apart.
+// Defaults to PILL_SIZE, so every platform that does not override it is unchanged.
+#ifndef ROW_PITCH
+#define ROW_PITCH PILL_SIZE
+#endif
 #define BUTTON_SIZE 20
 #define BUTTON_MARGIN 5 // ((PILL_SIZE - BUTTON_SIZE) / 2)
 #define BUTTON_PADDING 12
@@ -90,10 +100,27 @@
 #define MIN(a, b) (a) < (b) ? (a) : (b)
 #define CEIL_DIV(a,b) ((a) + (b) - 1) / (b)
 
-#define SCALE1(a) ((a)*FIXED_SCALE)
-#define SCALE2(a,b) ((a)*FIXED_SCALE),((b)*FIXED_SCALE)
-#define SCALE3(a,b,c) ((a)*FIXED_SCALE),((b)*FIXED_SCALE),((c)*FIXED_SCALE)
-#define SCALE4(a,b,c,d) ((a)*FIXED_SCALE),((b)*FIXED_SCALE),((c)*FIXED_SCALE),((d)*FIXED_SCALE)
+// FRACTIONAL UI SCALE. FIXED_SCALE stays an int for every existing platform, but the scale is now
+// applied as a RATIO so a device can sit between the prebuilt asset sheets. A platform that wants
+// a half step defines SCALE_NUM/SCALE_DEN (and SCALE_NAME to pick its sheet); everything else gets
+// NUM=FIXED_SCALE, DEN=1 and is bit-identical to before.
+#ifndef SCALE_NUM
+#define SCALE_NUM FIXED_SCALE
+#endif
+#ifndef SCALE_DEN
+#define SCALE_DEN 1
+#endif
+#ifndef SCALE_NAME
+#define SCALE_NAME STR(FIXED_SCALE) // a string EXPRESSION, used with %s, never concatenated
+#endif
+// Rounds to NEAREST, not toward zero. Truncating a ratio drifts pill caps a pixel short of the
+// rows they cap, which is exactly the clipping the h700 hit when PILL_SIZE was trimmed.
+#define SCALE1(a) (((a)*SCALE_NUM + SCALE_DEN/2)/SCALE_DEN)
+// The inverse, for the few sites that divide BY the scale to get logical units back.
+#define UNSCALE1(a) (((a)*SCALE_DEN + SCALE_NUM/2)/SCALE_NUM)
+#define SCALE2(a,b) SCALE1(a),SCALE1(b)
+#define SCALE3(a,b,c) SCALE1(a),SCALE1(b),SCALE1(c)
+#define SCALE4(a,b,c,d) SCALE1(a),SCALE1(b),SCALE1(c),SCALE1(d)
 
 ///////////////////////////////
 

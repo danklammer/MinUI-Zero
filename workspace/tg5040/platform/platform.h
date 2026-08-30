@@ -136,7 +136,14 @@ extern int is_brickpro;
 
 ///////////////////////////////
 
+// SPIKE: the Brick Pro renders at 2.5x. Its panel is the Brick's 1024x768, but on noticeably
+// larger glass, so @3x reads oversized and @2x too small. 2.5x gives 75px rows and 40px menu text,
+// between the two. FIXED_SCALE stays 3 so anything still reading it directly sees a sane integer;
+// the ratio below is what actually drives layout, and SCALE_NAME picks the matching sheet.
 #define FIXED_SCALE 	(is_brick||is_brickpro?3:2)
+#define SCALE_NUM   	(is_brickpro?5:(is_brick?3:2))
+#define SCALE_DEN   	(is_brickpro?2:1)
+#define SCALE_NAME  	(is_brickpro?"2.5":(is_brick?"3":"2"))
 #define FIXED_WIDTH		(is_brick||is_brickpro?1024:1280)
 #define FIXED_HEIGHT	(is_brick||is_brickpro?768:720)
 #define FIXED_BPP		2
@@ -146,8 +153,16 @@ extern int is_brickpro;
 
 ///////////////////////////////
 
-#define MAIN_ROW_COUNT (is_brick||is_brickpro?7:10) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
-#define PADDING (is_brick||is_brickpro?5:10) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
+#define MAIN_ROW_COUNT (is_brickpro?8:(is_brick?7:10))
+// Brick Pro only: 8 rows of 75px leave 67px dead above the footer. Pitch 33 (82px at 2.5x) spreads
+// them to land just under it, without touching the 30-unit pill sprite. Others keep PILL_SIZE.
+#define ROW_PITCH (is_brickpro?32:PILL_SIZE) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
+// Brick Pro: 7 (18px at 2.5x) instead of 5 (13px). PADDING is the GLOBAL edge inset -- header,
+// footer, clock, list and every message box measure from it -- so raising it moves the whole UI
+// inward together rather than nudging one element out of alignment with the rest. Paired with
+// ROW_PITCH 32 above: the tighter rows pay for the wider margin, and the leftover 17px under
+// the last row reads as bottom padding matching the 18px top.
+#define PADDING (is_brickpro?7:(is_brick?5:10)) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
 
 ///////////////////////////////
 

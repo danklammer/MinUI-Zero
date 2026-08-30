@@ -196,7 +196,7 @@ SDL_Surface* GFX_init(int mode) {
 	asset_rects[ASSET_HOLE]				= (SDL_Rect){SCALE4( 1,63,20,20)};
 	
 	char asset_path[MAX_PATH];
-	sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
+	sprintf(asset_path, RES_PATH "/assets@%sx.png", SCALE_NAME);
 	if (!exists(asset_path)) LOG_info("missing assets, you're about to segfault dummy!\n");
 	gfx.assets = IMG_Load(asset_path);
 	GFX_sampleAssetRGBs(); // fills must match the sheet they're capped with; see above
@@ -779,7 +779,7 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 		y = dst_rect->y;
 	}
 	SDL_Rect rect = asset_rects[ASSET_BATTERY];
-	x += (SCALE1(PILL_SIZE) - (rect.w + FIXED_SCALE)) / 2;
+	x += (SCALE1(PILL_SIZE) - (rect.w + SCALE1(1))) / 2;
 	y += (SCALE1(PILL_SIZE) - rect.h) / 2;
 	
 	if (pwr.is_charging) {
@@ -1861,6 +1861,13 @@ void PAD_setAnalog(int neg_id,int pos_id,int value,int repeat_at) {
 	}
 }
 
+// Resolved once; an input hot path should not walk the environment per event.
+static int zero_input_debug(void) {
+	static int on = -1;
+	if (on < 0) { const char* e = getenv("ZERO_INPUT_DEBUG"); on = (e && e[0] && e[0] != '0') ? 1 : 0; }
+	return on;
+}
+
 void PAD_reset(void) {
 	// LOG_info("PAD_reset");
 	pad.just_pressed = BTN_NONE;
@@ -1892,7 +1899,11 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		if (event.type==SDL_KEYDOWN || event.type==SDL_KEYUP) {
 			uint8_t code = event.key.keysym.scancode;
 			pressed = event.type==SDL_KEYDOWN;
-			// LOG_info("key event: %i (%i)\n", code,pressed);
+			// ZERO_INPUT_DEBUG=1 prints every key AND joystick event with the value this code actually
+			// compares against. CODE_* are SDL SCANCODES, not evdev codes (CODE_POWER is 102 =
+			// SDL_SCANCODE_POWER, while evdev KEY_POWER is 116), so mapping a new device straight
+			// from its evdev numbers yields a define that can never match.
+			if (zero_input_debug()) LOG_info("input: KEY scancode=%i pressed=%i\n", code, pressed);
 				 if (code==CODE_UP) 		{ btn = BTN_DPAD_UP; 		id = BTN_ID_DPAD_UP; }
  			else if (code==CODE_DOWN)		{ btn = BTN_DPAD_DOWN; 		id = BTN_ID_DPAD_DOWN; }
 			else if (code==CODE_LEFT)		{ btn = BTN_DPAD_LEFT; 		id = BTN_ID_DPAD_LEFT; }
@@ -1921,7 +1932,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYBUTTONDOWN || event.type==SDL_JOYBUTTONUP) {
 			uint8_t joy = event.jbutton.button;
 			pressed = event.type==SDL_JOYBUTTONDOWN;
-			// LOG_info("joy event: %i (%i)\n", joy,pressed);
+			if (zero_input_debug()) LOG_info("input: JOY button=%i pressed=%i\n", joy, pressed);
 				 if (joy==JOY_UP) 		{ btn = BTN_DPAD_UP; 		id = BTN_ID_DPAD_UP; }
  			else if (joy==JOY_DOWN)		{ btn = BTN_DPAD_DOWN; 		id = BTN_ID_DPAD_DOWN; }
 			else if (joy==JOY_LEFT)		{ btn = BTN_DPAD_LEFT; 		id = BTN_ID_DPAD_LEFT; }
