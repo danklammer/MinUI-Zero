@@ -755,8 +755,11 @@ void GFX_blitPill(int asset, SDL_Surface* dst, SDL_Rect* dst_rect) {
 	// The two caps must ACCOUNT FOR EVERY COLUMN of h, which h/2 twice does not when h is odd:
 	// at the Brick Pro's 2.5x a pill is 75px, both caps came out 37, and the pill rendered a pixel
 	// narrow with the right cap's outermost column dropped from the sheet. Give the odd pixel to
-	// the right cap so rl+rr==h and the two source spans tile [0,h) exactly. For even h (every
-	// other device: 60px at 2x, 90px at 3x) rr==rl==h/2 and this is the same code it always was.
+	// the right cap so rl+rr==h and the two source spans tile [0,h) exactly. For even h
+	// rr==rl==h/2 and this is the same code it always was. One integer-scale asset is odd and
+	// deliberately CHANGES with this: ASSET_UNDERLINE (3 logical units) is 9px on the Brick at
+	// 3x, and its right cap now includes the final anti-aliased sprite column that h/2+h/2 was
+	// dropping (Clock tool only; every other pill asset is even at every integer scale).
 	int rl = h / 2;
 	int rr = h - rl;
 	if (w < h) w = h;
