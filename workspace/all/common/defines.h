@@ -122,6 +122,19 @@
 #ifndef CODE_MENU_ALT
 #define CODE_MENU_ALT CODE_NA
 #endif
+#ifndef CODE_F1
+#define CODE_F1 CODE_NA
+#endif
+#ifndef CODE_F2
+#define CODE_F2 CODE_NA
+#endif
+#ifndef JOY_F1
+#define JOY_F1 JOY_NA
+#endif
+#ifndef JOY_F2
+#define JOY_F2 JOY_NA
+#endif
+
 #ifndef JOY_MENU_ALT
 #define JOY_MENU_ALT JOY_NA
 #endif
@@ -169,6 +182,15 @@ enum {
 	BTN_ID_R2,
 	BTN_ID_L3,
 	BTN_ID_R3,
+// F1/F2: two extra face buttons that exist on some devices and not others. On the TrimUI Brick
+// they arrive as joystick buttons 9/10, which this codebase historically called L3/R3 because that
+// device has no analog sticks to claim those indices. The Brick Pro DOES have sticks, so 9/10 are
+// genuine stick clicks there and its F1/F2 moved to KEY_F1/KEY_F2 (59/60) as key events instead.
+// They therefore need identities of their own: reusing L3/R3 would cost the Brick Pro its stick
+// clicks. Placed BEFORE BTN_ID_MENU so they fall inside the bindable range (LOCAL_BUTTON_COUNT).
+// Safe to renumber what follows: bindings persist by NAME (button_labels), never by index.
+	BTN_ID_F1,
+	BTN_ID_F2,
 	BTN_ID_MENU,
 	BTN_ID_PLUS,
 	BTN_ID_MINUS,
@@ -200,6 +222,8 @@ enum {
 	BTN_R2			= 1 << BTN_ID_R2,
 	BTN_L3			= 1 << BTN_ID_L3,
 	BTN_R3			= 1 << BTN_ID_R3,
+	BTN_F1			= 1 << BTN_ID_F1,
+	BTN_F2			= 1 << BTN_ID_F2,
 	BTN_MENU		= 1 << BTN_ID_MENU,
 	BTN_PLUS		= 1 << BTN_ID_PLUS,
 	BTN_MINUS		= 1 << BTN_ID_MINUS,

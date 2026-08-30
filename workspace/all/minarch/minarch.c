@@ -1239,7 +1239,7 @@ enum {
 	SHORTCUT_COUNT,
 };
 
-#define LOCAL_BUTTON_COUNT 16 // depends on device
+#define LOCAL_BUTTON_COUNT 18 // depends on device; 16 + F1/F2 (present on Brick and Brick Pro)
 #define RETRO_BUTTON_COUNT 16 // allow L3/R3 to be remapped by user if desired, eg. Virtual Boy uses extra buttons for right d-pad
 
 typedef struct ButtonMapping { 
@@ -1309,6 +1309,8 @@ static const char* device_button_names[LOCAL_BUTTON_COUNT] = {
 	[BTN_ID_R2]			= "R2",
 	[BTN_ID_L3]			= "L3",
 	[BTN_ID_R3]			= "R3",
+	[BTN_ID_F1]			= "F1",
+	[BTN_ID_F2]			= "F2",
 };
 
 
@@ -1331,6 +1333,8 @@ static char* button_labels[] = {
 	"R2",
 	"L3",
 	"R3",
+	"F1",
+	"F2",
 	"MENU+UP",
 	"MENU+DOWN",
 	"MENU+LEFT",
@@ -1347,6 +1351,8 @@ static char* button_labels[] = {
 	"MENU+R2",
 	"MENU+L3",
 	"MENU+R3",
+	"MENU+F1",
+	"MENU+F2",
 	NULL,
 };
 static char* overclock_labels[] = {

@@ -68,6 +68,12 @@ extern int is_brickpro;
 #define CODE_R3			CODE_NA
 
 #define CODE_MENU		CODE_NA
+// The Brick Pro's F1/F2 are KEY events, not joystick buttons: its gamepad advertises only 11
+// BTN_* codes (indices 0..10, the last two being the real stick clicks), and F1/F2 ride alongside
+// as KEY_F1/KEY_F2. Read off the device's own /proc/bus/input/devices KEY bitmap, 2026-08-30.
+// The Brick reaches the same two buttons through JOY_L3/JOY_R3 (9/10) and needs nothing here.
+#define CODE_F1			(is_brickpro?59:CODE_NA)
+#define CODE_F2			(is_brickpro?60:CODE_NA)
 #define CODE_POWER		102
 
 #define CODE_PLUS		128
@@ -95,10 +101,13 @@ extern int is_brickpro;
 #define JOY_R2			JOY_NA
 #define JOY_L3			(is_brick||is_brickpro?9:JOY_NA)
 #define JOY_R3			(is_brick||is_brickpro?10:JOY_NA)
-// The Brick Pro has a HOME button the Brick does not; NextUI maps it to joystick button 15.
-// Exposed as MENU_ALT so it reaches the menu the same way the Smart Pro S's HOME does.
-// L4/R4 (11/12) are left unmapped: we have no button-assignment feature for them to drive.
-#define JOY_MENU_ALT	(is_brickpro?15:JOY_NA)
+// NO JOY_MENU_ALT HERE. I previously set this to 15, copied from NextUI, without checking it
+// against the hardware. The Brick Pro's gamepad advertises exactly ELEVEN BTN_* codes, so joystick
+// indices are 0..10 and 15 can never fire (decoded from its own /proc/bus/input/devices KEY
+// bitmap, 2026-08-30). Its HOME button arrives two other ways instead: BTN_MODE, which is already
+// JOY_MENU = 8, and KEY_HOMEPAGE (172) as a key event. JOY_PLUS/JOY_MINUS at 14/13 are dead here
+// for the same reason; volume still works because keymon reads KEY_VOLUMEUP/DOWN (115/114) off
+// evdev directly, which is what this device actually sends.
 
 #define JOY_MENU		8
 #define JOY_POWER		102
