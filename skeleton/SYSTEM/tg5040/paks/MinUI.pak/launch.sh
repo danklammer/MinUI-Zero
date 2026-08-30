@@ -207,66 +207,68 @@ usb_device.sh &
 # the first machine a card touched consumed the polish for every later one. The Brick Pro hit this
 # exactly: its first boot spent the flag while the model was still unrecognised and LOGO was empty,
 # so it could never get a boot logo afterwards no matter how many times it booted (2026-08-30).
+# ---- once per model: edits to the DEVICE rootfs that only ever need doing once ---------------
+# Scoped per model on purpose. The flag lives on the CARD but what it guards is written to the
+# DEVICE, so a single unscoped flag meant the first machine a card touched consumed the work for
+# every later one. The Brick Pro hit exactly that.
 FIRSTRUN="$SHARED_USERDATA_PATH/.minui/zero-firstrun-${DEVICE:-smartpro}"
 rm -f "$SHARED_USERDATA_PATH/.minui/zero-firstrun-done" # retire the old unscoped flag
 if [ ! -f "$FIRSTRUN" ]; then
-	POLISH_OK=1
 	# Remove Loading: drop the stock splash line so boot goes straight to MinUI (no flash).
-	# A failure here must also block the marker, or a read-only/full rootfs is recorded as done
-	# and the splash is never removed on any later boot (review, 2026-08-30).
+	# A failure must block the marker, or a read-only/full rootfs is recorded as done and the
+	# splash is never removed on any later boot.
+	POLISH_OK=1
 	if [ -f /etc/init.d/runtrimui ]; then
 		sed -i '/^\/usr\/sbin\/pic2fb \/etc\/splash.png/d' /etc/init.d/runtrimui 2>/dev/null || POLISH_OK=0
-	fi
-	# Bootlogo: replace the vendor boot logo on the eMMC boot partition (once).
-	# MODEL-SPECIFIC assets: each bootloader expects its own BMP geometry, and writing the wrong
-	# one renders garbled (learned the hard way on the SP, 2026-07-05). Dimensions below are
-	# MEASURED from the shipped assets and from the Brick Pro's own vendor logo, not assumed:
-	#   Brick     216x237x24    Smart Pro  128x128x32    Brick Pro  396x66x24
-	# (the old comment claimed the Smart Pro wanted 396x66x32; that was wrong on both counts,
-	# and 396x66 is in fact the Brick Pro's shape.) Never write a logo the model did not ask for.
-	if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
-		LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
-	elif [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
-		LOGO="$SYSTEM_PATH/dat/bootlogo-brickpro.bmp"
-	elif [ "$TRIMUI_MODEL" = "Trimui Smart Pro" ]; then
-		LOGO="$SYSTEM_PATH/dat/bootlogo-smartpro.bmp"
-	else
-		LOGO="" # unknown model: leave the vendor logo alone
-	fi
-	# Track whether the device writes actually landed. The marker used to be written
-	# unconditionally, so a logo that could NOT be copied (full or erroring boot partition) was
-	# recorded as done and never retried on any later boot. Retrying next boot is free; a
-	# permanently-wrong boot logo is not.
-	#
-	# The temp-name + rename below stops a failed copy from truncating a good logo, and makes the
-	# swap atomic against a CONCURRENT reader. It is NOT a power-cut guarantee: VFAT has no
-	# journal, so sync the finished temp file BEFORE the rename and sync again after, which is the
-	# best this filesystem offers. Do not describe it as crash-proof (review, 2026-08-30).
-	#
-	# A model we DO have a logo for, whose asset is missing, is a broken install, not a no-op:
-	# fail so a later repair retries. An empty LOGO (unknown model) stays a legitimate success.
-	if [ -n "$LOGO" ] && [ ! -f "$LOGO" ]; then
-		POLISH_OK=0
-	elif [ -n "$LOGO" ]; then
-		BOOTMNT=/tmp/zero-boot
-		mkdir -p "$BOOTMNT"
-		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
-			if cp "$LOGO" "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null && sync &&
-			   mv "$BOOTMNT/bootlogo.bmp.new" "$BOOTMNT/bootlogo.bmp" 2>/dev/null; then
-				sync
-			else
-				rm -f "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null
-				POLISH_OK=0
-			fi
-			umount "$BOOTMNT" 2>/dev/null
-		else
-			POLISH_OK=0
-		fi
-		rmdir "$BOOTMNT" 2>/dev/null
 	fi
 	if [ "$POLISH_OK" = "1" ]; then
 		touch "$FIRSTRUN"
 		sync
+	fi
+fi
+
+# ---- every boot, but a no-op unless the SHIPPED LOGO CHANGED ----------------------------------
+# This deliberately does NOT sit behind the first-run flag. It used to, and that made a shipped
+# asset unreachable: once a device had booted once, redrawing the boot logo could never reach it
+# again. Exactly what happened on the Brick Pro (2026-08-30) - the card carried the new wordmark
+# while the eMMC kept the first, too-small one, and no amount of rebooting could fix it.
+#
+# The gate is the ASSET's own content instead, so a redraw re-arms this automatically and an
+# unchanged logo costs one md5sum and one file test per boot, never an eMMC remount.
+#
+# MODEL-SPECIFIC assets: each bootloader expects its own BMP geometry and writing the wrong one
+# renders garbled. Dimensions are MEASURED, not assumed:
+#   Brick 216x237x24   Smart Pro 128x128x32   Brick Pro 396x66x24
+if [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
+	LOGO="$SYSTEM_PATH/dat/bootlogo.bmp"
+elif [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
+	LOGO="$SYSTEM_PATH/dat/bootlogo-brickpro.bmp"
+elif [ "$TRIMUI_MODEL" = "Trimui Smart Pro" ]; then
+	LOGO="$SYSTEM_PATH/dat/bootlogo-smartpro.bmp"
+else
+	LOGO="" # unknown model: leave the vendor logo alone
+fi
+if [ -n "$LOGO" ] && [ -f "$LOGO" ]; then
+	LOGO_STAMP="$SHARED_USERDATA_PATH/.minui/zero-bootlogo-$(md5sum "$LOGO" 2>/dev/null | cut -c1-8)"
+	if [ ! -f "$LOGO_STAMP" ]; then
+		BOOTMNT=/tmp/zero-boot
+		mkdir -p "$BOOTMNT"
+		if mount -t vfat /dev/mmcblk0p1 "$BOOTMNT" 2>/dev/null; then
+			# Temp name + rename so a failed copy cannot truncate a good logo. Sync the finished
+			# temp BEFORE the rename and again after: VFAT has no journal, so this is the best
+			# this filesystem offers, not a crash guarantee.
+			if cp "$LOGO" "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null && sync &&
+			   mv "$BOOTMNT/bootlogo.bmp.new" "$BOOTMNT/bootlogo.bmp" 2>/dev/null; then
+				sync
+				rm -f "$SHARED_USERDATA_PATH/.minui/zero-bootlogo-"* 2>/dev/null
+				touch "$LOGO_STAMP"
+				sync
+			else
+				rm -f "$BOOTMNT/bootlogo.bmp.new" 2>/dev/null
+			fi
+			umount "$BOOTMNT" 2>/dev/null
+		fi
+		rmdir "$BOOTMNT" 2>/dev/null
 	fi
 fi
 
