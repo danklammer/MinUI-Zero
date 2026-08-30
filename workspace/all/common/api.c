@@ -538,7 +538,10 @@ struct blend_args {
 	uint16_t *blend_line;
 } blend_args;
 
-#if __ARM_ARCH >= 5
+// ARM32-only asm (rrx, movcs, conditional adds): __ARM_ARCH is also >=5 on AArch64, where these
+// mnemonics do not exist, so the guard must exclude it or the macOS (Apple Silicon) dev-loop
+// build breaks at compile. AArch64 takes the portable C below, which clang vectorizes fine.
+#if __ARM_ARCH >= 5 && !defined(__aarch64__)
 static inline uint32_t average16(uint32_t c1, uint32_t c2) {
 	uint32_t ret, lowbits = 0x0821;
 	asm ("eor %0, %2, %3\r\n"
