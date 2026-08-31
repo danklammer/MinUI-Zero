@@ -54,9 +54,13 @@ $(REQUIRES_UNZIP60):
 	git clone https://github.com/shauninman/unzip60.git $(REQUIRES_UNZIP60)
 
 $(COMMANDER_PIN): $(REQUIRES_COMMANDER)
-	cd $(REQUIRES_COMMANDER) && (git cat-file -e $(COMMANDER_HASH)^{commit} || git fetch origin $(COMMANDER_HASH))
+	cd $(REQUIRES_COMMANDER) && git checkout -- . && (git cat-file -e $(COMMANDER_HASH)^{commit} || git fetch origin $(COMMANDER_HASH))
 	cd $(REQUIRES_COMMANDER) && git checkout --detach $(COMMANDER_HASH)
 	cd $(REQUIRES_COMMANDER) && git diff --quiet && git diff --cached --quiet
+	# local modifications ship as an in-repo patch, same discipline as cores/patches/ —
+	# a direct edit of the checkout dies at the diff-quiet gate above on the next re-pin
+	# (which is what protected this tree from exactly that, 2026-08-31)
+	cd $(REQUIRES_COMMANDER) && git apply --unidiff-zero ../patches/DinguxCommander-sdl2.patch
 	touch $(COMMANDER_PIN)
 $(EVTEST_PIN): $(REQUIRES_EVTEST)
 	cd $(REQUIRES_EVTEST) && (git cat-file -e $(EVTEST_HASH)^{commit} || git fetch origin $(EVTEST_HASH))
