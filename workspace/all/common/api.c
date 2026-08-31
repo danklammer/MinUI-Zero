@@ -1453,6 +1453,19 @@ static int SND_ringPct(void) {
 // samples instead of filling the ring and dropping arbitrary chunks. Non-blocking overflow
 // remains as a safety valve while the first 50ms estimate converges or a core changes speed.
 static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio";
+// Public reprime for pause-like seams (in-game menu close). The DAC keeps consuming while
+// the core is parked in Menu_loop, draining the ring to ~0%; resuming against that with the
+// prefill gate unarmed made the callback race the producer at sub-frame occupancy for the
+// first ~1-2s — partial fills through the mirror-pad path = audible ticks after EVERY menu
+// close (confirmed in the 2026-08-31 start-hitch audit; sleep-resume and FF already re-arm,
+// this seam never did). Costs the same deliberate ~80ms lead-in silence as launch.
+static void SND_reprimeLocked(void);
+void SND_reprime(void) {
+	if (!snd.initialized) return;
+	SDL_LockAudio();
+	SND_reprimeLocked();
+	SDL_UnlockAudio();
+}
 static void SND_reprimeLocked(void) {
 	if (snd.initialized && snd.buffer && snd.frame_count>0) {
 		snd.frame_out = snd.frame_in;

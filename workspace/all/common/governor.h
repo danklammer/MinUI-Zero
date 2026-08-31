@@ -53,10 +53,27 @@
 
 // Per-system ceiling bracket, in kHz. The controller keeps the ceiling within [f_min,f_max].
 // f_max must be a verified-stock OPP — never an overclock (no 2.0GHz on tg5040).
+//
+// opps[]/n_opps: the kernel's REAL frequency ladder (ascending kHz), read at runtime from
+// scaling_available_frequencies. When present, every ceiling the controller commands is an
+// actual OPP. Without it (n_opps==0) the legacy GOV_STEP_KHZ stride applies — which on the
+// A133P walks OFF the ladder (1200-216=984 -> kernel silently runs 816), so the sink gate's
+// predicted ratio (1200/984 = 1.22x) undersold the real jump (1200/816 = 1.47x) and probe
+// steps in the first seconds bit ~20%% harder than designed. The kernel always snapped the
+// WRITE; the fiction lived in ceil_khz and every prediction computed from it.
+#define GOV_MAX_OPPS 16
 typedef struct {
 	int f_min;
 	int f_max;
+	int opps[GOV_MAX_OPPS];
+	int n_opps;
 } GovProfile;
+
+// Ladder helpers (pure). With no table they fall back to the stride so existing behavior
+// (and the miyoomini -DGOV_STEP_KHZ path) is unchanged.
+int gov_opp_below(const GovProfile* p, int khz); // greatest table entry < khz (or khz-STEP)
+int gov_opp_above(const GovProfile* p, int khz); // least table entry > khz (or khz+STEP)
+int gov_opp_snap(const GovProfile* p, int khz);  // nearest table entry (ties go UP: louder-safe)
 
 // Controller state for one game session. Reset via gov_init().
 typedef struct {
