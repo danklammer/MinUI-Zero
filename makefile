@@ -375,35 +375,38 @@ package: tidy check-payload
 	# v1.3's Optimize CPU fixes would otherwise never reach v1.2 cards).
 	cp -R ./build/EXTRAS/Tools ./build/PAYLOAD/Tools
 
+	# license compliance (audit 2026-07-11): GPL'd cores ship as binaries, so their license
+	# texts, the fork's own terms, and a corresponding-source statement travel in the artifact.
+	# INSIDE .system (moved 2026-08-31): the texts must accompany the distribution, but nothing
+	# requires them at the visible card root, where the folder just read as clutter next to Roms.
+	# Living in .system also puts them inside MinUI.zip, so update-only installs carry them too.
+	mkdir -p ./build/PAYLOAD/.system/LICENSES
+	cp LICENSE.md THIRD_PARTY_NOTICES.md ./build/PAYLOAD/.system/LICENSES/
+	for plat in $(PLATFORMS); do \
+		for n in $(LICENSE_CORES); do \
+			d=./workspace/$$plat/cores/src/$$n/; \
+			for f in COPYING Copying COPYING.LIB copyright COPYRIGHT LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
+				if [ -f "$$d$$f" ]; then mkdir -p ./build/PAYLOAD/.system/LICENSES/$$n && cp "$$d$$f" ./build/PAYLOAD/.system/LICENSES/$$n/; fi; \
+			done; \
+		done; \
+	done; true
+	@if [ -f ./workspace/tg5040/other/unzip60/LICENSE ]; then \
+		mkdir -p ./build/PAYLOAD/.system/LICENSES/unzip60 && \
+		cp ./workspace/tg5040/other/unzip60/LICENSE ./build/PAYLOAD/.system/LICENSES/unzip60/; \
+	fi
+	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/PAYLOAD/.system/LICENSES/SOURCES.txt
 	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update Tools
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
 	# v1: ONE download. Base is the whole product — 6 systems shown, extra systems dormant in
 	# .system (add a Roms folder to unlock), and the 4 curated Tools. No extras zip to maintain.
 	cp -R ./build/EXTRAS/Tools ./build/BASE/Tools
-	# license compliance (audit 2026-07-11): GPL'd cores ship as binaries, so their license
-	# texts, the fork's own terms, and a corresponding-source statement travel in the artifact.
-	mkdir -p ./build/BASE/LICENSES
-	cp LICENSE.md THIRD_PARTY_NOTICES.md ./build/BASE/LICENSES/
-	for plat in $(PLATFORMS); do \
-		for n in $(LICENSE_CORES); do \
-			d=./workspace/$$plat/cores/src/$$n/; \
-			for f in COPYING Copying COPYING.LIB copyright COPYRIGHT LICENSE LICENSE.MD LICENSE.md LICENSE.txt; do \
-				if [ -f "$$d$$f" ]; then mkdir -p ./build/BASE/LICENSES/$$n && cp "$$d$$f" ./build/BASE/LICENSES/$$n/; fi; \
-			done; \
-		done; \
-	done; true
-	@if [ -f ./workspace/tg5040/other/unzip60/LICENSE ]; then \
-		mkdir -p ./build/BASE/LICENSES/unzip60 && \
-		cp ./workspace/tg5040/other/unzip60/LICENSE ./build/BASE/LICENSES/unzip60/; \
-	fi
-	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/BASE/LICENSES/SOURCES.txt
 	@if [ -e ./releases/$(RELEASE_NAME).zip ]; then echo "ERROR: ./releases/$(RELEASE_NAME).zip already exists — refusing to overwrite a release"; exit 1; fi
 	# BOOT_DIR is the per-family bootstrap folder that must sit at the card root
 	# NOTE: this list is EXPLICIT, so anything added to skeleton/BASE is silently dropped from the
 	# release until it is named here. wifi.txt.example shipped into build/BASE on 2026-08-28 and
 	# never reached a single card for exactly that reason (caught preparing the Brick Pro card).
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools LICENSES $(BOOT_DIR) MinUI.zip README.txt wifi.txt.example .metadata_never_index .fseventsd
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME).zip Bios Roms Saves Tools $(BOOT_DIR) MinUI.zip README.txt wifi.txt.example .metadata_never_index .fseventsd
 	echo "$(RELEASE_NAME)" > ./build/latest.txt
 	
 ###########################################################
