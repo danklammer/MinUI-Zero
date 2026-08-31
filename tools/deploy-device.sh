@@ -194,6 +194,15 @@ sync_root "$SRC"  "$DST"  ".system"     || exit 1
 sync_root "$SRC2" "$DST2" "Tools"       || exit 1
 sync_root "$SRC3" "$DST3" ".tmp_update" || exit 1
 sync_root "$SRC4" "$DST4" ".system/res" || exit 1
+# version.txt (and commits.txt) live at the .system ROOT, in none of the four synced roots -- the
+# same blind-spot class as .system/res. Left unsynced, a dev card reports the version of whatever
+# zip it was FIRST installed from forever (this one said v1.5.5 through twelve deploys of v1.6.1).
+for VF in version.txt commits.txt; do
+	[ -f "./build/PAYLOAD/.system/$VF" ] || continue
+	if ! $SSH "$TARGET" "md5sum /mnt/SDCARD/.system/$VF 2>/dev/null" | grep -q "$(md5 -q "./build/PAYLOAD/.system/$VF" 2>/dev/null || md5sum "./build/PAYLOAD/.system/$VF" | cut -d" " -f1)"; then
+		$SSH "$TARGET" "cat > /mnt/SDCARD/.system/$VF" < "./build/PAYLOAD/.system/$VF" && echo "  sent .system/$VF ($(head -1 "./build/PAYLOAD/.system/$VF"))"
+	fi
+done
 
 if [ "$GRAND_SENT" -eq 0 ]; then
 	echo "nothing to do — device already matches this build ($GRAND_TOTAL files across all roots)"
