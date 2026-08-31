@@ -274,10 +274,6 @@ if [ -f "$SDCARD_PATH/wifi.txt" ] || [ -f "$SDCARD_PATH/wifi.txt.off" ]; then
 else
 	rm -rf "$WIFI_PAK_DST" 2>/dev/null
 fi
-# BOOT RECEIPT, one line per boot: kernel seconds at the moment the menu launches. This is the
-# measured half of the README's boot-time table (the bootloader seconds before the kernel are
-# timed once per device by hand and added). Appends ~40 bytes per boot; trim the file any time.
-echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
 while : ; do
 	rm -f /tmp/next /tmp/poweroff
 	minui.elf >> "$LOG" 2>&1
