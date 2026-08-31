@@ -152,6 +152,13 @@ system:
 	# (see MinUI.pak/launch.sh). Losing it is SILENT on device -- audio still works, the pop just
 	# comes back -- so the artifact is checked rather than trusted. Rebuild with
 	# tools/build-miyoomini-sdl2.sh.
+	# WIFI SHIP-CHECK (2026-08-31): the MMP has NO wifi driver in its internal firmware — the
+	# 8188fu module and the wifi.txt bring-up MUST travel in every artifact, or a clean update
+	# leaves the device unable to network at all (exactly what happened to the first card).
+	@if [ "$(PLATFORM)" = "miyoomini" ]; then \
+		test -f ./build/SYSTEM/miyoomini/lib/modules/8188fu.ko || { echo "ERROR: miyoomini artifact is missing lib/modules/8188fu.ko — wifi would be dead on-device"; exit 1; }; \
+		grep -q 'wifi.txt' ./build/SYSTEM/miyoomini/paks/MinUI.pak/launch.sh || { echo "ERROR: miyoomini launch.sh lost the wifi.txt bring-up"; exit 1; }; \
+	fi
 	if [ "$(PLATFORM)" = "miyoomini" ]; then \
 		strings ./build/SYSTEM/miyoomini/lib/libSDL2-2.0.so.0 | grep -q "OSS /dev/dsp standard audio" || \
 			{ echo "ERROR: shipped libSDL2 has no OSS backend — the audio pop would return"; exit 1; }; \
