@@ -107,6 +107,23 @@ artifacts, and they are not interchangeable.
 | Anbernic RG35XX Plus | Alpha | `MinUI-Zero-h700-*-rg35xx-plus.img.xz` | Flash the card |
 | Anbernic RG35XX H | Alpha | `MinUI-Zero-h700-*-rg35xx-h.img.xz` | Flash the card |
 
+## Boot times, measured
+
+Every device stamps its own boot receipt on every startup (kernel to browsable menu; the vendor
+bootloader adds a moment before the kernel on all of them). From the receipts, v1.7.x builds:
+
+| Device | Kernel to menu |
+|---|---|
+| Miyoo Mini Plus | **3.0s** |
+| Anbernic RG35XX Plus | **3.0s** |
+| Anbernic RG35XX H | **3.9s** |
+| TrimUI Smart Pro | **6.9s** |
+| TrimUI Brick | **7.1s** |
+| TrimUI Brick Pro | **7.6s** |
+
+The Anbernic numbers are the whole operating system booting — ours. The TrimUI gap is the vendor's
+boot chain running before MinUI Zero gets control.
+
 ## Install
 
 The two installs are genuinely different: one copies files, the other replaces the whole card.
@@ -128,7 +145,9 @@ Nothing is written to the device itself, so flash a spare card and swap cards to
 First boot expands the ROMS partition to fill the card, and that partition mounts on any PC or Mac.
 Wi-Fi and SSH stay off until you ask for them: rename `wifi.txt.example` to `wifi.txt` at the card
 root and put your network in it as `SSID:password`. Same file on every device. An idle radio is
-battery you did not agree to spend, and nothing here needs the network.
+battery you did not agree to spend, and nothing here needs the network. Once the file exists, a
+**WiFi Toggle** tool appears in Tools showing the live connection (network name and IP) with
+one-press on/off; cards without the file keep a clean Tools menu.
 
 **One card per device.** Upstream MinUI ships every platform in a single zip, so one card boots
 anything it supports. Zero builds and ships each platform separately, so **a card serves the device
