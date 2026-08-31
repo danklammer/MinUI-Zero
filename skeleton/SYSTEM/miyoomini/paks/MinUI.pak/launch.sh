@@ -101,6 +101,10 @@ mkdir -p "$SHARED_USERDATA_PATH/.minui"
 # with the kernel's own clock and cost one read each. Off by default: this writes to the SD card.
 bt() { [ "$ZERO_BOOT_TIMING" = "1" ] && echo "$(cut -d' ' -f1 /proc/uptime) $1" >> /mnt/SDCARD/boot-timing.txt; }
 bt "launch.sh start"
+# BOOT RECEIPT, one line per boot: kernel seconds at the moment the menu launches. This is the
+# measured half of the README's boot-time table (the bootloader seconds before the kernel are
+# timed once per device by hand and added). Appends ~40 bytes per boot; trim the file any time.
+echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
 
 export CPU_SPEED_MENU=600000
 export CPU_SPEED_GAME=1200000

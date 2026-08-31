@@ -264,6 +264,10 @@ cd "$(dirname "$0")"
 FAILS=0
 while : ; do
 	rm -f /tmp/next /tmp/poweroff
+# BOOT RECEIPT, one line per boot: kernel seconds at the moment the menu launches. This is the
+# measured half of the README's boot-time table (the bootloader seconds before the kernel are
+# timed once per device by hand and added). Appends ~40 bytes per boot; trim the file any time.
+echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
 	minui.elf >> "$LOG" 2>&1
 	RC=$?
 	[ -f /tmp/poweroff ] && { echo "poweroff requested" >> "$LOG"; power_off; }
