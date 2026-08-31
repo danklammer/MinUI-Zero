@@ -171,7 +171,7 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 				st->ceil_khz = st->presink_khz;
 			else if (st->slip_run >= 2)
 				st->ceil_khz = p->f_max;
-			else st->ceil_khz += GOV_STEP_KHZ;
+			else st->ceil_khz = gov_opp_above(p, st->ceil_khz);
 			if (st->ceil_khz > p->f_max) st->ceil_khz = p->f_max;
 		}
 	} else {
@@ -180,7 +180,7 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 		st->slack_run++;
 		st->slip_run = 0;
 		int cool_enough = (temp_c < 0) || (temp_c <= GOV_T_TARGET_C);
-		int next_khz = st->ceil_khz - GOV_STEP_KHZ;
+		int next_khz = gov_opp_below(p, st->ceil_khz);
 		if (next_khz < p->f_min) next_khz = p->f_min;
 		int not_failed = (st->fail_hold == 0) || (next_khz > st->fail_khz);
 		if (st->slack_run >= GOV_DN_DWELL && cool_enough && not_failed && st->ceil_khz > p->f_min) {
@@ -193,11 +193,36 @@ int gov_step(GovState* st, const GovProfile* p, int temp_c, int frame_overrun) {
 	return st->ceil_khz;
 }
 
+int gov_opp_below(const GovProfile* p, int khz) {
+	if (p->n_opps <= 0) return khz - GOV_STEP_KHZ;
+	int best = -1;
+	for (int i = 0; i < p->n_opps; i++)
+		if (p->opps[i] < khz && p->opps[i] > best) best = p->opps[i];
+	return best > 0 ? best : khz - GOV_STEP_KHZ;
+}
+int gov_opp_above(const GovProfile* p, int khz) {
+	if (p->n_opps <= 0) return khz + GOV_STEP_KHZ;
+	int best = 0x7fffffff;
+	for (int i = 0; i < p->n_opps; i++)
+		if (p->opps[i] > khz && p->opps[i] < best) best = p->opps[i];
+	return best != 0x7fffffff ? best : khz + GOV_STEP_KHZ;
+}
+int gov_opp_snap(const GovProfile* p, int khz) {
+	if (p->n_opps <= 0) return khz;
+	int best = p->opps[0];
+	for (int i = 1; i < p->n_opps; i++) {
+		int d_best = best > khz ? best - khz : khz - best;
+		int d_this = p->opps[i] > khz ? p->opps[i] - khz : khz - p->opps[i];
+		if (d_this < d_best || (d_this == d_best && p->opps[i] > best)) best = p->opps[i];
+	}
+	return best;
+}
+
 // ---- predictive sink gate (pure; see governor.h) ----
 #define GOV_SINK_MARGIN_PCT 85 // sink only if predicted p95 fits this % of the frame budget
 
 int gov_sink_target(const GovState* st, const GovProfile* p) {
-	int next = st->ceil_khz - GOV_STEP_KHZ;
+	int next = gov_opp_below(p, st->ceil_khz);
 	if (next < p->f_min) next = p->f_min;
 	return next;
 }

@@ -338,8 +338,51 @@ static void test_scene_burst_resets_floor_memory(void) {
 	      st.fail_khz, st.fail_hold, st.fail_streak, st.presink_khz);
 }
 
+// ---- OPP ladder: commanded ceilings must be REAL frequencies ---------------------------------
+// The A133P table. With the ladder present, the stride-built phantoms (984, 768) must never
+// appear in ceil_khz: descent 1200 -> 1008, not 984 (which the kernel would run as 816 while
+// every prediction assumed 984 — the game-start mis-probe class, 2026-08-31).
+static const int A133P[] = { 408000, 600000, 816000, 1008000, 1200000, 1416000, 1608000, 1800000 };
+
+static GovProfile ladder_profile(int fmin, int fmax) {
+	GovProfile p = { .f_min = fmin, .f_max = fmax, .n_opps = 8 };
+	for (int i = 0; i < 8; i++) p.opps[i] = A133P[i];
+	return p;
+}
+
+static void test_ladder_helpers(void) {
+	GovProfile p = ladder_profile(600000, 1416000);
+	CHECK(gov_opp_below(&p, 1200000) == 1008000, "below 1200 is 1008, not the phantom 984");
+	CHECK(gov_opp_below(&p, 1008000) == 816000,  "below 1008 is 816");
+	CHECK(gov_opp_above(&p, 816000) == 1008000,  "above 816 is 1008");
+	CHECK(gov_opp_above(&p, 1800000) == 1800000 + GOV_STEP_KHZ, "above the top falls back to stride");
+	CHECK(gov_opp_snap(&p, 984000) == 1008000,   "984 snaps to 1008 (ties/nearest go up)");
+	GovProfile none = { .f_min = 600000, .f_max = 1416000, .n_opps = 0 };
+	CHECK(gov_opp_below(&none, 1200000) == 1200000 - GOV_STEP_KHZ, "no table -> legacy stride");
+}
+
+static void test_ladder_descent_hits_only_real_opps(void) {
+	GovProfile p = ladder_profile(600000, 1416000);
+	GovState st; gov_init(&st, &p);
+	// plenty of cool slack: descend all the way; every commanded ceiling must be in the table
+	for (int t = 0; t < 64; t++) {
+		int c = gov_step(&st, &p, 40, GOV_SIGNAL_SLACK);
+		int real = 0;
+		for (int i = 0; i < p.n_opps; i++) if (c == p.opps[i]) real = 1;
+		CHECK(real, "every ceiling during descent is a real OPP");
+	}
+	CHECK(st.ceil_khz == 600000, "descent bottoms at f_min");
+	// climb one step from the floor: must land on 816, not 600+216=816 coincidence... assert table membership
+	gov_step(&st, &p, 40, GOV_SIGNAL_SLIP);
+	int c = st.ceil_khz, real = 0;
+	for (int i = 0; i < p.n_opps; i++) if (c == p.opps[i]) real = 1;
+	CHECK(real && c > 600000, "single-step climb lands on a real OPP above the floor");
+}
+
 int main(void) {
 	printf("== governor synthetic harness ==\n");
+	test_ladder_helpers();
+	test_ladder_descent_hits_only_real_opps();
 	test_profile_brackets();
 	test_cold_idle();
 	test_boot_slip_at_max_still_sinks();

@@ -1578,6 +1578,27 @@ static void Gov_start(void) {
 	else {
 		gov_profile = GOV_P_DEFAULT;
 	}
+	// The kernel's REAL OPP ladder, read from the kernel itself (never fabricated). With it,
+	// every commanded ceiling is a real OPP; without it the legacy stride walked off the
+	// A133P ladder (1200-216=984 -> kernel ran 816) and the sink gate under-predicted every
+	// probe step (.notes/2026-08-31-game-start-hitches). Absent/unparsable -> n_opps=0 ->
+	// stride behavior, bit-identical to before (macOS harness has no cpufreq at all).
+	gov_profile.n_opps = 0;
+	{
+		FILE* af = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies", "r");
+		if (af) {
+			int khz;
+			while (gov_profile.n_opps < GOV_MAX_OPPS && fscanf(af, "%d", &khz) == 1)
+				if (khz > 0) gov_profile.opps[gov_profile.n_opps++] = khz;
+			fclose(af);
+			if (gov_profile.n_opps > 0) {
+				char lad[256]; int off = 0;
+				for (int i = 0; i < gov_profile.n_opps && off < 240; i++)
+					off += snprintf(lad+off, sizeof(lad)-off, "%d ", gov_profile.opps[i]);
+				LOG_info("governor: OPP ladder [%s] (%d entries)\n", lad, gov_profile.n_opps);
+			}
+		}
+	}
 	gov_init(&gov_state, &gov_profile);
 	gov_active = 1;
 	// FAST-SINK, not start-low (reviews r1-r4): boot always starts at f_max; the pure
@@ -6265,6 +6286,8 @@ static void Menu_loop(void) {
 		video_refresh_callback(renderer.src, renderer.true_w, renderer.true_h, renderer.src_p);
 		
 		Gov_restore();
+		SND_reprime(); // DAC drained the ring while the core was parked in the menu;
+		               // resume through the prefill gate or the first ~2s crackles (audit 2026-08-31)
 		if (rumble_strength) VIB_setStrength(rumble_strength);
 		
 		GFX_setVsync(prevent_tearing);
