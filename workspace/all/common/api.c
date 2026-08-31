@@ -196,9 +196,19 @@ SDL_Surface* GFX_init(int mode) {
 	asset_rects[ASSET_HOLE]				= (SDL_Rect){SCALE4( 1,63,20,20)};
 	
 	char asset_path[MAX_PATH];
-	sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
-	if (!exists(asset_path)) LOG_info("missing assets, you're about to segfault dummy!\n");
+	// The sheet is picked by SCALE_NAME, which can now name a sheet an older card does not carry
+	// (the Brick Pro's 2.5x). Everything downstream -- SDLX_SetAlpha in PWR_initOverlay first --
+	// dereferences gfx.assets without checking, so a miss here is a segfault at boot, not a
+	// degraded UI. Fall back to the integer sheet, which has shipped since forever: wrong size
+	// beats no launcher, and the log names the sheet that was missing.
+	sprintf(asset_path, RES_PATH "/assets@%sx.png", SCALE_NAME);
 	gfx.assets = IMG_Load(asset_path);
+	if (!gfx.assets) {
+		LOG_info("missing/unreadable %s, falling back to @%ix\n", asset_path, FIXED_SCALE);
+		sprintf(asset_path, RES_PATH "/assets@%ix.png", FIXED_SCALE);
+		gfx.assets = IMG_Load(asset_path);
+	}
+	if (!gfx.assets) LOG_info("no asset sheet at all, you're about to segfault dummy!\n");
 	GFX_sampleAssetRGBs(); // fills must match the sheet they're capped with; see above
 
 	TTF_Init();
@@ -528,7 +538,10 @@ struct blend_args {
 	uint16_t *blend_line;
 } blend_args;
 
-#if __ARM_ARCH >= 5
+// ARM32-only asm (rrx, movcs, conditional adds): __ARM_ARCH is also >=5 on AArch64, where these
+// mnemonics do not exist, so the guard must exclude it or the macOS (Apple Silicon) dev-loop
+// build breaks at compile. AArch64 takes the portable C below, which clang vectorizes fine.
+#if __ARM_ARCH >= 5 && !defined(__aarch64__)
 static inline uint32_t average16(uint32_t c1, uint32_t c2) {
 	uint32_t ret, lowbits = 0x0821;
 	asm ("eor %0, %2, %3\r\n"
@@ -739,17 +752,26 @@ void GFX_blitPill(int asset, SDL_Surface* dst, SDL_Rect* dst_rect) {
 
 	if (h==0) h = asset_rects[asset].h;
 	
-	int r = h / 2;
+	// The two caps must ACCOUNT FOR EVERY COLUMN of h, which h/2 twice does not when h is odd:
+	// at the Brick Pro's 2.5x a pill is 75px, both caps came out 37, and the pill rendered a pixel
+	// narrow with the right cap's outermost column dropped from the sheet. Give the odd pixel to
+	// the right cap so rl+rr==h and the two source spans tile [0,h) exactly. For even h
+	// rr==rl==h/2 and this is the same code it always was. One integer-scale asset is odd and
+	// deliberately CHANGES with this: ASSET_UNDERLINE (3 logical units) is 9px on the Brick at
+	// 3x, and its right cap now includes the final anti-aliased sprite column that h/2+h/2 was
+	// dropping (Clock tool only; every other pill asset is even at every integer scale).
+	int rl = h / 2;
+	int rr = h - rl;
 	if (w < h) w = h;
 	w -= h;
 	
-	GFX_blitAsset(asset, &(SDL_Rect){0,0,r,h}, dst, &(SDL_Rect){x,y});
-	x += r;
+	GFX_blitAsset(asset, &(SDL_Rect){0,0,rl,h}, dst, &(SDL_Rect){x,y});
+	x += rl;
 	if (w>0) {
 		SDL_FillRect(dst, &(SDL_Rect){x,y,w,h}, asset_rgbs[asset]);
 		x += w;
 	}
-	GFX_blitAsset(asset, &(SDL_Rect){r,0,r,h}, dst, &(SDL_Rect){x,y});
+	GFX_blitAsset(asset, &(SDL_Rect){rl,0,rr,h}, dst, &(SDL_Rect){x,y});
 }
 void GFX_blitRect(int asset, SDL_Surface* dst, SDL_Rect* dst_rect) {
 	int x = dst_rect->x;
@@ -779,7 +801,7 @@ void GFX_blitBattery(SDL_Surface* dst, SDL_Rect* dst_rect) {
 		y = dst_rect->y;
 	}
 	SDL_Rect rect = asset_rects[ASSET_BATTERY];
-	x += (SCALE1(PILL_SIZE) - (rect.w + FIXED_SCALE)) / 2;
+	x += (SCALE1(PILL_SIZE) - (rect.w + SCALE1(1))) / 2;
 	y += (SCALE1(PILL_SIZE) - rect.h) / 2;
 	
 	if (pwr.is_charging) {
@@ -857,7 +879,7 @@ void GFX_blitButton(char* hint, char*button, SDL_Surface* dst, SDL_Rect* dst_rec
 		GFX_blitPill(ASSET_BUTTON, dst, &(SDL_Rect){dst_rect->x,dst_rect->y,SCALE1(BUTTON_SIZE)/2+text->w,SCALE1(BUTTON_SIZE)});
 		ox += SCALE1(BUTTON_SIZE)/4;
 		
-		int oy = special_case ? SCALE1(-2) : 0;
+		int oy = special_case ? -SCALE1(2) : 0; // scale the magnitude: SCALE1's +DEN/2 rounds the wrong way below zero
 		SDL_BlitSurface(text, NULL, dst, &(SDL_Rect){ox+dst_rect->x,oy+dst_rect->y+(SCALE1(BUTTON_SIZE)-text->h)/2,text->w,text->h});
 		ox += text->w;
 		ox += SCALE1(BUTTON_SIZE)/4;
@@ -1861,6 +1883,13 @@ void PAD_setAnalog(int neg_id,int pos_id,int value,int repeat_at) {
 	}
 }
 
+// Resolved once; an input hot path should not walk the environment per event.
+static int zero_input_debug(void) {
+	static int on = -1;
+	if (on < 0) { const char* e = getenv("ZERO_INPUT_DEBUG"); on = (e && e[0] && e[0] != '0') ? 1 : 0; }
+	return on;
+}
+
 void PAD_reset(void) {
 	// LOG_info("PAD_reset");
 	pad.just_pressed = BTN_NONE;
@@ -1892,7 +1921,11 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		if (event.type==SDL_KEYDOWN || event.type==SDL_KEYUP) {
 			uint8_t code = event.key.keysym.scancode;
 			pressed = event.type==SDL_KEYDOWN;
-			// LOG_info("key event: %i (%i)\n", code,pressed);
+			// ZERO_INPUT_DEBUG=1 prints every key AND joystick event with the value this code actually
+			// compares against. CODE_* are SDL SCANCODES, not evdev codes (CODE_POWER is 102 =
+			// SDL_SCANCODE_POWER, while evdev KEY_POWER is 116), so mapping a new device straight
+			// from its evdev numbers yields a define that can never match.
+			if (zero_input_debug()) LOG_info("input: KEY scancode=%i pressed=%i\n", code, pressed);
 				 if (code==CODE_UP) 		{ btn = BTN_DPAD_UP; 		id = BTN_ID_DPAD_UP; }
  			else if (code==CODE_DOWN)		{ btn = BTN_DPAD_DOWN; 		id = BTN_ID_DPAD_DOWN; }
 			else if (code==CODE_LEFT)		{ btn = BTN_DPAD_LEFT; 		id = BTN_ID_DPAD_LEFT; }
@@ -1921,7 +1954,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYBUTTONDOWN || event.type==SDL_JOYBUTTONUP) {
 			uint8_t joy = event.jbutton.button;
 			pressed = event.type==SDL_JOYBUTTONDOWN;
-			// LOG_info("joy event: %i (%i)\n", joy,pressed);
+			if (zero_input_debug()) LOG_info("input: JOY button=%i pressed=%i\n", joy, pressed);
 				 if (joy==JOY_UP) 		{ btn = BTN_DPAD_UP; 		id = BTN_ID_DPAD_UP; }
  			else if (joy==JOY_DOWN)		{ btn = BTN_DPAD_DOWN; 		id = BTN_ID_DPAD_DOWN; }
 			else if (joy==JOY_LEFT)		{ btn = BTN_DPAD_LEFT; 		id = BTN_ID_DPAD_LEFT; }
@@ -1950,7 +1983,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYHATMOTION) {
 			int hats[4] = {-1,-1,-1,-1}; // -1=no change,0=up,1=down,2=left,3=right btn_ids
 			int hat = event.jhat.value;
-			// LOG_info("hat event: %i\n", hat);
+			if (zero_input_debug()) LOG_info("input: HAT value=%i\n", hat);
 			// TODO: safe to assume hats will always be the primary dpad?
 			// TODO: this is literally a bitmask, make it one (oh, except there's 3 states...)
 			switch (hat) {
@@ -1986,7 +2019,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		else if (event.type==SDL_JOYAXISMOTION) {
 			int axis = event.jaxis.axis;
 			int val = event.jaxis.value;
-			// LOG_info("axis: %i (%i)\n", axis,val);
+			if (zero_input_debug()) LOG_info("input: AXIS axis=%i value=%i\n", axis, val);
 			
 			// triggers on tg5040
 			if (axis==AXIS_L2) {

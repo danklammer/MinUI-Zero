@@ -68,12 +68,10 @@ extern int is_brickpro;
 #define CODE_R3			CODE_NA
 
 #define CODE_MENU		CODE_NA
-// The Brick Pro's F1/F2 are KEY events, not joystick buttons: its gamepad advertises only 11
-// BTN_* codes (indices 0..10, the last two being the real stick clicks), and F1/F2 ride alongside
-// as KEY_F1/KEY_F2. Read off the device's own /proc/bus/input/devices KEY bitmap, 2026-08-30.
-// The Brick reaches the same two buttons through JOY_L3/JOY_R3 (9/10) and needs nothing here.
-#define CODE_F1			(is_brickpro?59:CODE_NA)
-#define CODE_F2			(is_brickpro?60:CODE_NA)
+// F1/F2 -- the two lit buttons in the middle of the Brick Pro's face. They arrive as JOYSTICK
+// buttons, so these stay CODE_NA; the real mapping is JOY_F1/JOY_F2 below.
+#define CODE_F1			CODE_NA
+#define CODE_F2			CODE_NA
 #define CODE_POWER		102
 
 #define CODE_PLUS		128
@@ -101,6 +99,21 @@ extern int is_brickpro;
 #define JOY_R2			JOY_NA
 #define JOY_L3			(is_brick||is_brickpro?9:JOY_NA)
 #define JOY_R3			(is_brick||is_brickpro?10:JOY_NA)
+// F1/F2 on the Brick Pro = SDL joystick buttons 11/12, MEASURED by event injection with
+// ZERO_INPUT_DEBUG (2026-08-31): injecting KEY_F1/KEY_F2 into the pad's event node arrives in
+// PAD_poll as "JOY button=11/12", never as a key event. Two layers, both of which were separately
+// mistaken for the whole answer before:
+//   hardware: the pad sends evdev KEY_F1(59)/KEY_F2(60) -- its capability bitmap says so, and it
+//     advertises exactly eleven BTN_* codes (joystick 0..10, the last two the real stick clicks);
+//   SDL: the node carries BTN_GAMEPAD, so SDL's joystick driver claims it WHOLE and enumerates
+//     every key code on it as a joystick button -- the 11 BTN codes become buttons 0..10, then
+//     the KEY codes append in ascending order: KEY_F1 -> 11, KEY_F2 -> 12. They never reach the
+//     keyboard path, so a CODE_* (SDL scancode) mapping for them can never fire.
+// NextUI ships the same 11/12 pair (its JOY_L4/R4). The plain Brick has no sticks, so ITS F1/F2
+// sit at joystick 9/10 and have always been reachable as L3/R3; kept named that way because saved
+// shortcut cfgs store buttons by id and renaming would silently re-point existing bindings.
+#define JOY_F1			(is_brickpro?11:JOY_NA)
+#define JOY_F2			(is_brickpro?12:JOY_NA)
 // NO JOY_MENU_ALT HERE. I previously set this to 15, copied from NextUI, without checking it
 // against the hardware. The Brick Pro's gamepad advertises exactly ELEVEN BTN_* codes, so joystick
 // indices are 0..10 and 15 can never fire (decoded from its own /proc/bus/input/devices KEY
@@ -136,7 +149,14 @@ extern int is_brickpro;
 
 ///////////////////////////////
 
+// SPIKE: the Brick Pro renders at 2.5x. Its panel is the Brick's 1024x768, but on noticeably
+// larger glass, so @3x reads oversized and @2x too small. 2.5x gives 75px rows and 40px menu text,
+// between the two. FIXED_SCALE stays 3 so anything still reading it directly sees a sane integer;
+// the ratio below is what actually drives layout, and SCALE_NAME picks the matching sheet.
 #define FIXED_SCALE 	(is_brick||is_brickpro?3:2)
+#define SCALE_NUM   	(is_brickpro?5:(is_brick?3:2))
+#define SCALE_DEN   	(is_brickpro?2:1)
+#define SCALE_NAME  	(is_brickpro?"2.5":(is_brick?"3":"2"))
 #define FIXED_WIDTH		(is_brick||is_brickpro?1024:1280)
 #define FIXED_HEIGHT	(is_brick||is_brickpro?768:720)
 #define FIXED_BPP		2
@@ -146,8 +166,17 @@ extern int is_brickpro;
 
 ///////////////////////////////
 
-#define MAIN_ROW_COUNT (is_brick||is_brickpro?7:10) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
-#define PADDING (is_brick||is_brickpro?5:10) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
+#define MAIN_ROW_COUNT (is_brickpro?8:(is_brick?7:10))
+// Brick Pro only: 8 rows at the 30-unit pill pitch leave 67px dead above the footer. Pitch 32
+// (80px at 2.5x) spreads them toward it without touching the 30-unit pill sprite, which would
+// clip if PILL_SIZE itself grew. Others keep PILL_SIZE and are unchanged.
+#define ROW_PITCH (is_brickpro?32:PILL_SIZE) // Smart Pro: 8 was tuned for the old 80px padding; 10 fits at PADDING 5
+// Brick Pro: 7 (18px at 2.5x) instead of 5 (13px). PADDING is the GLOBAL edge inset -- header,
+// footer, clock, list and every message box measure from it -- so raising it moves the whole UI
+// inward together rather than nudging one element out of alignment with the rest. Paired with
+// ROW_PITCH 32 above: the tighter rows pay for the wider margin. MEASURED at these values: rows
+// run 18..653 and the footer starts at 675, so 22px separates them and 18px sits below the footer.
+#define PADDING (is_brickpro?7:(is_brick?5:10)) // was (is_brick?5:40) — 40 = an 80px inset per side; 10 (=20px) is a tasteful breathing ring
 
 ///////////////////////////////
 
