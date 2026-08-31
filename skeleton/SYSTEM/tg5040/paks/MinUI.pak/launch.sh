@@ -111,6 +111,15 @@ fi
 # init, wrong LED/keymon handling). The MainUI binary lives on the DEVICE, not the card,
 # so it must be read fresh each boot. (A cache shipped briefly on 2026-07-02 — reverted.)
 export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
+# PANEL RATE, per model, MEASURED — feeds minarch's Zero_applyRateMatch so audio production is
+# resampled to the panel's true rate. Unset = rate match inert (the pre-2026-08-31 behavior).
+# The +0.4% surplus of an unmatched 60.18Hz panel over a 59.94 core slowly PINNED the audio
+# ring full, and ring-full backpressure stalling the threaded pipeline was the PS1 sustained
+# judder (~14s onset). Brick Pro: fb0 timings read on-device (D 57.003MHz -> V 60.180 Hz).
+# Brick / Smart Pro: NOT yet measured on their panels — leave unset there rather than guess.
+if [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
+	export MINARCH_PANEL_FPS=60.180
+fi
 # The Brick Pro reports "Trimui Brick Pro". An exact test for "Trimui Brick" left DEVICE empty and
 # platform.h is_brick then picked Smart Pro geometry: 1280x720 at @2x with 10 menu rows, which is
 # the squashed menu Dan photographed (2026-08-28). It gets its OWN device rather than being called

@@ -213,6 +213,7 @@ typedef struct SND_Frame {
 } SND_Frame;
 
 void SND_reprime(void); // re-arm the prefill gate at a pause seam (menu close); see api.c
+int SND_isPrefilling(void); // 1 while the launch/resume prefill gate holds the DAC paused
 void SND_init(double sample_rate, double frame_rate);
 size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count);
 void SND_setFastForward(int active, int audible);
