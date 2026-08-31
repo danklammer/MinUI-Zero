@@ -401,6 +401,10 @@ if [ -f "$SDCARD_PATH/wifi.txt" ] || [ -f "$SDCARD_PATH/wifi.txt.off" ]; then
 else
 	rm -rf "$WIFI_PAK_DST" 2>/dev/null
 fi
+# Boot receipt, DEV CARDS ONLY (devmode.txt at the card root): kernel seconds at menu launch,
+# one ~40-byte line per boot. Measured the fleet for the README table (2026-08-31); stays as a
+# regression canary on dev cards and costs users nothing.
+[ -f "$SDCARD_PATH/devmode.txt" ] && echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
 EXEC_PATH="/tmp/minui_exec"
 NEXT_PATH="/tmp/next"
 touch "$EXEC_PATH" # tmpfs; a sync here would flush every filesystem for a file that never touches disk

@@ -148,7 +148,11 @@ WIFI_TXT="$SDCARD_PATH/wifi.txt"
 		# `ip`: this busybox has no ip applet (verified 2026-08-27), so the old check silently
 		# succeeded forever and the monitor never fired.
 		( _down=0
-		  while : ; do
+		  # Boot receipt, DEV CARDS ONLY (devmode.txt at the card root): kernel seconds at menu launch,
+# one ~40-byte line per boot. Measured the fleet for the README table (2026-08-31); stays as a
+# regression canary on dev cards and costs users nothing.
+[ -f "$SDCARD_PATH/devmode.txt" ] && echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
+while : ; do
 			sleep 45
 			[ -f "$WIFI_TXT" ] || continue
 			if ifconfig wlan0 2>/dev/null | grep -q "inet addr"; then _down=0; continue; fi

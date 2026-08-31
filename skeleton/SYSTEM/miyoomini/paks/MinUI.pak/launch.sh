@@ -101,6 +101,10 @@ mkdir -p "$SHARED_USERDATA_PATH/.minui"
 # with the kernel's own clock and cost one read each. Off by default: this writes to the SD card.
 bt() { [ "$ZERO_BOOT_TIMING" = "1" ] && echo "$(cut -d' ' -f1 /proc/uptime) $1" >> /mnt/SDCARD/boot-timing.txt; }
 bt "launch.sh start"
+# Boot receipt, DEV CARDS ONLY (devmode.txt at the card root): kernel seconds at menu launch,
+# one ~40-byte line per boot. Measured the fleet for the README table (2026-08-31); stays as a
+# regression canary on dev cards and costs users nothing.
+[ -f "$SDCARD_PATH/devmode.txt" ] && echo "$(cut -d" " -f1 /proc/uptime) menu-ready $(date +%Y-%m-%d 2>/dev/null)" >> "$LOGS_PATH/boot-time.txt"
 
 # WIFI OPT-IN — the same one visible wifi.txt at the card root as TrimUI and Anbernic.
 # PORTED 2026-08-31 after learning the hard way: the MMP's wifi previously came from an ad-hoc
