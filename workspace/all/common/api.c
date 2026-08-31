@@ -378,7 +378,9 @@ void GFX_flipGame(SDL_Surface* screen) {
 	// (production <250ms stale, ring still low), which is why menu presents now bypass
 	// the drop entirely instead of relying on it.
 	int producing = (SDL_GetTicks() - SND_lastBatchMs()) < 250;
-	if (!producing) gfx_drop_active = 0;
+	if (!producing || SND_isPrefilling()) gfx_drop_active = 0; // prefill: DAC paused, nothing
+		// consumes, low occupancy is EXPECTED — dropping presents buys no audio ("engaged
+		// (ring 8%)" at launch was this, a pure judder generator)
 	else if (!gfx_drop_active) {
 		if (ring_pct < 50) {
 			gfx_drop_active = 1; drop_streak = 0;
@@ -1224,7 +1226,7 @@ static struct SND_Context {
 	atomic_int paused;      // device closed for sleep: producers drop instead of waiting. Atomic:
 	                        // the entry guard reads it pre-lock and a future concurrent CORE
 	                        // producer must not race SND_pause/SND_resume (review r3)
-	int prefilling;         // DAC gated until the ring is ~40% full (from NextUI: starting
+	int prefilling;         // DAC gated until the ring is ~70% full (from NextUI: starting
 	                        // on an empty ring guarantees startup underruns — the choppy
 	                        // logo/demo audio on PS1, ear-found 2026-07-08)
 	SND_Frame* buffer;		// buf
@@ -1459,6 +1461,7 @@ static const char zero_ff_audio_fingerprint[] __attribute__((used)) = "ff-audio"
 // first ~1-2s — partial fills through the mirror-pad path = audible ticks after EVERY menu
 // close (confirmed in the 2026-08-31 start-hitch audit; sleep-resume and FF already re-arm,
 // this seam never did). Costs the same deliberate ~80ms lead-in silence as launch.
+int SND_isPrefilling(void) { return snd.initialized && snd.prefilling; }
 static void SND_reprimeLocked(void);
 void SND_reprime(void) {
 	if (!snd.initialized) return;
@@ -1510,7 +1513,7 @@ void SND_setFastForward(int active, int audible) {
 	}
 
 	// Silent FF must pause instead of draining into underruns. Every FF exit discards
-	// stale compressed audio and uses the normal 40% prefill gate for a clean handoff.
+	// stale compressed audio and uses the normal 70% prefill gate for a clean handoff.
 	if ((active && !audible) || (!active && was_active)) SND_reprimeLocked();
 	SDL_UnlockAudio();
 	// Wake only after the complete mode/ring transaction is visible. A blocked producer
@@ -1557,7 +1560,10 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) { // plat_s
 	if (snd.prefilling) {
 		int queued = snd.frame_in - snd.frame_out;
 		if (queued < 0) queued += snd.frame_count;
-		if (queued >= snd.frame_count * 2 / 5) { // ~40% full: start the DAC
+		if (queued >= snd.frame_count * 7 / 10) { // ~70% full: start the DAC — ABOVE the
+			// presentation-drop hysteresis band (engage <50, release 66), so playback never
+			// BEGINS inside catch-up. At the old 40% every PS launch started mid-band and
+			// the drop engaged on the first frames by construction (2026-08-31 receipts).
 			snd.prefilling = 0;
 			SDL_PauseAudio(0);
 		}
@@ -1734,7 +1740,7 @@ audio_open_ok:
 	SND_updateAdjustedRate();
 	SND_resizeBuffer();
 	
-	snd.prefilling = 1; // DAC starts when the ring reaches ~40% (see SND_batchSamples)
+	snd.prefilling = 1; // DAC starts when the ring reaches ~70% (see SND_batchSamples)
 
 	SNDMARK("open_done");
 	LOG_info("sample rate: %i (req) %i (rec) [samples %i]\n", snd.sample_rate_in, snd.sample_rate_out, SAMPLES);
