@@ -119,7 +119,12 @@ export TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
 # Brick / Smart Pro: NOT yet measured on their panels — leave unset there rather than guess.
 if [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; then
 	export MINARCH_PANEL_FPS=60.180
+elif [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
+	# Brick panel measured 2026-08-31 off its live fb0 scanout timings (D 51.002MHz -> V 60.235 Hz).
+	export MINARCH_PANEL_FPS=60.235
 fi
+# Smart Pro stays UNSET on purpose: its fb0 reports 63.965 Hz but the SP scans the GLES layer,
+# not fb0, so that number is unverified for the actual panel. Measure vsync-derived before arming.
 # The Brick Pro reports "Trimui Brick Pro". An exact test for "Trimui Brick" left DEVICE empty and
 # platform.h is_brick then picked Smart Pro geometry: 1280x720 at @2x with 10 menu rows, which is
 # the squashed menu Dan photographed (2026-08-28). It gets its OWN device rather than being called
