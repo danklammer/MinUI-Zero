@@ -141,6 +141,18 @@ if [ -f "$SDCARD_PATH/wifi.txt" ]; then
 		} >> "$WLOG" 2>&1 &
 	fi
 fi
+# WiFi Toggle visibility (Dan, 2026-08-31): the tool appears in Tools ONLY when wifi is
+# configured — wifi.txt (on) or wifi.txt.off (toggled off; must stay visible or there is no way
+# back on). Unconfigured cards keep a clean Tools menu; the pak ships stashed in .system so
+# updates always carry it, and this block is the sole owner of the Tools copy. Deploys that
+# prune the Tools copy are self-healing: the next boot re-copies it.
+WIFI_PAK_SRC="$SYSTEM_PATH/paks/tools-stash/WiFi Toggle.pak"
+WIFI_PAK_DST="$SDCARD_PATH/Tools/miyoomini/WiFi Toggle.pak"
+if [ -f "$SDCARD_PATH/wifi.txt" ] || [ -f "$SDCARD_PATH/wifi.txt.off" ]; then
+	[ -d "$WIFI_PAK_DST" ] || cp -r "$WIFI_PAK_SRC" "$WIFI_PAK_DST" 2>/dev/null
+else
+	rm -rf "$WIFI_PAK_DST" 2>/dev/null
+fi
 # BOOT RECEIPT, one line per boot: kernel seconds at the moment the menu launches. This is the
 # measured half of the README's boot-time table (the bootloader seconds before the kernel are
 # timed once per device by hand and added). Appends ~40 bytes per boot; trim the file any time.
