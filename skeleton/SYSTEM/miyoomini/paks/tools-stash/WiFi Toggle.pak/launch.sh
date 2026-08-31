@@ -31,7 +31,7 @@ IP: $(wifi_state | cut -d' ' -f2)" ;;
 Not connected (takes ~1-2 min
 after boot, or wrong password)." ;;
 	esac
-	confirm.elf --ok "Wifi On" "$STATE" "" "BACK" "TURN OFF"
+	confirm.elf --ok "WiFi On" "$STATE" "" "BACK" "TURN OFF"
 	[ "$?" = "2" ] || exit 0
 	mv "$WTXT" "$WOFF"
 	sync
@@ -42,24 +42,24 @@ after boot, or wrong password)." ;;
 	command -v rfkill >/dev/null 2>&1 && rfkill block wifi 2>/dev/null
 	# Miyoo: the PMIC can cut the radio's power rail entirely (guarded no-op elsewhere)
 	[ -x /customer/app/axp_test ] && /customer/app/axp_test wifioff >/dev/null 2>&1
-	say.elf "Wifi is off.
+	say.elf "WiFi is off.
 
 The radio is down. Your network
 stays saved in wifi.txt.off."
 elif [ -f "$WOFF" ]; then
 	SSID=$(sed '/^#/d;/^[[:space:]]*$/d' "$WOFF" | head -1 | cut -d: -f1)
-	confirm.elf "Wifi Off
+	confirm.elf "WiFi Off
 
 Network \"$SSID\" is saved.
 Turning on starts SSH access." "TURN ON" "BACK" || exit 0
 	mv "$WOFF" "$WTXT"
 	sync
-	say.elf "Wifi is on.
+	say.elf "WiFi is on.
 
 Takes effect at the next boot.
 (Reboot now to connect.)"
 else
-	confirm.elf --ok "Wifi Not Set Up" "No wifi.txt on the card.
+	confirm.elf --ok "WiFi Not Set Up" "No wifi.txt on the card.
 
 On a computer, create wifi.txt at
 the card root with one line:
