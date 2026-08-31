@@ -101,6 +101,46 @@ mkdir -p "$SHARED_USERDATA_PATH/.minui"
 # with the kernel's own clock and cost one read each. Off by default: this writes to the SD card.
 bt() { [ "$ZERO_BOOT_TIMING" = "1" ] && echo "$(cut -d' ' -f1 /proc/uptime) $1" >> /mnt/SDCARD/boot-timing.txt; }
 bt "launch.sh start"
+
+# WIFI OPT-IN — the same one visible wifi.txt at the card root as TrimUI and Anbernic.
+# PORTED 2026-08-31 after learning the hard way: the MMP's wifi previously came from an ad-hoc
+# community pak that lived ONLY on the card, so the first clean update deleted it and the device
+# silently lost networking (Dan's card, tonight). This block is the in-repo replacement. The
+# command sequence is not guessed: it is reconstructed from the old pak's own set-x trace, which
+# survived in .userdata/miyoomini/logs/Wifi.on-boot.txt on that card.
+# Stock internal binaries do the work (/customer/app/*); only the 8188fu kernel module has no
+# certain internal home — we try the known candidates and log a probe when all miss.
+if [ -f "$SDCARD_PATH/wifi.txt" ]; then
+	_w=$(sed '/^#/d;/^[[:space:]]*$/d' "$SDCARD_PATH/wifi.txt" | head -1)
+	_ssid=${_w%%:*}; _psk=${_w#*:}
+	if [ -n "$_ssid" ] && [ "$_ssid" != "$_w" ]; then
+		WLOG="$LOGS_PATH/wifi.txt.log"
+		{
+		echo "== wifi.txt bring-up $(date 2>/dev/null)"
+		# stock config: wpa_supplicant.conf lives in the console's internal /appconfigs
+		printf 'ctrl_interface=/var/run/wpa_supplicant\nupdate_config=1\nnetwork={\n\tssid="%s"\n\tpsk="%s"\n}\n' "$_ssid" "$_psk" > /appconfigs/wpa_supplicant.conf
+		# driver module: card ship first (if we ever bundle one), then stock candidates
+		if ! grep -q 8188fu /proc/modules 2>/dev/null; then
+			for KO in "$SYSTEM_PATH/lib/modules/8188fu.ko" /config/wifi/8188fu.ko /customer/wifi/8188fu.ko /lib/modules/8188fu.ko; do
+				[ -f "$KO" ] && { insmod "$KO"; echo "insmod $KO rc=$?"; break; }
+			done
+		fi
+		if ! grep -q 8188fu /proc/modules 2>/dev/null; then
+			echo "PROBE: no 8188fu.ko found; candidates on this console:"
+			find /config /customer /lib -name "*8188*" 2>/dev/null
+		fi
+		# power + interface + supplicant, straight from the old pak's trace
+		ifconfig lo up 2>/dev/null
+		/customer/app/axp_test wifion
+		sleep 2
+		ifconfig wlan0 up
+		killall wpa_supplicant 2>/dev/null; killall udhcpc 2>/dev/null
+		/customer/app/wpa_supplicant -B -D nl80211 -iwlan0 -c /appconfigs/wpa_supplicant.conf
+		udhcpc -i wlan0 -t 8 -T 3 -b 2>/dev/null &
+		command -v iw >/dev/null 2>&1 && iw dev wlan0 set power_save off 2>/dev/null
+		} >> "$WLOG" 2>&1 &
+	fi
+fi
 # BOOT RECEIPT, one line per boot: kernel seconds at the moment the menu launches. This is the
 # measured half of the README's boot-time table (the bootloader seconds before the kernel are
 # timed once per device by hand and added). Appends ~40 bytes per boot; trim the file any time.
