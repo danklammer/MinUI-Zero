@@ -41,6 +41,16 @@ archive_campaign() {
 	sync
 }
 
+# Revert keeps the measurement: park the published table under .reverted and leave
+# calibration/table.stock/table.chip/table.model in place. The runtime only ever opens
+# table.conf, so parking it is exactly "factory voltage" -- and RE-ENABLE is a rename back.
+# (Dan hit this 2026-09-02: a revert during an A/B cost the 90-minute campaign; the raw log had
+# survived the whole time as margins.log.prev.)
+disable_table() {
+	mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
+	sync
+}
+
 load_calibration() {
 	[ -f "$UV_DIR/calibration" ] || return 1
 	CAL_DATE=$(awk -F= '$1 == "calibrated" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$UV_DIR/calibration") || return 1
@@ -87,7 +97,8 @@ fi
 
 # Invalid or internally inconsistent state cannot be resumed safely.
 if [ -f "$UV_DIR/INVALID" ] || \
-	   { [ -f "$UV_DIR/calibration" ] && [ ! -f "$UV_DIR/table.conf" ]; } || \
+	   { [ -f "$UV_DIR/calibration" ] && [ ! -f "$UV_DIR/table.conf" ] && [ ! -f "$UV_DIR/table.conf.reverted" ]; } || \
+	   { [ -f "$UV_DIR/table.conf.reverted" ] && [ ! -f "$UV_DIR/calibration" ]; } || \
 	   { [ -f "$UV_DIR/table.conf" ] && [ ! -f "$UV_DIR/calibration" ]; } || \
 	   { [ -f "$UV_DIR/calibration" ] && ! load_calibration; } || \
 	   { [ -f "$UV_DIR/table.conf" ] && ! valid_table; }; then
@@ -141,11 +152,14 @@ Top-clock reduction: ${top_reduction_mv:-${min_margin_mv:-?}}mV" "RE-RUN" "BACK"
 		confirm.elf "Revert to Factory?
 
 Stock voltage resumes next launch.
-Re-tune anytime." "REVERT" "BACK" || exit 0
-		archive_campaign
+Your measurements are kept, so you
+can re-enable any time without
+re-measuring." "REVERT" "BACK" || exit 0
+		disable_table
 		say.elf "Reverted to factory voltage.
 
-Launch a game to apply."
+Launch a game to apply. Open this
+tool again to re-enable."
 		exit 0
 	elif [ "$RC" != "0" ]; then
 		exit 0 # B: back
@@ -156,6 +170,47 @@ Launch a game to apply."
 Takes ~90 min. Keep it charging." "RE-RUN" "BACK" || exit 0
 	archive_campaign # fresh campaign: no stale cliffs/table may leak into the new table
 	# fall through to arm
+fi
+
+# ---------- STATE 3c: reverted calibration on this card ----------
+# table.conf is parked as .reverted (see disable_table). Same chip: offer the instant way back.
+# Different chip (card moved): archive EVERYTHING -- another chip's table must never re-enable.
+if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf.reverted" ] && [ ! -f "$UV_DIR/table.conf" ]; then
+	if [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
+		archive_campaign
+		# fall through to the pitch: this device has no tuning of its own
+	else
+		load_calibration || exit 1
+		confirm.elf "Saved Tuning Available
+
+Measured ${calibrated:-unknown}.
+Top-clock reduction: ${top_reduction_mv:-${min_margin_mv:-?}}mV.
+Currently on factory voltage." "RE-ENABLE" "BACK" "RE-MEASURE"
+		RC=$?
+		if [ "$RC" = "0" ]; then
+			mv "$UV_DIR/table.conf.reverted" "$UV_DIR/table.conf" && sync
+			if ! valid_table; then
+				archive_campaign
+				say.elf "Saved tuning failed validation
+and was removed.
+
+Re-measure to tune this chip again."
+				exit 0
+			fi
+			say.elf "Optimized voltage re-enabled.
+
+Launch a game to apply."
+			exit 0
+		elif [ "$RC" = "2" ]; then
+			confirm.elf "Re-measure This Chip?
+
+Takes ~90 min. Keep it charging." "RE-MEASURE" "BACK" || exit 0
+			archive_campaign # fresh campaign: the saved table must not leak into the new one
+			# fall through to arm
+		else
+			exit 0 # B: back
+		fi
+	fi
 fi
 
 # ---------- STATE 2: calibration in progress (armed, resuming across reboots) ----------
