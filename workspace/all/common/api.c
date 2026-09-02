@@ -2652,7 +2652,11 @@ int PWR_getBattery(void) { // 10-100 in 10-20% fragments
 // TODO: tmp? move to individual platforms or allow overriding like PAD_poll/PAD_wake?
 int PLAT_setDateTime(int y, int m, int d, int h, int i, int s) {
 	char cmd[512];
-	sprintf(cmd, "date -s '%d-%d-%d %d:%d:%d'; hwclock --utc -w", y,m,d,h,i,s);
+	// hwclock -w -u, NOT --utc -w: busybox hwclock rejects the long --utc option (rc=1, writes
+	// nothing), so every time change was silently lost on reboot (the RTC kept its old value and
+	// the kernel restored that). -u is required because the kernel reads the RTC as UTC at boot
+	// (dmesg: "setting system clock to ... UTC"). Verified on a Brick Pro, 2026-09-01.
+	sprintf(cmd, "date -s '%d-%d-%d %d:%d:%d'; hwclock -w -u", y,m,d,h,i,s);
 	system(cmd);
 	return 0; // why does this return an int?
 }

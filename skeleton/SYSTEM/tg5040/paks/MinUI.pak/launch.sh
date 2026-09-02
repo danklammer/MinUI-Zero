@@ -21,7 +21,7 @@ export DATETIME_PATH="$SHARED_USERDATA_PATH/datetime.txt"
 # dead, not four decades.
 if [ "$(date +%Y)" -lt 2025 ] && [ -f "$DATETIME_PATH" ]; then
 	date -s "$(cat "$DATETIME_PATH")" >/dev/null 2>&1
-	hwclock -w 2>/dev/null
+	hwclock -w -u 2>/dev/null # -u: kernel reads the RTC as UTC at boot (busybox has no --utc)
 fi
 
 mkdir -p "$BIOS_PATH"
