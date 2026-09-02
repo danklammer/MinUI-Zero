@@ -6985,6 +6985,14 @@ static int zero_boot_timing = -1;
 	}
 	toggle_thread = 0;  // config load must not leave a stale toggle armed (Codex #1)
 	game_running = 1;   // runtime toggles legal from here
+	{ // name the loop path ONCE per game log: the gov/drc/servo lines below mean different
+	  // things per path, and an inert mechanism prints the same lines as an active one
+		const char* lp = thread_video ? "threaded" : "serial";
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) lp = "threaded v2 depth-2 (CORE owns audio)";
+#endif
+		LOG_info("loop path: %s (auto-thread=%d)\n", lp, thread_auto);
+	}
 	
 	PWR_warn(1);
 	PWR_disableAutosleep();
@@ -7170,10 +7178,14 @@ static int zero_boot_timing = -1;
 		}
 		// LOG_info("frame duration: %ims\n", SDL_GetTicks()-frame_start);
 
-		// closed-loop governor: sample frame slip each gameplay frame, run the
+		// closed-loop governor: sample core work each gameplay frame, run the
 		// controller once per GOV_TICK_FRAMES. Skipped in the menu (which owns its
-		// own clock). A batch "overran" when >=25% of its frames missed the budget,
-		// so rare hiccups don't pin the clock high (threshold is a tuning knob).
+		// own clock). The tick's signal is the GENERATION-RATE slip detector (D24):
+		// BIGSLIP when the core's output rate falls >=10% under target, SLIP under
+		// 97.5%; otherwise a per-path sink gate says SLACK or BUSY — serial: p95 core
+		// work vs the budget at the next OPP down (gov_sink_fits); threaded: window
+		// utilization scaled to the next OPP (<=0.85); fast-forward: the multiplier
+		// band; h700: unconditional probe-down. No per-frame budget-miss threshold exists.
 		if (!show_menu && (gov_active || tlm_enabled())) {
 			// PURE CPU work = frame work (startFrame->flip) MINUS the audio-pacing block
 			// (SND_batchSamples blocking on a full buffer during core.run) — blocked frames are
@@ -7368,6 +7380,19 @@ static int zero_boot_timing = -1;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, gov_gen, gov_target_fps);
+					{ // is the ceiling actually BINDING? An inert cap (schedutil sitting below it on
+					  // its own) prints identical gov: lines to an active one; this is the only line
+					  // that tells them apart. A cap that is never at-ceil is a passenger.
+						static uint32_t cap_log_at = 0; static int cap_at_ceil = 0, cap_ticks = 0;
+						int cap_cur = gov_read_cur_khz();
+						if (cap_cur > 0) { cap_ticks++; if (cap_cur >= gov_state.ceil_khz) cap_at_ceil++; }
+						uint32_t cl_now = SDL_GetTicks();
+						if (!cap_log_at) cap_log_at = cl_now;
+						else if (cl_now - cap_log_at >= 60000) {
+							LOG_info("gov-cap: at-ceil %d/%d ticks ceil=%d actual=%d kHz\n", cap_at_ceil, cap_ticks, gov_state.ceil_khz, cap_cur);
+							cap_log_at = cl_now; cap_at_ceil = 0; cap_ticks = 0;
+						}
+					}
 					{
 						int gm = govmem_post_tick(&gov_mem, frame_overrun, fast_forward, rate_seq, prev_ceil, gov_state.ceil_khz);
 						if ((gm & GOVMEM_PRELOAD_DWELL) && gov_state.slack_run < GOV_DN_DWELL - 1)
