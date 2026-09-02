@@ -177,8 +177,17 @@ fi
 # Different chip (card moved): archive EVERYTHING -- another chip's table must never re-enable.
 if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf.reverted" ] && [ ! -f "$UV_DIR/table.conf" ]; then
 	if [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
-		archive_campaign
-		# fall through to the pitch: this device has no tuning of its own
+		# Same rule as STATE 3b: ask before discarding another chip's tuning. BACK keeps the
+		# parked table intact so the card can return to its own device and re-enable it.
+		confirm.elf "Different Device Detected
+
+This card holds tuning measured on
+another device. Every chip is
+different, so it is not used here.
+
+Optimize this device now?" "OPTIMIZE" "BACK" || exit 0
+		archive_campaign # committed to a fresh campaign for THIS chip
+		# fall through to the pitch + arming
 	else
 		load_calibration || exit 1
 		confirm.elf "Saved Tuning Available
