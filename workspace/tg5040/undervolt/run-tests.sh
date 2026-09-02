@@ -4,7 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../../.." && pwd)
 mkdir -p "$ROOT/.notes"
 TMP=$(mktemp -d "$ROOT/.notes/uvmap-test.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT HUP INT TERM  # preserve the status the trap used to mask
 
 UV_SCRIPT="$ROOT/workspace/tg5040/undervolt/uvmap.sh"
 TOOL_SCRIPT="$ROOT/skeleton/EXTRAS/Tools/tg5040/Optimize CPU.pak/launch.sh"
@@ -49,6 +49,7 @@ LOG="$TMP/margins.log"
 
 eval "$(sed -n '/^load_calibration()/,/^}/p; /^valid_table()/,/^}/p' "$TOOL_SCRIPT")"
 UV_DIR="$TMP"
+CHIP_DIR="$TMP"   # the tool's table/calibration readers resolve the per-chip slot
 cp "$RECEIPT/table.conf" "$TMP/table.conf"
 cp "$RECEIPT/table.stock" "$TMP/table.stock"
 cp "$RECEIPT/calibration" "$TMP/calibration"

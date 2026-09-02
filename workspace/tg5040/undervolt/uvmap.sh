@@ -15,7 +15,23 @@
 
 UV_DIR=/mnt/SDCARD/.userdata/tg5040/undervolt
 STATE=$UV_DIR/state          # "<opp_khz> <testing_uv>"
-LOG=$UV_DIR/margins.log
+# Per-chip slot (2026-09-02): this chip's log and published table live under chips/<serial>/
+# so one card can carry a calibration per device. Campaign state (ARMED, breadcrumb, identity)
+# stays at the top level: only the live chip's campaign can run.
+CHIP_ID=$(grep sunxi_serial /sys/class/sunxi_info/sys_info 2>/dev/null | awk -F: '{print $2}' | tr -d ' \t\r\n')
+# Identity unreadable this boot: do nothing (ARMED persists; auto.sh retries next boot). Never
+# run a campaign against the flat layout on a transient read (review 2026-09-02).
+[ -n "$CHIP_ID" ] || exit 0
+CHIP_DIR=$UV_DIR/chips/$CHIP_ID
+mkdir -p "$CHIP_DIR" || exit 0   # slot cannot be created this boot: ARMED persists, retry next boot
+# Carry a flat mid-campaign log forward ONLY when campaign.chip binds it to THIS chip. An
+# unattributed or foreign log must never become this chip's verdicts (voltage hazard found in
+# review 2026-09-02); the tool parks those as .orphan.
+if [ -f "$UV_DIR/margins.log" ] && [ ! -f "$CHIP_DIR/margins.log" ] && \
+   [ "$(cat "$UV_DIR/campaign.chip" 2>/dev/null | tr -d ' \t\r\n')" = "$CHIP_ID" ]; then
+	mv "$UV_DIR/margins.log" "$CHIP_DIR/margins.log"
+fi
+LOG=$CHIP_DIR/margins.log
 BIN=$UV_DIR
 P=/sys/devices/system/cpu/cpu0/cpufreq
 CAMPAIGN_CHIP=$UV_DIR/campaign.chip
@@ -65,8 +81,8 @@ read_model() {
 verify_campaign_identity() {
 	CURRENT_CHIP=$(read_chip)
 	CURRENT_MODEL=$(read_model)
-	SAVED_CHIP=$(cat "$CAMPAIGN_CHIP" 2>/dev/null)
-	SAVED_MODEL=$(cat "$CAMPAIGN_MODEL" 2>/dev/null)
+	SAVED_CHIP=$(cat "$CAMPAIGN_CHIP" 2>/dev/null | tr -d ' \t\r\n')
+	SAVED_MODEL=$(cat "$CAMPAIGN_MODEL" 2>/dev/null | tr -d '\r\n')
 	[ -n "$CURRENT_CHIP" ] && [ -n "$CURRENT_MODEL" ] &&
 		[ "$CURRENT_CHIP" = "$SAVED_CHIP" ] && [ "$CURRENT_MODEL" = "$SAVED_MODEL" ]
 }
@@ -74,9 +90,9 @@ verify_campaign_identity() {
 campaign_abort() {
 	echo "$(date +%T) campaign ABORTED: $*" >> "$LOG"
 	touch "$UV_DIR/INVALID"
-	rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES" "$UV_DIR/table.conf.tmp" \
-		"$UV_DIR/table.chip.tmp" "$UV_DIR/table.model.tmp" "$UV_DIR/table.stock.tmp" \
-		"$UV_DIR/calibration.tmp" \
+	rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES" "$CHIP_DIR/table.conf.tmp" \
+		"$CHIP_DIR/table.chip.tmp" "$CHIP_DIR/table.model.tmp" "$CHIP_DIR/table.stock.tmp" \
+		"$CHIP_DIR/calibration.tmp" \
 		/tmp/uvmap.running
 	sync
 	reboot
@@ -220,14 +236,14 @@ gen_table() {
 	# REFUSE to publish unless every OPP carries a verdict: a refused uvtool write or
 	# malformed state can leave an OPP with neither CLIFF nor DONE, and guessing "floor"
 	# for an untested OPP would apply an unproven voltage (audit 2026-07-11).
-	OUT="$UV_DIR/table.conf"
+	OUT="$CHIP_DIR/table.conf"
 	for OPP in $ASC_OPPS; do
 		verdict_for "$OPP" >/dev/null || {
 			echo "$(date +%T) gen_table: $OPP lacks one valid verdict — refusing to publish" >> "$LOG"
 			return 1
 		}
 	done
-	rm -f "$OUT.tmp" "$UV_DIR/table.stock.tmp"
+	rm -f "$OUT.tmp" "$CHIP_DIR/table.stock.tmp"
 	RUNMAX=0
 	for OPP in $ASC_OPPS; do
 		VERDICT=$(verdict_for "$OPP") || { rm -f "$OUT.tmp"; return 1; }
@@ -258,7 +274,7 @@ gen_table() {
 		fi
 		RUNMAX=$UV
 		echo "$OPP $UV" >> "$OUT.tmp"
-		echo "$OPP $STOCK" >> "$UV_DIR/table.stock.tmp"
+		echo "$OPP $STOCK" >> "$CHIP_DIR/table.stock.tmp"
 	done
 	verify_campaign_identity || { rm -f "$OUT.tmp"; return 1; }
 	# state file for the tool UI: worst-case APPLIED reduction at the high OPPs —
@@ -280,16 +296,16 @@ gen_table() {
 		echo "calibrated=$(date +%Y-%m-%d)"
 		echo "min_margin_mv=$((MINSAVE/1000))" # key kept for compat; value = applied reduction
 		echo "top_reduction_mv=$((TOPSAVE/1000))"
-	} > "$UV_DIR/calibration.tmp"
-	printf '%s\n' "$SAVED_MODEL" > "$UV_DIR/table.model.tmp"
-	printf '%s\n' "$SAVED_CHIP" > "$UV_DIR/table.chip.tmp"
+	} > "$CHIP_DIR/calibration.tmp"
+	printf '%s\n' "$SAVED_MODEL" > "$CHIP_DIR/table.model.tmp"
+	printf '%s\n' "$SAVED_CHIP" > "$CHIP_DIR/table.chip.tmp"
 	# Publish table.conf last. Runtime also requires table.chip and table.stock, so a
 	# power loss during these renames can only leave the voltage authority disabled.
 	sync
-	mv "$UV_DIR/table.model.tmp" "$UV_DIR/table.model" || return 1
-	mv "$UV_DIR/table.chip.tmp" "$UV_DIR/table.chip" || return 1
-	mv "$UV_DIR/table.stock.tmp" "$UV_DIR/table.stock" || return 1
-	mv "$UV_DIR/calibration.tmp" "$UV_DIR/calibration" || return 1
+	mv "$CHIP_DIR/table.model.tmp" "$CHIP_DIR/table.model" || return 1
+	mv "$CHIP_DIR/table.chip.tmp" "$CHIP_DIR/table.chip" || return 1
+	mv "$CHIP_DIR/table.stock.tmp" "$CHIP_DIR/table.stock" || return 1
+	mv "$CHIP_DIR/calibration.tmp" "$CHIP_DIR/calibration" || return 1
 	mv "$OUT.tmp" "$OUT" || return 1
 	sync
 }
@@ -298,7 +314,9 @@ finish() {
 	rm -f /tmp/uvmap.running
 	if gen_table; then
 		echo "$(date +%T) campaign COMPLETE — table.conf written, disarming" >> "$LOG"
-		rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES"
+		# identity is now bound by the slot's table.chip; a stale flat campaign.chip made the
+		# NEXT device exit silently at START (review 2026-09-02)
+		rm -f "$UV_DIR/ARMED" "$STATE" "$UV_DIR/RETRIES" "$UV_DIR/campaign.chip" "$UV_DIR/campaign.model"
 	else
 		# incomplete: some OPP has no verdict. Stay armed so the resume loop re-runs
 		# just the missing OPPs next boot — but cap retries so a persistently failing
@@ -321,7 +339,9 @@ finish() {
 # --- crash bookkeeping: a leftover state line means that point rebooted us ---
 if [ -f "$STATE" ]; then
 	set -- $(cat "$STATE" 2>/dev/null)
-	[ "$#" = "2" ] || campaign_abort "malformed crash breadcrumb"
+	# three fields, third = the chip that wrote it. A two-field breadcrumb predates chip binding
+	# and a mismatched one belongs to another chip: neither may seed THIS chip's cliffs.
+	[ "$#" = "3" ] && [ "$3" = "$CHIP_ID" ] || campaign_abort "crash breadcrumb is not this chip's ($# fields)"
 	CRASH_OPP=$1; CRASH_UV=$2
 	opp_known "$CRASH_OPP" && on_step "$CRASH_UV" || campaign_abort "invalid crash breadcrumb '$CRASH_OPP $CRASH_UV'"
 	CRASH_STOCK=$(stock_for_opp "$CRASH_OPP") || campaign_abort "crash breadcrumb has no measured stock row"
@@ -367,7 +387,7 @@ for OPP in $OPPS; do
 			exit 0
 		fi
 		UV=$((UV - STEP))
-		echo "$OPP $UV" > "$STATE"; sync   # if we reboot past here, this point crashed
+		echo "$OPP $UV $CHIP_ID" > "$STATE"; sync   # if we reboot past here, this point crashed (chip-bound)
 		# Layered self-reboot for wedged rounds (2026-07-12: three marginal-voltage
 		# freezes in one day needed manual power cuts — the old normal-priority
 		# `sleep && reboot -f` never woke in that state while procd kept the hw dog fed):

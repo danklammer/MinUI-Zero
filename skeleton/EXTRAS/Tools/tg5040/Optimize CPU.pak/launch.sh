@@ -31,14 +31,21 @@ unset INSTALL_FAILED f
 
 # Retire every artifact before a fresh campaign. A stale log or identity can otherwise
 # combine measurements from different chips into one table.
-archive_campaign() {
-	[ -f "$UV_DIR/margins.log" ] && mv "$UV_DIR/margins.log" "$UV_DIR/margins.log.prev" 2>/dev/null
-	rm -f "$UV_DIR/table.conf" "$UV_DIR/table.model" "$UV_DIR/table.chip" \
-	      "$UV_DIR/table.stock" \
-	      "$UV_DIR/table.conf.reverted" "$UV_DIR/calibration" "$UV_DIR/RETRIES" \
-	      "$UV_DIR/state" "$UV_DIR/ARMED" "$UV_DIR/INVALID" \
+# Card-level campaign state only (ARMED, breadcrumb, retries, INVALID, identity, temps). Never
+# touches a slot: a foreign or aborted campaign must not cost THIS device its calibration
+# (review 2026-09-02).
+archive_state() {
+	rm -f "$UV_DIR/RETRIES" "$UV_DIR/state" "$UV_DIR/ARMED" "$UV_DIR/INVALID" \
 	      "$UV_DIR/campaign.chip" "$UV_DIR/campaign.model" "$UV_DIR"/*.tmp
 	sync
+}
+# Retire THIS chip's slot (raw log parked as .prev) plus the card-level state.
+archive_campaign() {
+	[ -f "$CHIP_DIR/margins.log" ] && mv "$CHIP_DIR/margins.log" "$CHIP_DIR/margins.log.prev" 2>/dev/null
+	rm -f "$CHIP_DIR/table.conf" "$CHIP_DIR/table.model" "$CHIP_DIR/table.chip" \
+	      "$CHIP_DIR/table.stock" \
+	      "$CHIP_DIR/table.conf.reverted" "$CHIP_DIR/calibration" "$CHIP_DIR"/*.tmp
+	archive_state
 }
 
 # Revert keeps the measurement: park the published table under .reverted and leave
@@ -47,16 +54,16 @@ archive_campaign() {
 # (Dan hit this 2026-09-02: a revert during an A/B cost the 90-minute campaign; the raw log had
 # survived the whole time as margins.log.prev.)
 disable_table() {
-	mv "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" 2>/dev/null
+	mv "$CHIP_DIR/table.conf" "$CHIP_DIR/table.conf.reverted" 2>/dev/null
 	sync
 }
 
 load_calibration() {
-	[ -f "$UV_DIR/calibration" ] || return 1
-	CAL_DATE=$(awk -F= '$1 == "calibrated" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$UV_DIR/calibration") || return 1
-	CAL_MIN=$(awk -F= '$1 == "min_margin_mv" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$UV_DIR/calibration") || return 1
-	CAL_TOP=$(awk -F= '$1 == "top_reduction_mv" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$UV_DIR/calibration") || return 1
-	[ "$(wc -l < "$UV_DIR/calibration" | tr -d ' ')" = "3" ] || return 1
+	[ -f "$CHIP_DIR/calibration" ] || return 1
+	CAL_DATE=$(awk -F= '$1 == "calibrated" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$CHIP_DIR/calibration") || return 1
+	CAL_MIN=$(awk -F= '$1 == "min_margin_mv" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$CHIP_DIR/calibration") || return 1
+	CAL_TOP=$(awk -F= '$1 == "top_reduction_mv" { n++; value=$2 } END { if (n == 1) print value; else exit 1 }' "$CHIP_DIR/calibration") || return 1
+	[ "$(wc -l < "$CHIP_DIR/calibration" | tr -d ' ')" = "3" ] || return 1
 	printf '%s\n' "$CAL_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || return 1
 	case "$CAL_MIN" in ''|*[!0-9]*) return 1;; esac
 	case "$CAL_TOP" in ''|*[!0-9]*) return 1;; esac
@@ -68,7 +75,7 @@ load_calibration() {
 }
 
 valid_table() {
-	[ -f "$UV_DIR/table.conf" ] && [ -f "$UV_DIR/table.stock" ] || return 1
+	[ -f "$CHIP_DIR/table.conf" ] && [ -f "$CHIP_DIR/table.stock" ] || return 1
 	awk '
 		BEGIN { split("408000 600000 816000 1008000 1200000 1416000 1608000 1800000", opp) }
 		FNR == NR {
@@ -80,13 +87,60 @@ valid_table() {
 			prev=$2; table_n=FNR
 		}
 		END { exit bad || stock_n != 8 || table_n != 8 }
-	' "$UV_DIR/table.stock" "$UV_DIR/table.conf"
+	' "$CHIP_DIR/table.stock" "$CHIP_DIR/table.conf"
 }
 
 STATUS=$(cat /sys/class/power_supply/axp2202-battery/status 2>/dev/null)
 DEV_CHIP=$(grep sunxi_serial /sys/class/sunxi_info/sys_info 2>/dev/null | awk -F: '{print $2}' | tr -d ' \t\r\n')
 DEV_MODEL="$TRIMUI_MODEL"
 [ -n "$DEV_MODEL" ] || DEV_MODEL=$(strings /usr/trimui/bin/MainUI 2>/dev/null | grep '^Trimui' | head -1)
+
+# Per-chip slots (2026-09-02): chips/<serial>/ holds each device's own table, so one card can
+# carry a calibration per device it visits and none can ever be applied to the wrong silicon.
+[ -n "$DEV_CHIP" ] || { say.elf "Cannot read this chip's identity.
+
+Optimize CPU needs it to keep every
+calibration bound to its own device."; exit 0; }
+CHIP_DIR="$UV_DIR/chips/$DEV_CHIP"
+mkdir -p "$CHIP_DIR" || { say.elf "Cannot create this chip's tuning
+folder on the card."; exit 0; }
+# One-time migration of the flat layout. A published table is attributed by its table.chip; an
+# in-flight campaign log by campaign.chip. Leftovers with no attribution are unusable to the
+# runtime (it demands table.chip) and are dropped.
+# A serial is hex from sysfs; anything else read from a card file is corruption, never a path.
+is_serial() { case "$1" in ''|*[!0-9a-fA-F]*) return 1;; *) return 0;; esac; }
+if [ -f "$UV_DIR/table.chip" ]; then
+	LEG_CHIP=$(cat "$UV_DIR/table.chip" 2>/dev/null | tr -d ' \t\r\n')
+	if is_serial "$LEG_CHIP" && mkdir -p "$UV_DIR/chips/$LEG_CHIP"; then
+		MIG_OK=1
+		for f in table.conf table.conf.reverted table.stock table.model calibration margins.log margins.log.prev; do
+			[ -f "$UV_DIR/$f" ] || continue
+			mv "$UV_DIR/$f" "$UV_DIR/chips/$LEG_CHIP/$f" || MIG_OK=0
+		done
+		# table.chip moves LAST: it is the marker this block keys on, so a power cut or a failed
+		# move leaves it flat and the next open simply retries the remaining moves.
+		[ "$MIG_OK" = 1 ] && mv "$UV_DIR/table.chip" "$UV_DIR/chips/$LEG_CHIP/table.chip"
+		sync
+	fi
+fi
+# Only once no flat table.chip remains: while a migration is pending, a pre-identity card's own
+# log stays paired with its still-flat table for the retry.
+if [ -f "$UV_DIR/margins.log" ] && [ ! -f "$UV_DIR/table.chip" ]; then
+	CAM_CHIP=$(cat "$UV_DIR/campaign.chip" 2>/dev/null | tr -d ' \t\r\n')
+	if is_serial "$CAM_CHIP"; then
+		# attributed: file it under its chip; if the slot cannot be created, leave it for the retry
+		mkdir -p "$UV_DIR/chips/$CAM_CHIP" && mv "$UV_DIR/margins.log" "$UV_DIR/chips/$CAM_CHIP/margins.log"
+	else
+		# No identity binds it (pre-identity releases never wrote campaign.chip): its verdicts
+		# belong to an unknown chip and must never be adopted. Appended to the orphan record,
+		# which nothing reads.
+		cat "$UV_DIR/margins.log" >> "$UV_DIR/margins.log.orphan" && rm -f "$UV_DIR/margins.log"
+	fi
+	sync
+fi
+# Unattributable leftovers (no table.chip to name their chip) are unusable to the runtime.
+# Only once no flat table.chip remains: a half-finished migration keeps retrying instead.
+[ -f "$UV_DIR/table.chip" ] || rm -f "$UV_DIR/table.conf" "$UV_DIR/table.conf.reverted" "$UV_DIR/table.stock" "$UV_DIR/table.model" "$UV_DIR/calibration" 2>/dev/null
 if [ -z "$DEV_CHIP" ] || [ -z "$DEV_MODEL" ]; then
 	say.elf "Optimize CPU cannot verify
 this device's chip identity.
@@ -96,27 +150,30 @@ Factory voltage remains active."
 fi
 
 # Invalid or internally inconsistent state cannot be resumed safely.
-if [ -f "$UV_DIR/INVALID" ] || \
-	   { [ -f "$UV_DIR/calibration" ] && [ ! -f "$UV_DIR/table.conf" ] && [ ! -f "$UV_DIR/table.conf.reverted" ]; } || \
-	   { [ -f "$UV_DIR/table.conf.reverted" ] && [ ! -f "$UV_DIR/calibration" ]; } || \
-	   { [ -f "$UV_DIR/table.conf" ] && [ ! -f "$UV_DIR/calibration" ]; } || \
-	   { [ -f "$UV_DIR/calibration" ] && ! load_calibration; } || \
-	   { [ -f "$UV_DIR/table.conf" ] && ! valid_table; }; then
+# A failed/aborted campaign (INVALID) is card-level: clear its state, keep every slot intact.
+[ -f "$UV_DIR/INVALID" ] && archive_state
+# Never judge a slot while a flat table.chip marks a half-finished migration (review 2, S11b).
+if [ ! -f "$UV_DIR/table.chip" ] && { { [ -f "$CHIP_DIR/calibration" ] && [ ! -f "$CHIP_DIR/table.conf" ] && [ ! -f "$CHIP_DIR/table.conf.reverted" ]; } || \
+	   { [ -f "$CHIP_DIR/table.conf.reverted" ] && [ ! -f "$CHIP_DIR/calibration" ]; } || \
+	   { [ -f "$CHIP_DIR/table.conf" ] && [ ! -f "$CHIP_DIR/calibration" ]; } || \
+	   { [ -f "$CHIP_DIR/calibration" ] && ! load_calibration; } || \
+	   { [ -f "$CHIP_DIR/table.conf" ] && ! valid_table; }; }; then
 	archive_campaign
 fi
 
-# Partial campaigns are resumable only on the exact chip/model that started them.
-if [ -f "$UV_DIR/ARMED" ] || { [ ! -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/margins.log" ]; }; then
-	CAM_CHIP=$(cat "$UV_DIR/campaign.chip" 2>/dev/null)
-	CAM_MODEL=$(cat "$UV_DIR/campaign.model" 2>/dev/null)
-	if [ "$CAM_CHIP" != "$DEV_CHIP" ] || [ "$CAM_MODEL" != "$DEV_MODEL" ]; then
-		archive_campaign
+# A partial log in THIS chip's slot is attributed by the slot itself and always resumes; only
+# another chip's in-flight card state is dropped (review 2: park-vs-resume must not depend on
+# card-level leftovers).
+if [ -f "$UV_DIR/ARMED" ] || { [ ! -f "$CHIP_DIR/calibration" ] && [ -f "$CHIP_DIR/margins.log" ]; }; then
+	CAM_CHIP=$(cat "$UV_DIR/campaign.chip" 2>/dev/null | tr -d ' \t\r\n')
+	if [ -n "$CAM_CHIP" ] && [ "$CAM_CHIP" != "$DEV_CHIP" ]; then
+		archive_state    # another chip's campaign: drop its card state, keep every slot
 	fi
 fi
 
 # ---------- STATE 3b: calibrated, but for a DIFFERENT chip (card swapped) ----------
-TAB_CHIP=$(cat "$UV_DIR/table.chip" 2>/dev/null)
-if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ] && [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
+TAB_CHIP=$(cat "$CHIP_DIR/table.chip" 2>/dev/null | tr -d ' \t\r\n')
+if [ -f "$CHIP_DIR/calibration" ] && [ -f "$CHIP_DIR/table.conf" ] && [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
 	confirm.elf "Different Device Detected
 
 This card was optimized on another
@@ -126,7 +183,7 @@ the tuning is not applied here.
 Optimize this device now?" "OPTIMIZE" "BACK" || exit 0
 	archive_campaign # a different chip: EVERYTHING from the old campaign must go
 	# fall through to the charger check + arming below
-elif [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf" ]; then
+elif [ -f "$CHIP_DIR/calibration" ] && [ -f "$CHIP_DIR/table.conf" ]; then
 	load_calibration || exit 1
 	# headline from the APPLIED reduction (V^2 -> ~1.6x the mV% in rail power).
 	# Dan's original pitch copy (3a76f3a2), restored 2026-07-12: both figures are
@@ -175,7 +232,7 @@ fi
 # ---------- STATE 3c: reverted calibration on this card ----------
 # table.conf is parked as .reverted (see disable_table). Same chip: offer the instant way back.
 # Different chip (card moved): archive EVERYTHING -- another chip's table must never re-enable.
-if [ -f "$UV_DIR/calibration" ] && [ -f "$UV_DIR/table.conf.reverted" ] && [ ! -f "$UV_DIR/table.conf" ]; then
+if [ -f "$CHIP_DIR/calibration" ] && [ -f "$CHIP_DIR/table.conf.reverted" ] && [ ! -f "$CHIP_DIR/table.conf" ]; then
 	if [ "$DEV_CHIP" != "$TAB_CHIP" ]; then
 		# Same rule as STATE 3b: ask before discarding another chip's tuning. BACK keeps the
 		# parked table intact so the card can return to its own device and re-enable it.
@@ -197,7 +254,7 @@ Top-clock reduction: ${top_reduction_mv:-${min_margin_mv:-?}}mV.
 Currently on factory voltage." "RE-ENABLE" "BACK" "RE-MEASURE"
 		RC=$?
 		if [ "$RC" = "0" ]; then
-			mv "$UV_DIR/table.conf.reverted" "$UV_DIR/table.conf" && sync
+			mv "$CHIP_DIR/table.conf.reverted" "$CHIP_DIR/table.conf" && sync
 			if ! valid_table; then
 				archive_campaign
 				say.elf "Saved tuning failed validation
@@ -224,7 +281,7 @@ fi
 
 # ---------- STATE 2: calibration in progress (armed, resuming across reboots) ----------
 if [ -f "$UV_DIR/ARMED" ]; then
-	MLOG="$UV_DIR/margins.log"
+	MLOG="$CHIP_DIR/margins.log"
 	DONE_N=$(grep -cE "^[0-9]+ (CLIFF|DONE)" "$MLOG" 2>/dev/null)
 	[ -n "$DONE_N" ] || DONE_N=0
 	LAST=$(grep "uV survived" "$MLOG" 2>/dev/null | tail -1 | awk '{f=$3; sub(/:/,"",f); printf "%d MHz: %.1f mV ok", f/1000, $4/1000}')
@@ -292,16 +349,26 @@ if ! grep -q uvmap "$AUTO" 2>/dev/null; then
 	} >> "$AUTO"
 	chmod +x "$AUTO"
 fi
-if [ ! -f "$UV_DIR/campaign.chip" ] || [ ! -f "$UV_DIR/campaign.model" ]; then
-	printf '%s\n' "$DEV_CHIP" > "$UV_DIR/campaign.chip.tmp" || exit 1
-	printf '%s\n' "$DEV_MODEL" > "$UV_DIR/campaign.model.tmp" || exit 1
-	sync
-	mv "$UV_DIR/campaign.chip.tmp" "$UV_DIR/campaign.chip" || exit 1
-	mv "$UV_DIR/campaign.model.tmp" "$UV_DIR/campaign.model" || exit 1
-fi
+# Bind the campaign to THIS device unconditionally. No campaign is in flight here (STATE 2
+# catches ARMED), so any campaign.* left on the card is stale identity from a completed or
+# cancelled run -- possibly another chip's. Review 2026-09-02: writing only-if-absent and then
+# demanding a match made a second device exit 1 silently at START. A same-chip resume rewrites
+# the same values.
+# No campaign is in flight, so any crash breadcrumb / retry count / INVALID on the card belongs
+# to another chip or a dead run and would abort this chip's first boot (review 2, S12).
+rm -f "$UV_DIR/state" "$UV_DIR/RETRIES" "$UV_DIR/INVALID"
+printf '%s\n' "$DEV_CHIP" > "$UV_DIR/campaign.chip.tmp" || exit 1
+printf '%s\n' "$DEV_MODEL" > "$UV_DIR/campaign.model.tmp" || exit 1
+sync
+mv "$UV_DIR/campaign.chip.tmp" "$UV_DIR/campaign.chip" || exit 1
+mv "$UV_DIR/campaign.model.tmp" "$UV_DIR/campaign.model" || exit 1
 [ "$(cat "$UV_DIR/campaign.chip" 2>/dev/null)" = "$DEV_CHIP" ] &&
-	[ "$(cat "$UV_DIR/campaign.model" 2>/dev/null)" = "$DEV_MODEL" ] || exit 1
-rm -f "$UV_DIR/table.conf" "$UV_DIR/table.model" "$UV_DIR/table.chip" "$UV_DIR/table.stock" "$UV_DIR/calibration"
+	[ "$(cat "$UV_DIR/campaign.model" 2>/dev/null)" = "$DEV_MODEL" ] || {
+	say.elf "Could not bind the measurement
+to this device. Nothing was started."
+	exit 1
+}
+rm -f "$CHIP_DIR/table.conf" "$CHIP_DIR/table.model" "$CHIP_DIR/table.chip" "$CHIP_DIR/table.stock" "$CHIP_DIR/calibration"
 touch "$UV_DIR/ARMED"
 sync
 
