@@ -1175,7 +1175,15 @@ static char* scaling_labels[] = {
 static char* effect_labels[] = {
 	"None",
 	"Line",
+#if !defined(GOV_PLATFORM_MIYOOMINI) && !defined(GOV_PLATFORM_H700)
+	"Line 50%",
+	"Line 25%",
+#endif
 	"Grid",
+#if !defined(GOV_PLATFORM_MIYOOMINI) && !defined(GOV_PLATFORM_H700)
+	"Grid 50%",
+	"Grid 25%",
+#endif
 	NULL
 };
 static char* sharpness_labels[] = {
@@ -1421,10 +1429,14 @@ static struct Config {
 			[FE_OPT_EFFECT] = {
 				.key	= "minarch_screen_effect",
 				.name	= "Screen Effect",
+#if !defined(GOV_PLATFORM_MIYOOMINI) && !defined(GOV_PLATFORM_H700)
+				.desc	= "Line simulates CRT scanlines. Grid an LCD grid.\nThe 50%% and 25%% variants are subtler.\nEffects usually look best at native scaling.",
+#else
 				.desc	= "Grid simulates an LCD grid.\nLine simulates CRT scanlines.\nEffects usually look best at native scaling.",
+#endif
 				.default_value = 0,
 				.value = 0,
-				.count = 3,
+				.count = EFFECT_COUNT, // self-adjusts: 3 on software-scaler platforms, 7 on tg5040
 				.values = effect_labels,
 				.labels = effect_labels,
 			},

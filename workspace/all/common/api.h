@@ -111,7 +111,15 @@ enum {
 enum {
 	EFFECT_NONE,
 	EFFECT_LINE,
+#if !defined(GOV_PLATFORM_MIYOOMINI) && !defined(GOV_PLATFORM_H700) // tg5040 (GLES) only: opacity here is a free texture blend, but the
+	EFFECT_LINE50, // software-scaler platforms bake the effect into the scaler with no opacity knob,
+	EFFECT_LINE25, // so the subtler half/quarter variants are an earned tg5040-only divergence.
+#endif
 	EFFECT_GRID,
+#if !defined(GOV_PLATFORM_MIYOOMINI) && !defined(GOV_PLATFORM_H700)
+	EFFECT_GRID50,
+	EFFECT_GRID25,
+#endif
 	EFFECT_COUNT,
 };
 

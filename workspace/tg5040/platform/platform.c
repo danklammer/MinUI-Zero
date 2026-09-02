@@ -400,7 +400,7 @@ static void updateEffect(void) {
 	
 	char* effect_path;
 	int opacity = 128; // 1 - 1/2 = 50%
-	if (effect.type==EFFECT_LINE) {
+	if (effect.type==EFFECT_LINE || effect.type==EFFECT_LINE50 || effect.type==EFFECT_LINE25) {
 		if (effect.scale<3) {
 			effect_path = RES_PATH "/line-2.png";
 		}
@@ -420,7 +420,7 @@ static void updateEffect(void) {
 			effect_path = RES_PATH "/line-8.png";
 		}
 	}
-	else if (effect.type==EFFECT_GRID) {
+	else if (effect.type==EFFECT_GRID || effect.type==EFFECT_GRID50 || effect.type==EFFECT_GRID25) {
 		if (effect.scale<3) {
 			effect_path = RES_PATH "/grid-2.png";
 			opacity = 64; // 1 - 3/4 = 25%
@@ -451,11 +451,13 @@ static void updateEffect(void) {
 			opacity = 136; // 1 - 57/121 = ~52%
 		}
 	}
+	if (effect.type==EFFECT_LINE50 || effect.type==EFFECT_GRID50) opacity /= 2;      // half-opacity variants
+	else if (effect.type==EFFECT_LINE25 || effect.type==EFFECT_GRID25) opacity /= 4; // quarter-opacity variants
 	
 	// LOG_info("effect: %s opacity: %i\n", effect_path, opacity);
 	SDL_Surface* tmp = IMG_Load(effect_path);
 	if (tmp) {
-		if (effect.type==EFFECT_GRID) {
+		if (effect.type==EFFECT_GRID || effect.type==EFFECT_GRID50 || effect.type==EFFECT_GRID25) {
 			if (effect.color) {
 				// LOG_info("dmg color grid...\n");
 			
