@@ -31,6 +31,7 @@
 #define AUTO_RESUME_SLOT 9
 
 #define FAUX_RECENT_PATH SDCARD_PATH "/Recently Played"
+#define NO_RECENTS_PATH SDCARD_PATH "/no-recents.txt" // card-root opt-out: hides Recently Played AND stops recording plays (r/trimui request, 2026-09-02)
 #define COLLECTIONS_PATH SDCARD_PATH "/Collections"
 
 #define LAST_PATH "/tmp/last.txt" // transient

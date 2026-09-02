@@ -148,6 +148,8 @@ root and put your network in it as `SSID:password`. Same file on every device. A
 battery you did not agree to spend, and nothing here needs the network. Once the file exists, a
 **WiFi Toggle** tool appears in Tools showing the live connection (network name and IP) with
 one-press on/off; cards without the file keep a clean Tools menu.
+Do not want a Recently Played list? Put an empty `no-recents.txt` at the card root: the entry never
+appears and plays are no longer recorded. Delete the file to bring it back.
 
 **One card per device.** Upstream MinUI ships every platform in a single zip, so one card boots
 anything it supports. Zero builds and ships each platform separately, so **a card serves the device

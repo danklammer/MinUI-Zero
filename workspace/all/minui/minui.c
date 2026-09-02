@@ -457,6 +457,7 @@ static void saveRecents(void) {
 	}
 }
 static void addRecent(char* path, char* alias) {
+	if (exists(NO_RECENTS_PATH)) return; // opted out: permanent means we stop recording, not just hiding
 	path += strlen(SDCARD_PATH); // makes paths platform agnostic
 	int id = RecentArray_indexOf(recents, path);
 	if (id==-1) { // add
@@ -525,6 +526,7 @@ static int hasM3u(char* rom_path, char* m3u_path) { // NOTE: rom_path not dir_pa
 }
 
 static int hasRecents(void) {
+	if (exists(NO_RECENTS_PATH)) return 0; // opted out: no entry, and nothing is ever read
 	LOG_info("hasRecents %s\n", RECENT_PATH);
 	int has = 0;
 	
