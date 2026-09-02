@@ -754,11 +754,43 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 			default: break;   // no line variant at this factor: fall through to plain
 		}
 	}
+	else if (effect_type==EFFECT_LINE50) {
+		switch (renderer->scale) {
+			case 4:  return scale4x_line50;
+			case 3:  return scale3x_line50;
+			case 2:  return scale2x_line50;
+			case 1:  return scale1x_line50;
+			default: break;
+		}
+	}
+	else if (effect_type==EFFECT_LINE25) {
+		switch (renderer->scale) {
+			case 4:  return scale4x_line25;
+			case 3:  return scale3x_line25;
+			case 2:  return scale2x_line25;
+			case 1:  return scale1x_line25;
+			default: break;
+		}
+	}
 	else if (effect_type==EFFECT_GRID) {
 		switch (renderer->scale) {
 			case 3:  return scale3x_grid;
 			case 2:  return scale2x_grid;
 			default: break;   // grid only exists at 2x/3x
+		}
+	}
+	else if (effect_type==EFFECT_GRID50) {
+		switch (renderer->scale) {
+			case 3:  return scale3x_grid50;
+			case 2:  return scale2x_grid50;
+			default: break;
+		}
+	}
+	else if (effect_type==EFFECT_GRID25) {
+		switch (renderer->scale) {
+			case 3:  return scale3x_grid25;
+			case 2:  return scale2x_grid25;
+			default: break;
 		}
 	}
 	switch (renderer->scale) {

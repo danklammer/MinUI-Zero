@@ -943,10 +943,38 @@ scaler_t PLAT_getScaler(GFX_Renderer* renderer) {
 			default: return scale1x_line;
 		}
 	}
+	else if (effect_type==EFFECT_LINE50) {
+		switch (renderer->scale) {
+			case 4:  return scale4x_line50;
+			case 3:  return scale3x_line50;
+			case 2:  return scale2x_line50;
+			default: return scale1x_line50;
+		}
+	}
+	else if (effect_type==EFFECT_LINE25) {
+		switch (renderer->scale) {
+			case 4:  return scale4x_line25;
+			case 3:  return scale3x_line25;
+			case 2:  return scale2x_line25;
+			default: return scale1x_line25;
+		}
+	}
 	else if (effect_type==EFFECT_GRID) {
 		switch (renderer->scale) {
 			case 3:  return scale3x_grid;
 			case 2:  return scale2x_grid;
+		}
+	}
+	else if (effect_type==EFFECT_GRID50) {
+		switch (renderer->scale) {
+			case 3:  return scale3x_grid50;
+			case 2:  return scale2x_grid50;
+		}
+	}
+	else if (effect_type==EFFECT_GRID25) {
+		switch (renderer->scale) {
+			case 3:  return scale3x_grid25;
+			case 2:  return scale2x_grid25;
 		}
 	}
 	

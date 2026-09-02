@@ -111,7 +111,11 @@ enum {
 enum {
 	EFFECT_NONE,
 	EFFECT_LINE,
+	EFFECT_LINE50, // half-opacity scanlines (GLES alpha on tg5040, lighter blend in the software scalers)
+	EFFECT_LINE25, // quarter-opacity scanlines
 	EFFECT_GRID,
+	EFFECT_GRID50, // half-opacity LCD grid
+	EFFECT_GRID25, // quarter-opacity LCD grid
 	EFFECT_COUNT,
 };
 

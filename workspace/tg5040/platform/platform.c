@@ -400,7 +400,7 @@ static void updateEffect(void) {
 	
 	char* effect_path;
 	int opacity = 128; // 1 - 1/2 = 50%
-	if (effect.type==EFFECT_LINE) {
+	if (effect.type==EFFECT_LINE || effect.type==EFFECT_LINE50 || effect.type==EFFECT_LINE25) {
 		if (effect.scale<3) {
 			effect_path = RES_PATH "/line-2.png";
 		}
@@ -420,7 +420,7 @@ static void updateEffect(void) {
 			effect_path = RES_PATH "/line-8.png";
 		}
 	}
-	else if (effect.type==EFFECT_GRID) {
+	else if (effect.type==EFFECT_GRID || effect.type==EFFECT_GRID50 || effect.type==EFFECT_GRID25) {
 		if (effect.scale<3) {
 			effect_path = RES_PATH "/grid-2.png";
 			opacity = 64; // 1 - 3/4 = 25%
@@ -451,11 +451,13 @@ static void updateEffect(void) {
 			opacity = 136; // 1 - 57/121 = ~52%
 		}
 	}
+	if (effect.type==EFFECT_LINE50 || effect.type==EFFECT_GRID50) opacity /= 2;      // half-opacity variants
+	else if (effect.type==EFFECT_LINE25 || effect.type==EFFECT_GRID25) opacity /= 4; // quarter-opacity variants
 	
 	// LOG_info("effect: %s opacity: %i\n", effect_path, opacity);
 	SDL_Surface* tmp = IMG_Load(effect_path);
 	if (tmp) {
-		if (effect.type==EFFECT_GRID) {
+		if (effect.type==EFFECT_GRID || effect.type==EFFECT_GRID50 || effect.type==EFFECT_GRID25) {
 			if (effect.color) {
 				// LOG_info("dmg color grid...\n");
 			
@@ -940,14 +942,21 @@ void PLAT_setCPUMaxFreq(int khz) {
 // clock-down before volt-down).
 
 #define SHARED_UV_DIR  "/mnt/SDCARD/.userdata/tg5040/undervolt"
-#define UV_TABLE_PATH  SHARED_UV_DIR "/table.conf"
-#define UV_STOCK_PATH  SHARED_UV_DIR "/table.stock"
 #define UV_I2C_DEV     "/dev/i2c-6"
 #define UV_I2C_ADDR    0x41
 #define UV_BASE_UV     712500
 #define UV_STEP_UV     12500
 #define UV_CAL_FLOOR   762500
 #define UV_STOCK_MAX   1187500 // stock voltage of the top OPP: always-safe restore value
+// Per-chip slot (2026-09-02): chips/<serial>/ holds THIS chip's table so one card can carry a
+// calibration per device it visits. Resolved in uv_init; falls back to the flat legacy layout so
+// an un-migrated card keeps its undervolt after an update (the tool migrates on its next open).
+static char uv_base[192] = SHARED_UV_DIR;
+static const char* uv_path(const char* leaf) {
+	static char p[256];
+	snprintf(p, sizeof p, "%s/%s", uv_base, leaf);
+	return p;
+}
 
 #define UV_TABLE_ROWS 8
 static const int uv_expected_khz[UV_TABLE_ROWS] = {
@@ -1012,9 +1021,21 @@ static int uv_init(void) {
 			}
 			fclose(sf);
 		}
+		{
+			char probe[256];
+			snprintf(uv_base, sizeof uv_base, SHARED_UV_DIR "/chips/%s", dev_chip);
+			// the slot DIRECTORY is authoritative once it exists: a reverted slot must stay at
+			// stock, never fall back to a stale flat table. Only a never-migrated card is flat.
+			snprintf(probe, sizeof probe, "%s", uv_base);
+			if (!dev_chip[0] || access(probe, F_OK) != 0) {
+				snprintf(uv_base, sizeof uv_base, "%s", SHARED_UV_DIR);
+				LOG_info("uv: legacy flat layout\n");
+			}
+			else LOG_info("uv: table slot chips/%s\n", dev_chip);
+		}
 		char tab_chip[64] = {0};
-		FILE* cf = fopen(SHARED_UV_DIR "/table.chip", "r");
-		if (cf) { if (fgets(tab_chip, sizeof tab_chip, cf)) { char* nl = strchr(tab_chip, '\n'); if (nl) *nl = 0; } fclose(cf); }
+		FILE* cf = fopen(uv_path("table.chip"), "r");
+		if (cf) { if (fgets(tab_chip, sizeof tab_chip, cf)) { char* nl = strpbrk(tab_chip, "\r\n "); if (nl) *nl = 0; } fclose(cf); }
 
 		if (!dev_chip[0] || !tab_chip[0] || strcmp(dev_chip, tab_chip) != 0) {
 			LOG_info("uv: table chip identity missing or mismatched — staying stock\n");
@@ -1022,7 +1043,7 @@ static int uv_init(void) {
 			return 0;
 		}
 	}
-	FILE* sf = fopen(UV_STOCK_PATH, "r");
+	FILE* sf = fopen(uv_path("table.stock"), "r");
 	if (!sf) { pthread_mutex_unlock(&uv_init_lock); return 0; }
 	int khz, uv, valid = 1, stock_n = 0;
 	char line[128], extra;
@@ -1037,7 +1058,7 @@ static int uv_init(void) {
 	}
 	if (ferror(sf) || stock_n != UV_TABLE_ROWS) valid = 0;
 	fclose(sf);
-	FILE* f = valid ? fopen(UV_TABLE_PATH, "r") : NULL;
+	FILE* f = valid ? fopen(uv_path("table.conf"), "r") : NULL;
 	if (!f) { pthread_mutex_unlock(&uv_init_lock); return 0; } // no complete calibration -> stock
 	uv_n = 0;
 	while (fgets(line, sizeof line, f)) {

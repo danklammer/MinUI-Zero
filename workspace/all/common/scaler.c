@@ -2901,6 +2901,13 @@ void scaler_c32(uint32_t xmul, uint32_t ymul, void* __restrict src, void* __rest
 #define Weight2_3(A, B)  (((((cR(A) << 1) + (cR(B) * 3)) / 5) & 0x1f) << 11 | ((((cG(A) << 1) + (cG(B) * 3)) / 5) & 0x3f) << 5 | ((((cB(A) << 1) + (cB(B) * 3)) / 5) & 0x1f))
 #define Weight3_1(A, B)  ((((cR(B) + (cR(A) * 3)) >> 2) & 0x1f) << 11 | (((cG(B) + (cG(A) * 3)) >> 2) & 0x3f) << 5 | (((cB(B) + (cB(A) * 3)) >> 2) & 0x1f))
 #define Weight3_2(A, B)  (((((cR(B) << 1) + (cR(A) * 3)) / 5) & 0x1f) << 11 | ((((cG(B) << 1) + (cG(A) * 3)) / 5) & 0x3f) << 5 | ((((cB(B) << 1) + (cB(A) * 3)) / 5) & 0x1f))
+// Lighter blends for the 50%/25% Screen Effect variants (see the generated scalers below).
+#define Weight7_1(A, B) (((((cR(A) * 7) + (cR(B) * 1)) / 8) & 0x1f) << 11 | ((((cG(A) * 7) + (cG(B) * 1)) / 8) & 0x3f) << 5 | ((((cB(A) * 7) + (cB(B) * 1)) / 8) & 0x1f))
+#define Weight4_1(A, B) (((((cR(A) * 4) + (cR(B) * 1)) / 5) & 0x1f) << 11 | ((((cG(A) * 4) + (cG(B) * 1)) / 5) & 0x3f) << 5 | ((((cB(A) * 4) + (cB(B) * 1)) / 5) & 0x1f))
+#define Weight7_3(A, B) (((((cR(A) * 7) + (cR(B) * 3)) / 10) & 0x1f) << 11 | ((((cG(A) * 7) + (cG(B) * 3)) / 10) & 0x3f) << 5 | ((((cB(A) * 7) + (cB(B) * 3)) / 10) & 0x1f))
+#define Weight15_1(A, B) (((((cR(A) * 15) + (cR(B) * 1)) / 16) & 0x1f) << 11 | ((((cG(A) * 15) + (cG(B) * 1)) / 16) & 0x3f) << 5 | ((((cB(A) * 15) + (cB(B) * 1)) / 16) & 0x1f))
+#define Weight9_1(A, B) (((((cR(A) * 9) + (cR(B) * 1)) / 10) & 0x1f) << 11 | ((((cG(A) * 9) + (cG(B) * 1)) / 10) & 0x3f) << 5 | ((((cB(A) * 9) + (cB(B) * 1)) / 10) & 0x1f))
+#define Weight17_3(A, B) (((((cR(A) * 17) + (cR(B) * 3)) / 20) & 0x1f) << 11 | ((((cG(A) * 17) + (cG(B) * 3)) / 20) & 0x3f) << 5 | ((((cB(A) * 17) + (cB(B) * 3)) / 20) & 0x1f))
 
 #define MIN(a, b) (a) < (b) ? (a) : (b)
 void scale1x_line(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
@@ -3050,6 +3057,343 @@ void scale3x_grid(void* __restrict src, void* __restrict dst, uint32_t sw, uint3
 			uint16_t c1 = *src_row;
 			uint16_t c2 = Weight3_2( c1, k);
 			uint16_t c3 = Weight2_3( c1, k);
+			
+			// row 1
+			*(dst_row                       ) = c2;
+			*(dst_row                    + 1) = c1;
+			*(dst_row                    + 2) = c1;
+
+			// row 2
+			*(dst_row + dw * 1    ) = c2;
+			*(dst_row + dw * 1 + 1) = c1;
+			*(dst_row + dw * 1 + 2) = c1;
+
+			// row 3
+			*(dst_row + dw * 2    ) = c3;
+			*(dst_row + dw * 2 + 1) = c2;
+			*(dst_row + dw * 2 + 2) = c2;
+
+			src_row += 1;
+			dst_row += 3;
+		}
+	}
+}
+
+// Half/quarter-opacity Screen Effect variants: exact copies of the full-strength scalers above
+// with only the blend toward black lightened, so per-frame cost is identical (generated).
+void scale1x_line50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	// pitch of src image not src buffer!
+	// eg. gb has a 160 pixel wide image but 
+	// gambatte uses a 256 pixel wide buffer
+	// (only matters when using memcpy) 
+	int ip = sw * FIXED_BPP; 
+	int src_stride = 2 * sp / FIXED_BPP;
+	int dst_stride = 2 * dp / FIXED_BPP;
+	int cpy_pitch = MIN(ip, dp);
+	
+	uint16_t k = 0x0000;
+	uint16_t* restrict src_row = (uint16_t*)src;
+	uint16_t* restrict dst_row = (uint16_t*)dst;
+	for (int y=0; y<sh; y+=2) {
+		memcpy(dst_row, src_row, cpy_pitch);
+		dst_row += dst_stride;
+		src_row += src_stride;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t s = *(src_row + x);
+			*(dst_row + x) = Weight7_1(s, k);
+		}
+	}
+}
+void scale1x_line25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	// pitch of src image not src buffer!
+	// eg. gb has a 160 pixel wide image but 
+	// gambatte uses a 256 pixel wide buffer
+	// (only matters when using memcpy) 
+	int ip = sw * FIXED_BPP; 
+	int src_stride = 2 * sp / FIXED_BPP;
+	int dst_stride = 2 * dp / FIXED_BPP;
+	int cpy_pitch = MIN(ip, dp);
+	
+	uint16_t k = 0x0000;
+	uint16_t* restrict src_row = (uint16_t*)src;
+	uint16_t* restrict dst_row = (uint16_t*)dst;
+	for (int y=0; y<sh; y+=2) {
+		memcpy(dst_row, src_row, cpy_pitch);
+		dst_row += dst_stride;
+		src_row += src_stride;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t s = *(src_row + x);
+			*(dst_row + x) = Weight15_1(s, k);
+		}
+	}
+}
+void scale2x_line50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 2;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight4_1( c1, k);
+			
+			*(dst_row     ) = c1;
+			*(dst_row + 1 ) = c1;
+			
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c2;
+			
+			src_row += 1;
+			dst_row += 2;
+		}
+	}
+}
+void scale2x_line25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 2;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight9_1( c1, k);
+			
+			*(dst_row     ) = c1;
+			*(dst_row + 1 ) = c1;
+			
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c2;
+			
+			src_row += 1;
+			dst_row += 2;
+		}
+	}
+}
+void scale3x_line50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 3;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight4_1( c1, k);
+			
+			// row 1
+			*(dst_row             ) = c2;
+			*(dst_row          + 1) = c2;
+			*(dst_row          + 2) = c2;
+
+			// row 2
+			*(dst_row + dw * 1    ) = c1;
+			*(dst_row + dw * 1 + 1) = c1;
+			*(dst_row + dw * 1 + 2) = c1;
+
+			// row 3
+			*(dst_row + dw * 2    ) = c1;
+			*(dst_row + dw * 2 + 1) = c1;
+			*(dst_row + dw * 2 + 2) = c1;
+
+			src_row += 1;
+			dst_row += 3;
+		}
+	}
+}
+void scale3x_line25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 3;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight9_1( c1, k);
+			
+			// row 1
+			*(dst_row             ) = c2;
+			*(dst_row          + 1) = c2;
+			*(dst_row          + 2) = c2;
+
+			// row 2
+			*(dst_row + dw * 1    ) = c1;
+			*(dst_row + dw * 1 + 1) = c1;
+			*(dst_row + dw * 1 + 2) = c1;
+
+			// row 3
+			*(dst_row + dw * 2    ) = c1;
+			*(dst_row + dw * 2 + 1) = c1;
+			*(dst_row + dw * 2 + 2) = c1;
+
+			src_row += 1;
+			dst_row += 3;
+		}
+	}
+}
+void scale4x_line50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	int row3 = dw * 2;
+	int row4 = dw * 3;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 4;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight4_1( c1, k);
+			
+			// row 1
+			*(dst_row    ) = c1;
+			*(dst_row + 1) = c1;
+			*(dst_row + 2) = c1;
+			*(dst_row + 3) = c1;
+			
+			// row 2
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c2;
+			*(dst_row + dw + 2) = c2;
+			*(dst_row + dw + 3) = c2;
+
+			// row 3
+			*(dst_row + row3    ) = c1;
+			*(dst_row + row3 + 1) = c1;
+			*(dst_row + row3 + 2) = c1;
+			*(dst_row + row3 + 3) = c1;
+
+			// row 4
+			*(dst_row + row4    ) = c2;
+			*(dst_row + row4 + 1) = c2;
+			*(dst_row + row4 + 2) = c2;
+			*(dst_row + row4 + 3) = c2;
+
+			src_row += 1;
+			dst_row += 4;
+		}
+	}
+}
+void scale4x_line25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	int row3 = dw * 2;
+	int row4 = dw * 3;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 4;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight9_1( c1, k);
+			
+			// row 1
+			*(dst_row    ) = c1;
+			*(dst_row + 1) = c1;
+			*(dst_row + 2) = c1;
+			*(dst_row + 3) = c1;
+			
+			// row 2
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c2;
+			*(dst_row + dw + 2) = c2;
+			*(dst_row + dw + 3) = c2;
+
+			// row 3
+			*(dst_row + row3    ) = c1;
+			*(dst_row + row3 + 1) = c1;
+			*(dst_row + row3 + 2) = c1;
+			*(dst_row + row3 + 3) = c1;
+
+			// row 4
+			*(dst_row + row4    ) = c2;
+			*(dst_row + row4 + 1) = c2;
+			*(dst_row + row4 + 2) = c2;
+			*(dst_row + row4 + 3) = c2;
+
+			src_row += 1;
+			dst_row += 4;
+		}
+	}
+}
+void scale2x_grid50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 2;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight7_1( c1, k);
+			
+			*(dst_row     ) = c2;
+			*(dst_row + 1 ) = c2;
+			
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c1;
+			
+			src_row += 1;
+			dst_row += 2;
+		}
+	}
+}
+void scale2x_grid25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 2;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight15_1( c1, k);
+			
+			*(dst_row     ) = c2;
+			*(dst_row + 1 ) = c2;
+			
+			*(dst_row + dw    ) = c2;
+			*(dst_row + dw + 1) = c1;
+			
+			src_row += 1;
+			dst_row += 2;
+		}
+	}
+}
+void scale3x_grid50(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 3;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight4_1( c1, k);
+			uint16_t c3 = Weight7_3( c1, k);
+			
+			// row 1
+			*(dst_row                       ) = c2;
+			*(dst_row                    + 1) = c1;
+			*(dst_row                    + 2) = c1;
+
+			// row 2
+			*(dst_row + dw * 1    ) = c2;
+			*(dst_row + dw * 1 + 1) = c1;
+			*(dst_row + dw * 1 + 2) = c1;
+
+			// row 3
+			*(dst_row + dw * 2    ) = c3;
+			*(dst_row + dw * 2 + 1) = c2;
+			*(dst_row + dw * 2 + 2) = c2;
+
+			src_row += 1;
+			dst_row += 3;
+		}
+	}
+}
+void scale3x_grid25(void* __restrict src, void* __restrict dst, uint32_t sw, uint32_t sh, uint32_t sp, uint32_t dw, uint32_t dh, uint32_t dp) {
+	dw = dp / 2;
+	uint16_t k = 0x0000;
+	for (unsigned y=0; y<sh; y++) {
+		uint16_t* restrict src_row = (void*)src + y * sp;
+		uint16_t* restrict dst_row = (void*)dst + y * dp * 3;
+		for (unsigned x=0; x<sw; x++) {
+			uint16_t c1 = *src_row;
+			uint16_t c2 = Weight9_1( c1, k);
+			uint16_t c3 = Weight17_3( c1, k);
 			
 			// row 1
 			*(dst_row                       ) = c2;

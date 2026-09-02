@@ -1175,7 +1175,11 @@ static char* scaling_labels[] = {
 static char* effect_labels[] = {
 	"None",
 	"Line",
+	"Line 50%",
+	"Line 25%",
 	"Grid",
+	"Grid 50%",
+	"Grid 25%",
 	NULL
 };
 static char* sharpness_labels[] = {
@@ -1421,10 +1425,10 @@ static struct Config {
 			[FE_OPT_EFFECT] = {
 				.key	= "minarch_screen_effect",
 				.name	= "Screen Effect",
-				.desc	= "Grid simulates an LCD grid.\nLine simulates CRT scanlines.\nEffects usually look best at native scaling.",
+				.desc	= "Line simulates CRT scanlines. Grid an LCD grid.\nThe 50%% and 25%% variants are subtler.\nEffects usually look best at native scaling.",
 				.default_value = 0,
 				.value = 0,
-				.count = 3,
+				.count = EFFECT_COUNT, // 7 on every platform
 				.values = effect_labels,
 				.labels = effect_labels,
 			},
