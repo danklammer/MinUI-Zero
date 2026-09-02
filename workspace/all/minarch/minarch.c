@@ -1635,6 +1635,22 @@ static void gov_scene_burst(const char* why, int cancel_arm) {
 static int* g_drc_ppm_ptr = NULL;
 static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
 static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
+
+// Audio ring occupancy servo (serial path; see the block in the game loop). State is
+// file-scope so the thread toggle can hand the resampler back BEFORE a CORE thread starts
+// producing — on MAIN, while MAIN still owns production, so it is race-free.
+#define ZERO_SERVO_SETPOINT 75   // % ring occupancy to hold: 150ms of a 200ms ring survives two back-to-back
+                                 // present stalls; 50ms (3 batches) of headroom keeps jitter off the full rail
+                                 // (an underrun is audible, an overfill only audio-paces for a beat)
+#define ZERO_SERVO_K        125  // ppm per occupancy point (a 40-point error = full swing)
+#define ZERO_SERVO_MAX_PPM  5000 // +-0.5% pitch (~9 cents): inaudible; RetroArch's rate-control delta
+static int zero_servo_adj = 0;    // ppm currently trimmed on top of the static rate match
+static int zero_servo_static = 0; // the static ppm that trim was applied against
+static void zero_servo_release(void) {
+	if (!zero_servo_adj) return;
+	zero_servo_adj = 0;
+	SND_setRateAdjustPPM(zero_static_rate_ppm); // static match (or 0) back, untrimmed
+}
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
 	present_dirty_gen++; // scaling/effect/sharpness/HUD changes must reach the panel even on duplicate frames
@@ -7144,6 +7160,7 @@ static int zero_boot_timing = -1;
 			LOG_info("thread toggle: %d -> %d (ff=%d was=%d auto_phase=%d)\n", thread_video, !thread_video, fast_forward, was_threaded, ta_phase);
 			if (!thread_video) {
 				// enable
+				zero_servo_release(); // MAIN still owns audio production here: hand the resampler back untrimmed
 				thread_video = 1;
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
@@ -7569,6 +7586,82 @@ static int zero_boot_timing = -1;
 					if (!drc_logged && drc_ppm >= 6000) {
 						LOG_info("drc: converged past +%dppm (panel-locked pacing)\n", drc_ppm);
 						drc_logged = 1;
+					}
+				}
+			}
+		}
+
+		// Audio ring occupancy servo. The exact rate match (Zero_applyRateMatch) balances
+		// production and consumption ON AVERAGE, but nothing refills the ring after a stall
+		// drains it: a drained ring stays drained (every later stall is a fresh underrun), and
+		// a match that is off by a few ppm walks to one rail. A proportional term on ring
+		// occupancy around a setpoint restores the auto-refill the audio-paced loop had:
+		//   ppm = static + K * (occupancy% - SETPOINT), clamped to +-MAX
+		// Sized for drift and recovery, not stall rescue (5000ppm moves a 200ms ring ~10%/4s).
+		// Serial path only: on the threaded/depth-2 paths CORE owns audio production and a
+		// MAIN-side ppm write chopped audio (ear-verified 2026-07-08) — the same exclusion as
+		// DRC. Scoped to an ACTIVE static match: an unmatched core keeps its audio-paced
+		// fallback untouched, and an audio-paced loop sits at a full ring by design (a servo
+		// there would just run the game +MAX fast). Present-skip makes even a matched loop
+		// audio-paced during every dup streak (a skipped present has no vsync wait, so the
+		// core free-runs until the ring backpressures), so a tick whose window saw the
+		// producer BLOCK is not sampled: occupancy then measures the pacer, not the level
+		// (review 2026-09-02). PS is excluded: presentation-drop's hysteresis (engage <50%,
+		// release >=66%) was tuned against a near-full ring and a servo-held level would eat
+		// its stall margin (v1.7.1 smoothness arc). No DRC term: DRC requires no static match
+		// and this requires one, exclusive by construction (drc_ppm is deliberately left
+		// stale when a match installs, so testing it would lock the servo out for good).
+		// Governor brief 2026-09-02. ZERO_AUDIO_SERVO=1 enables (per platform where
+		// ear-checked); =0 kills it for A/B.
+		if (!show_menu) {
+			static int servo_enabled = -1;
+			static int servo_frames = 0;
+			static long servo_prev_wait = -1; // SND wait_ms at the last tick; -1 = re-arm
+			if (servo_enabled == -1) { const char* e = getenv("ZERO_AUDIO_SERVO"); servo_enabled = (e && *e && *e != '0'); }
+			int servo_threaded = thread_video;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			servo_threaded = servo_threaded || zero_ftv2_depth2;
+#endif
+			int servo_eligible = servo_enabled && !servo_threaded && zero_static_rate_ppm
+				&& !fast_forward && !presentation_drop_supported
+				&& GFX_getVsync() != VSYNC_OFF
+				&& SND_isActive() && !SND_isPrefilling();
+			if (!servo_eligible) {
+				if (zero_servo_adj && !servo_threaded) zero_servo_release(); // never write under a CORE producer
+				servo_frames = 0; servo_prev_wait = -1;
+			}
+			else if (++servo_frames >= 30) { // ~2Hz, the governor tick's cadence
+				servo_frames = 0;
+				SND_Stats ss; SND_getStats(&ss);
+				// wall ms the producer spent blocked on a full ring this window. >0 means the
+				// ring paced the loop (dup streak / overfill): hold the trim, do not sample.
+				long blocked = (servo_prev_wait < 0) ? 1 : ss.wait_ms - servo_prev_wait;
+				servo_prev_wait = ss.wait_ms;
+				if (ss.frame_count > 0) {
+					int occ = (int)((100L * ss.queue_frames) / ss.frame_count);
+					if (blocked <= 0) {
+						int adj = ZERO_SERVO_K * (occ - ZERO_SERVO_SETPOINT);
+						if (adj > ZERO_SERVO_MAX_PPM) adj = ZERO_SERVO_MAX_PPM;
+						if (adj < -ZERO_SERVO_MAX_PPM) adj = -ZERO_SERVO_MAX_PPM;
+						// re-apply when the trim moved OR the static match underneath changed:
+						// Zero_applyRateMatch writes the bare static value, dropping our trim
+						if (adj != zero_servo_adj || zero_static_rate_ppm != zero_servo_static) {
+							static int servo_armed_logged = 0;
+							if (!servo_armed_logged) {
+								LOG_info("audio servo: armed (static %+dppm, setpoint %d%%, max +-%dppm)\n", zero_static_rate_ppm, ZERO_SERVO_SETPOINT, ZERO_SERVO_MAX_PPM);
+								servo_armed_logged = 1;
+							}
+							zero_servo_adj = adj; zero_servo_static = zero_static_rate_ppm;
+							SND_setRateAdjustPPM(zero_static_rate_ppm + adj);
+						}
+					}
+					static uint32_t servo_log_at = 0; static int servo_held = 0;
+					if (blocked > 0) servo_held++;
+					uint32_t sl_now = SDL_GetTicks();
+					if (!servo_log_at) servo_log_at = sl_now;
+					else if (sl_now - servo_log_at >= 60000) {
+						LOG_info("servo-stats: adj=%+dppm occ=%d%% held=%d/120 underruns=%ld\n", zero_servo_adj, occ, servo_held, ss.underruns);
+						servo_log_at = sl_now; servo_held = 0;
 					}
 				}
 			}
