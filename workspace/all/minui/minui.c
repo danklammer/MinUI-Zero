@@ -757,12 +757,15 @@ static Array* getRoot(void) {
 	}
 	Array_free(entries); // root now owns entries' entries
 	
+	// hide-tools.txt hides Tools from the list like simple mode, but leaves an owner escape
+	// hatch: the L1+R1+SELECT combo at root opens Tools directly (handled in the main loop).
+	int hide_tools = exists(HIDE_TOOLS_PATH);
 	char* tools_path = SDCARD_PATH "/Tools/" PLATFORM;
-	if (exists(tools_path) && !simple_mode) Array_push(root, Entry_new(tools_path, ENTRY_DIR));
+	if (exists(tools_path) && !simple_mode && !hide_tools) Array_push(root, Entry_new(tools_path, ENTRY_DIR));
 #ifdef PLATFORM_ALIAS
 	// community Tools paks publish under the scene's platform name (see getEmuPath, utils.c)
 	char* tools_alias_path = SDCARD_PATH "/Tools/" PLATFORM_ALIAS;
-	if (exists(tools_alias_path) && !simple_mode) Array_push(root, Entry_new(tools_alias_path, ENTRY_DIR));
+	if (exists(tools_alias_path) && !simple_mode && !hide_tools) Array_push(root, Entry_new(tools_alias_path, ENTRY_DIR));
 #endif
 	
 	return root;
@@ -1654,7 +1657,21 @@ int main (int argc, char *argv[]) {
 					}
 				}
 			}
-		
+
+			// hide-tools escape hatch: L1+R1+SELECT at the root opens Tools even when hidden by
+			// hide-tools.txt. Holding both shoulders also suppresses the L1/R1 alpha jump below
+			// (those require the OTHER shoulder released), so there is no collision.
+			if (exactMatch(top->path, SDCARD_PATH) && exists(HIDE_TOOLS_PATH)
+				&& PAD_isPressed(BTN_L1) && PAD_isPressed(BTN_R1) && PAD_justPressed(BTN_SELECT)) {
+				char* tp = SDCARD_PATH "/Tools/" PLATFORM;
+				if (exists(tp)) {
+					openDirectory(tp, 0);
+					total = top->entries->count;
+					selected = 0;
+					dirty = 1;
+				}
+			}
+
 			if (PAD_justRepeated(BTN_L1) && !PAD_isPressed(BTN_R1) && !PWR_ignoreSettingInput(BTN_L1, show_setting)) { // previous alpha
 				Entry* entry = top->entries->items[selected];
 				int i = entry->alpha-1;
