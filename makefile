@@ -87,6 +87,8 @@ test-gov-memory:
 	sh ./workspace/all/common/run-gov-memory-tests.sh
 test-dupskip:
 	sh ./workspace/all/common/run-dupskip-tests.sh
+test-audioservo:
+	sh ./workspace/all/common/run-audioservo-tests.sh
 test-snd-pacing:
 	sh ./workspace/all/common/run-snd-pacing-tests.sh
 check-threading-policy:

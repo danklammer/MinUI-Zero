@@ -26,6 +26,7 @@
 #include "governor.h"
 #include "gov_memory.h"
 #include "dupskip.h"
+#include "audioservo.h"
 #include "telemetry.h"
 #include "ff_visual_cadence.h"
 
@@ -1639,11 +1640,7 @@ static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
 // Audio ring occupancy servo (serial path; see the block in the game loop). State is
 // file-scope so the thread toggle can hand the resampler back BEFORE a CORE thread starts
 // producing — on MAIN, while MAIN still owns production, so it is race-free.
-#define ZERO_SERVO_SETPOINT 75   // % ring occupancy to hold: 150ms of a 200ms ring survives two back-to-back
-                                 // present stalls; 50ms (3 batches) of headroom keeps jitter off the full rail
-                                 // (an underrun is audible, an overfill only audio-paces for a beat)
-#define ZERO_SERVO_K        125  // ppm per occupancy point (a 40-point error = full swing)
-#define ZERO_SERVO_MAX_PPM  5000 // +-0.5% pitch (~9 cents): inaudible; RetroArch's rate-control delta
+// Setpoint, band, rail and smoothing live in audioservo.h with the control law (unit-tested).
 static int zero_servo_adj = 0;    // ppm currently trimmed on top of the static rate match
 static int zero_servo_static = 0; // the static ppm that trim was applied against
 static void zero_servo_release(void) {
@@ -7596,8 +7593,10 @@ static int zero_boot_timing = -1;
 		// drains it: a drained ring stays drained (every later stall is a fresh underrun), and
 		// a match that is off by a few ppm walks to one rail. A proportional term on ring
 		// occupancy around a setpoint restores the auto-refill the audio-paced loop had:
-		//   ppm = static + K * (occupancy% - SETPOINT), clamped to +-MAX
-		// Sized for drift and recovery, not stall rescue (5000ppm moves a 200ms ring ~10%/4s).
+		//   ppm = static + cubic(occupancy% - setpoint), smoothed   (audioservo.h, unit-tested)
+		// Silent within a few points of the setpoint (5 points = 160ppm), the full 2% rail at
+		// 50%/100%, ~2s time constant. 2% refills half a 200ms ring in ~5s: recovery after a
+		// stall, not stall rescue (a present stall storm is a present-path bug, fixed there).
 		// Serial path only: on the threaded/depth-2 paths CORE owns audio production and a
 		// MAIN-side ppm write chopped audio (ear-verified 2026-07-08) — the same exclusion as
 		// DRC. Scoped to an ACTIVE static match: an unmatched core keeps its audio-paced
@@ -7640,15 +7639,13 @@ static int zero_boot_timing = -1;
 				if (ss.frame_count > 0) {
 					int occ = (int)((100L * ss.queue_frames) / ss.frame_count);
 					if (blocked <= 0) {
-						int adj = ZERO_SERVO_K * (occ - ZERO_SERVO_SETPOINT);
-						if (adj > ZERO_SERVO_MAX_PPM) adj = ZERO_SERVO_MAX_PPM;
-						if (adj < -ZERO_SERVO_MAX_PPM) adj = -ZERO_SERVO_MAX_PPM;
+						int adj = audioservo_step(zero_servo_adj, audioservo_target_ppm(occ));
 						// re-apply when the trim moved OR the static match underneath changed:
 						// Zero_applyRateMatch writes the bare static value, dropping our trim
 						if (adj != zero_servo_adj || zero_static_rate_ppm != zero_servo_static) {
 							static int servo_armed_logged = 0;
 							if (!servo_armed_logged) {
-								LOG_info("audio servo: armed (static %+dppm, setpoint %d%%, max +-%dppm)\n", zero_static_rate_ppm, ZERO_SERVO_SETPOINT, ZERO_SERVO_MAX_PPM);
+								LOG_info("audio servo: armed (static %+dppm, setpoint %d%%, rail +-%dppm, smooth %d ticks)\n", zero_static_rate_ppm, AUDIOSERVO_SETPOINT, AUDIOSERVO_RAIL_PPM, AUDIOSERVO_SMOOTH);
 								servo_armed_logged = 1;
 							}
 							zero_servo_adj = adj; zero_servo_static = zero_static_rate_ppm;
