@@ -34,11 +34,15 @@ wait_up() {
 
 check_clock_state() {
 	awake
-	D=$(sshc 'S=$(date +%s); R=$(date -d "$(hwclock -r 2>/dev/null | sed s/\\..*//)" +%s 2>/dev/null || echo NA);
-		echo "sys=$(date +%H:%M) utc=$(date -u +%H:%M) tz=[${TZ:-unset}] etc_tz=$(cat /etc/TZ 2>/dev/null || echo none) localtime=$(readlink /etc/localtime 2>/dev/null || echo none) zonename=$(uci -q get system.@system[0].zonename 2>/dev/null || echo none) offset=$([ "$R" != NA ] && echo $((S-R))s || echo NA)"')
-	# PASS only if a timezone is actually pinned somewhere; a bare "unset/none" TZ is the known bug.
-	if echo "$D" | grep -q 'tz=\[unset\] etc_tz=none .*zonename=none'; then
-		echo "RESULT clock_timezone_pinned FAIL no TZ anywhere -> $D"
+	# CRITICAL: check the MENU process's TZ, not the ssh shell's. The ssh shell never sources the
+	# launcher, so it always shows the vendor default (Asia/Shanghai) and is meaningless here. The
+	# launcher exports TZ into minui.elf's environment — that is the value the on-screen clock uses.
+	D=$(sshc 'P=$(pidof minui.elf); MENU_TZ=$(tr "\0" "\n" < /proc/$P/environ 2>/dev/null | sed -n "s/^TZ=//p");
+		[ -n "$MENU_TZ" ] || MENU_TZ=UNSET;
+		echo "menu_tz=[$MENU_TZ] menu_clock=$(TZ=$MENU_TZ date +%H:%M) shell_tz_ignore=$(date +%H:%M)"')
+	# PASS iff the menu has a real TZ (the fix). UNSET = the vendor default leaks through = the bug.
+	if echo "$D" | grep -q 'menu_tz=\[UNSET\]'; then
+		echo "RESULT clock_timezone_pinned FAIL menu process has no TZ -> $D"
 	else
 		echo "RESULT clock_timezone_pinned PASS $D"
 	fi
