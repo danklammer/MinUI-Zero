@@ -148,11 +148,12 @@ root and put your network in it as `SSID:password`. Same file on every device. A
 battery you did not agree to spend, and nothing here needs the network. Once the file exists, a
 **WiFi Toggle** tool appears in Tools showing the live connection (network name and IP) with
 one-press on/off; cards without the file keep a clean Tools menu.
-Do not want a Recently Played list? Put an empty `no-recents.txt` at the card root: the entry never
+Do not want a Recently Played list? Put an empty `no-recents` file at the card root: the entry never
 appears and plays are no longer recorded. Delete the file to bring it back.
-Want a clean menu without giving up Tools entirely? Put an empty `hide-tools.txt` at the card root:
+Want a clean menu without giving up Tools entirely? Put an empty `hide-tools` file at the card root:
 Tools disappears from the menu, but holding `L1 + R1` and pressing `SELECT` at the main menu still
 opens it. Unlike simple mode, this is a hide-with-an-escape-hatch, not a lockdown.
+Both files work with or without a `.txt` extension, so it does not matter if your computer adds one.
 
 **One card per device.** Upstream MinUI ships every platform in a single zip, so one card boots
 anything it supports. Zero builds and ships each platform separately, so **a card serves the device

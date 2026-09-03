@@ -457,7 +457,7 @@ static void saveRecents(void) {
 	}
 }
 static void addRecent(char* path, char* alias) {
-	if (exists(NO_RECENTS_PATH)) return; // opted out: permanent means we stop recording, not just hiding
+	if (flagExists(NO_RECENTS_PATH)) return; // opted out: permanent means we stop recording, not just hiding
 	path += strlen(SDCARD_PATH); // makes paths platform agnostic
 	int id = RecentArray_indexOf(recents, path);
 	if (id==-1) { // add
@@ -526,7 +526,7 @@ static int hasM3u(char* rom_path, char* m3u_path) { // NOTE: rom_path not dir_pa
 }
 
 static int hasRecents(void) {
-	if (exists(NO_RECENTS_PATH)) return 0; // opted out: no entry, and nothing is ever read
+	if (flagExists(NO_RECENTS_PATH)) return 0; // opted out: no entry, and nothing is ever read
 	LOG_info("hasRecents %s\n", RECENT_PATH);
 	int has = 0;
 	
@@ -759,7 +759,7 @@ static Array* getRoot(void) {
 	
 	// hide-tools.txt hides Tools from the list like simple mode, but leaves an owner escape
 	// hatch: the L1+R1+SELECT combo at root opens Tools directly (handled in the main loop).
-	int hide_tools = exists(HIDE_TOOLS_PATH);
+	int hide_tools = flagExists(HIDE_TOOLS_PATH);
 	char* tools_path = SDCARD_PATH "/Tools/" PLATFORM;
 	if (exists(tools_path) && !simple_mode && !hide_tools) Array_push(root, Entry_new(tools_path, ENTRY_DIR));
 #ifdef PLATFORM_ALIAS
@@ -1661,7 +1661,7 @@ int main (int argc, char *argv[]) {
 			// hide-tools escape hatch: L1+R1+SELECT at the root opens Tools even when hidden by
 			// hide-tools.txt. Holding both shoulders also suppresses the L1/R1 alpha jump below
 			// (those require the OTHER shoulder released), so there is no collision.
-			if (exactMatch(top->path, SDCARD_PATH) && exists(HIDE_TOOLS_PATH)
+			if (exactMatch(top->path, SDCARD_PATH) && flagExists(HIDE_TOOLS_PATH)
 				&& PAD_isPressed(BTN_L1) && PAD_isPressed(BTN_R1) && PAD_justPressed(BTN_SELECT)) {
 				char* tp = SDCARD_PATH "/Tools/" PLATFORM;
 				if (exists(tp)) {
