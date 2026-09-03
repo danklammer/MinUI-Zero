@@ -80,6 +80,9 @@ export CORES_PATH="$SYSTEM_PATH/cores"
 # invented-number hazard this gate exists to prevent. Its panel has never been measured.
 if [ "$IS_PLUS" = "true" ] && [ "$IS_FLIP" != "true" ]; then
 	export MINARCH_PANEL_FPS=59.6720
+	# ZERO_AUDIO_SERVO deliberately NOT exported here (tg5040 only for now): the occupancy servo
+	# trims the resampler on top of this match and is unmeasured on the MI_AO/preload audio
+	# path. Ear-check on this device before arming (earned divergence, 2026-09-02).
 fi
 export USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 export SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"

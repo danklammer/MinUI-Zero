@@ -337,9 +337,10 @@ void GFX_flip(SDL_Surface* screen) {
 	gfx_drop_active = 0; // a UI present re-anchors: leaving the menu re-evaluates fresh
 	uint32_t frame_duration = SDL_GetTicks()-frame_start;
 	if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us); // benchmark: frame work time
-	// per-frame pure-work slip at us precision. Feeds the governor's BUSY (hold, don't sink)
-	// signal — includes audio-pacing blocks inside core.run, which overcounts "work" on some
-	// frames; that bias is protective (keeps the ceiling from probing into saturation, D14).
+	// per-frame pure-work slip at us precision. No consumer today: GFX_didOverrun has no
+	// callers (the governor reads frame_work_us via GFX_getFrameWorkUs for its p95 sink gate,
+	// D24). The D14 note that its audio-pacing overcount was "protective" described the
+	// pre-D24 design; kept as telemetry.
 	frame_overran = (frame_start!=0 && frame_work_us > 16667);
 	int should_vsync = (gfx.vsync!=VSYNC_OFF && (gfx.vsync==VSYNC_STRICT || frame_start==0 || frame_duration<FRAME_BUDGET));
 
@@ -392,10 +393,11 @@ void GFX_flipGame(SDL_Surface* screen) {
 		drop_streak++;
 		if (frame_start_us) frame_work_us = (uint32_t)(getMicroseconds() - frame_start_us);
 		frame_overran = (frame_start!=0 && frame_work_us > 16667);
-		// a dropped present blocked for 0us — report exactly that. The governor treats
-		// flip-wait as its vsync-bound (panel-lock) signal; 0 reads as "not blocked",
-		// i.e. headroom, which holds the ceiling UP during catch-up — protective, the
-		// same direction as the frame_overran bias in GFX_flip (D14).
+		// a dropped present blocked for 0us — report exactly that. Nothing consumes
+		// gfx_flip_wait_us today (GFX_getFlipWaitUs has no callers), and neither does
+		// frame_overran (GFX_didOverrun has none either). What the governor takes from
+		// here is frame_work_us via GFX_getFrameWorkUs (closed above) for its p95 sink
+		// gate, alongside minarch's generation-rate slip detector (D24).
 		gfx_flip_wait_us = 0;
 		return;
 	}

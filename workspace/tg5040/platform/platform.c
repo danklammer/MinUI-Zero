@@ -679,26 +679,39 @@ void PLAT_flip(SDL_Surface* IGNORED, int ignored) {
 	dbg.game = *dst_rect;
 	drawDebugOverlay();
 	if (ps_on) ps_t3 = getMicroseconds();
+	// ZERO_PRESENT_FINISH=1 (experiment; needs ZERO_PRESENT_STATS): block on GPU completion
+	// BEFORE the swap, so "gpu" measures execution of the pass and "present" only the display
+	// handoff. Serializes the GPU, so it is a diagnostic, never a default. Fetched through
+	// SDL so the platform build needs no GLES link.
+	static int pf_on = -1; static void (*pglFinish)(void) = NULL;
+	if (pf_on == -1) {
+		pf_on = ps_on && getenv("ZERO_PRESENT_FINISH") != NULL;
+		if (pf_on) pglFinish = (void (*)(void))SDL_GL_GetProcAddress("glFinish");
+		if (pf_on && !pglFinish) { pf_on = 0; LOG_warn("present-finish: glFinish not resolvable, stage disabled\n"); }
+	}
+	uint64_t ps_tg = ps_t3;
+	if (pf_on) { pglFinish(); ps_tg = getMicroseconds(); }
 	SDL_RenderPresent(vid.renderer);
 	if (ps_on) {
 		ps_t4 = getMicroseconds();
-		static uint64_t s_up, s_pass, s_copy, s_pres;
-		static uint32_t m_up, m_pass, m_copy, m_pres;
+		static uint64_t s_up, s_pass, s_copy, s_gpu, s_pres;
+		static uint32_t m_up, m_pass, m_copy, m_gpu, m_pres;
 		static int s_n; static uint32_t s_at;
 		uint32_t up = (uint32_t)(ps_t1-ps_t0), pass = (uint32_t)(ps_t2-ps_t1);
-		uint32_t copy = (uint32_t)(ps_t3-ps_t2), pres = (uint32_t)(ps_t4-ps_t3);
-		s_up += up; s_pass += pass; s_copy += copy; s_pres += pres; s_n++;
+		uint32_t copy = (uint32_t)(ps_t3-ps_t2), gpu = (uint32_t)(ps_tg-ps_t3), pres = (uint32_t)(ps_t4-ps_tg);
+		s_up += up; s_pass += pass; s_copy += copy; s_gpu += gpu; s_pres += pres; s_n++;
 		if (up > m_up) m_up = up;
 		if (pass > m_pass) m_pass = pass;
 		if (copy > m_copy) m_copy = copy;
+		if (gpu > m_gpu) m_gpu = gpu;
 		if (pres > m_pres) m_pres = pres;
 		uint32_t now = SDL_GetTicks();
 		if (!s_at) s_at = now;
 		else if (now - s_at >= 1000) {
-			LOG_info("present-stats: n=%d upload=%llu/%u pass=%llu/%u copy=%llu/%u present=%llu/%u us(avg/max) hs=%d\n",
-				s_n, s_up/s_n, m_up, s_pass/s_n, m_pass, s_copy/s_n, m_copy, s_pres/s_n, m_pres, hard_scale);
-			s_up = s_pass = s_copy = s_pres = 0; s_n = 0;
-			m_up = m_pass = m_copy = m_pres = 0;
+			LOG_info("present-stats: n=%d upload=%llu/%u pass=%llu/%u copy=%llu/%u gpu=%llu/%u present=%llu/%u us(avg/max) hs=%d\n",
+				s_n, s_up/s_n, m_up, s_pass/s_n, m_pass, s_copy/s_n, m_copy, s_gpu/s_n, m_gpu, s_pres/s_n, m_pres, hard_scale);
+			s_up = s_pass = s_copy = s_gpu = s_pres = 0; s_n = 0;
+			m_up = m_pass = m_copy = m_gpu = m_pres = 0;
 			s_at = now;
 		}
 	}

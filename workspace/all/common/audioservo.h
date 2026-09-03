@@ -1,0 +1,44 @@
+// Audio ring occupancy servo: the pure control law, unit-tested in audioservo_test.c
+// (make test-audioservo). The loop wiring (eligibility, block detector, hand-back) lives in
+// minarch.c; nothing here touches the resampler or knows about threads.
+//
+// Cubic on occupancy error: nearly silent within a few points of the setpoint (5 points off is
+// 160ppm), the full rail at the band edges (50% and 100%). Borrowed in shape from NextUI's
+// buffer-fill term (their rail is ~4.3%; RetroArch caps timing skew at 5%); ours stops at 2%,
+// ~35 cents of pitch for a second or two after a drain, because Zero's answer to a sustained
+// slowdown is the clock or the stall, never detuned music. The applied trim is smoothed with a
+// first-order filter so the resampler never sees a step (NextUI averages ~120 batches, ~2s).
+//
+// SIGN (the thing to get right): sample_rate_in_adj = in * (1e6 + ppm) / 1e6, so a HIGHER ppm
+// treats the input as faster = fewer output frames per input frame = the ring DRAINS. Low
+// occupancy therefore needs a NEGATIVE trim.
+#ifndef AUDIOSERVO_H
+#define AUDIOSERVO_H
+
+#define AUDIOSERVO_SETPOINT 75    // % ring occupancy to hold: 150ms of a 200ms ring survives two
+                                  // back-to-back present stalls; 50ms (3 batches) of headroom keeps
+                                  // jitter off the full rail (underrun is audible, overfill only
+                                  // audio-paces for a beat)
+#define AUDIOSERVO_BAND     25    // points from the setpoint at which the trim reaches the rail
+#define AUDIOSERVO_RAIL_PPM 20000 // 2% pitch at the rails
+#define AUDIOSERVO_SMOOTH   4     // first-order filter, in ticks; at 2Hz ~2s time constant
+
+// Trim the resampler should converge to for this occupancy (clamped to +-RAIL by construction).
+static inline int audioservo_target_ppm(int occ_pct) {
+	int e = occ_pct - AUDIOSERVO_SETPOINT;
+	if (e >  AUDIOSERVO_BAND) e =  AUDIOSERVO_BAND;
+	if (e < -AUDIOSERVO_BAND) e = -AUDIOSERVO_BAND;
+	long c = (long)e * e * e; // |c| <= BAND^3 = 15625; c * RAIL = 3.1e8, fits a 32-bit long
+	return (int)(c * AUDIOSERVO_RAIL_PPM / ((long)AUDIOSERVO_BAND * AUDIOSERVO_BAND * AUDIOSERVO_BAND));
+}
+
+// One smoothing step of the applied trim toward the target; call once per tick. Integer and
+// exact: the last ppm of a gap is closed by a unit step instead of sticking at a rounded zero.
+static inline int audioservo_step(int adj, int target) {
+	int diff = target - adj;
+	int step = diff / AUDIOSERVO_SMOOTH;
+	if (step == 0 && diff != 0) step = diff > 0 ? 1 : -1;
+	return adj + step;
+}
+
+#endif

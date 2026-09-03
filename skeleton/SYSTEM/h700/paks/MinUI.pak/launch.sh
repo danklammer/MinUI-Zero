@@ -58,6 +58,9 @@ export SDL_VIDEODRIVER=dummy
 # DEVICE properties, so they live here rather than being repeated by all 15 emu paks (2026-08-26).
 # Panel measured 59.9777 Hz (panelprobe 2026-08-04); minarch paces against the real rate, not 60.
 export MINARCH_PANEL_FPS=59.9777
+# ZERO_AUDIO_SERVO deliberately NOT exported here (tg5040 only for now): the occupancy servo
+# trims the resampler on top of this match and is unmeasured on the ALSA-direct audio path.
+# Ear-check on this device before arming (earned divergence, 2026-09-02).
 # ALSA-direct: pipewire is stripped, and asound.conf routes "default" straight to the codec
 # (plug -> hw:0,0). SDL must not go looking for a sound server that is not there.
 export SDL_AUDIODRIVER=alsa

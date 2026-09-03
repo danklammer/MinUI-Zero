@@ -26,6 +26,7 @@
 #include "governor.h"
 #include "gov_memory.h"
 #include "dupskip.h"
+#include "audioservo.h"
 #include "telemetry.h"
 #include "ff_visual_cadence.h"
 
@@ -1635,6 +1636,18 @@ static void gov_scene_burst(const char* why, int cancel_arm) {
 static int* g_drc_ppm_ptr = NULL;
 static void drc_ppm_expose(int* p) { g_drc_ppm_ptr = p; }
 static int drc_ppm_now(void) { return g_drc_ppm_ptr ? *g_drc_ppm_ptr : 0; }
+
+// Audio ring occupancy servo (serial path; see the block in the game loop). State is
+// file-scope so the thread toggle can hand the resampler back BEFORE a CORE thread starts
+// producing — on MAIN, while MAIN still owns production, so it is race-free.
+// Setpoint, band, rail and smoothing live in audioservo.h with the control law (unit-tested).
+static int zero_servo_adj = 0;    // ppm currently trimmed on top of the static rate match
+static int zero_servo_static = 0; // the static ppm that trim was applied against
+static void zero_servo_release(void) {
+	if (!zero_servo_adj) return;
+	zero_servo_adj = 0;
+	SND_setRateAdjustPPM(zero_static_rate_ppm); // static match (or 0) back, untrimmed
+}
 static int toggle_thread = 0;
 static void Config_syncFrontend(char* key, int value) {
 	present_dirty_gen++; // scaling/effect/sharpness/HUD changes must reach the panel even on duplicate frames
@@ -6985,6 +6998,14 @@ static int zero_boot_timing = -1;
 	}
 	toggle_thread = 0;  // config load must not leave a stale toggle armed (Codex #1)
 	game_running = 1;   // runtime toggles legal from here
+	{ // name the loop path ONCE per game log: the gov/drc/servo lines below mean different
+	  // things per path, and an inert mechanism prints the same lines as an active one
+		const char* lp = thread_video ? "threaded" : "serial";
+#ifdef ZERO_FRONTEND_THREADING_V2
+		if (zero_ftv2_depth2) lp = "threaded v2 depth-2 (CORE owns audio)";
+#endif
+		LOG_info("loop path: %s (auto-thread=%d)\n", lp, thread_auto);
+	}
 	
 	PWR_warn(1);
 	PWR_disableAutosleep();
@@ -7136,6 +7157,7 @@ static int zero_boot_timing = -1;
 			LOG_info("thread toggle: %d -> %d (ff=%d was=%d auto_phase=%d)\n", thread_video, !thread_video, fast_forward, was_threaded, ta_phase);
 			if (!thread_video) {
 				// enable
+				zero_servo_release(); // MAIN still owns audio production here: hand the resampler back untrimmed
 				thread_video = 1;
 				core_mx = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 				core_rq = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
@@ -7170,10 +7192,14 @@ static int zero_boot_timing = -1;
 		}
 		// LOG_info("frame duration: %ims\n", SDL_GetTicks()-frame_start);
 
-		// closed-loop governor: sample frame slip each gameplay frame, run the
+		// closed-loop governor: sample core work each gameplay frame, run the
 		// controller once per GOV_TICK_FRAMES. Skipped in the menu (which owns its
-		// own clock). A batch "overran" when >=25% of its frames missed the budget,
-		// so rare hiccups don't pin the clock high (threshold is a tuning knob).
+		// own clock). The tick's signal is the GENERATION-RATE slip detector (D24):
+		// BIGSLIP when the core's output rate falls >=10% under target, SLIP under
+		// 97.5%; otherwise a per-path sink gate says SLACK or BUSY — serial: p95 core
+		// work vs the budget at the next OPP down (gov_sink_fits); threaded: window
+		// utilization scaled to the next OPP (<=0.85); fast-forward: the multiplier
+		// band; h700: unconditional probe-down. No per-frame budget-miss threshold exists.
 		if (!show_menu && (gov_active || tlm_enabled())) {
 			// PURE CPU work = frame work (startFrame->flip) MINUS the audio-pacing block
 			// (SND_batchSamples blocking on a full buffer during core.run) — blocked frames are
@@ -7368,6 +7394,19 @@ static int zero_boot_timing = -1;
 					gov_tick(&gov_state, &gov_profile, frame_overrun);
 					if (gov_state.ceil_khz != prev_ceil) // log only when the ceiling actually moves
 						LOG_info("gov: ceil %d->%d kHz (temp=%dC, signal=%d gen=%.1f/%.1f)\n", prev_ceil, gov_state.ceil_khz, gov_read_temp_c(), frame_overrun, gov_gen, gov_target_fps);
+					{ // is the ceiling actually BINDING? An inert cap (schedutil sitting below it on
+					  // its own) prints identical gov: lines to an active one; this is the only line
+					  // that tells them apart. A cap that is never at-ceil is a passenger.
+						static uint32_t cap_log_at = 0; static int cap_at_ceil = 0, cap_ticks = 0;
+						int cap_cur = gov_read_cur_khz();
+						if (cap_cur > 0) { cap_ticks++; if (cap_cur >= gov_state.ceil_khz) cap_at_ceil++; }
+						uint32_t cl_now = SDL_GetTicks();
+						if (!cap_log_at) cap_log_at = cl_now;
+						else if (cl_now - cap_log_at >= 60000) {
+							LOG_info("gov-cap: at-ceil %d/%d ticks ceil=%d actual=%d kHz\n", cap_at_ceil, cap_ticks, gov_state.ceil_khz, cap_cur);
+							cap_log_at = cl_now; cap_at_ceil = 0; cap_ticks = 0;
+						}
+					}
 					{
 						int gm = govmem_post_tick(&gov_mem, frame_overrun, fast_forward, rate_seq, prev_ceil, gov_state.ceil_khz);
 						if ((gm & GOVMEM_PRELOAD_DWELL) && gov_state.slack_run < GOV_DN_DWELL - 1)
@@ -7544,6 +7583,82 @@ static int zero_boot_timing = -1;
 					if (!drc_logged && drc_ppm >= 6000) {
 						LOG_info("drc: converged past +%dppm (panel-locked pacing)\n", drc_ppm);
 						drc_logged = 1;
+					}
+				}
+			}
+		}
+
+		// Audio ring occupancy servo. The exact rate match (Zero_applyRateMatch) balances
+		// production and consumption ON AVERAGE, but nothing refills the ring after a stall
+		// drains it: a drained ring stays drained (every later stall is a fresh underrun), and
+		// a match that is off by a few ppm walks to one rail. A proportional term on ring
+		// occupancy around a setpoint restores the auto-refill the audio-paced loop had:
+		//   ppm = static + cubic(occupancy% - setpoint), smoothed   (audioservo.h, unit-tested)
+		// Silent within a few points of the setpoint (5 points = 160ppm), the full 2% rail at
+		// 50%/100%, ~2s time constant. 2% refills half a 200ms ring in ~5s: recovery after a
+		// stall, not stall rescue (a present stall storm is a present-path bug, fixed there).
+		// Serial path only: on the threaded/depth-2 paths CORE owns audio production and a
+		// MAIN-side ppm write chopped audio (ear-verified 2026-07-08) — the same exclusion as
+		// DRC. Scoped to an ACTIVE static match: an unmatched core keeps its audio-paced
+		// fallback untouched, and an audio-paced loop sits at a full ring by design (a servo
+		// there would just run the game +MAX fast). Present-skip makes even a matched loop
+		// audio-paced during every dup streak (a skipped present has no vsync wait, so the
+		// core free-runs until the ring backpressures), so a tick whose window saw the
+		// producer BLOCK is not sampled: occupancy then measures the pacer, not the level
+		// (review 2026-09-02). PS is excluded: presentation-drop's hysteresis (engage <50%,
+		// release >=66%) was tuned against a near-full ring and a servo-held level would eat
+		// its stall margin (v1.7.1 smoothness arc). No DRC term: DRC requires no static match
+		// and this requires one, exclusive by construction (drc_ppm is deliberately left
+		// stale when a match installs, so testing it would lock the servo out for good).
+		// Governor brief 2026-09-02. ZERO_AUDIO_SERVO=1 enables (per platform where
+		// ear-checked); =0 kills it for A/B.
+		if (!show_menu) {
+			static int servo_enabled = -1;
+			static int servo_frames = 0;
+			static long servo_prev_wait = -1; // SND wait_ms at the last tick; -1 = re-arm
+			if (servo_enabled == -1) { const char* e = getenv("ZERO_AUDIO_SERVO"); servo_enabled = (e && *e && *e != '0'); }
+			int servo_threaded = thread_video;
+#ifdef ZERO_FRONTEND_THREADING_V2
+			servo_threaded = servo_threaded || zero_ftv2_depth2;
+#endif
+			int servo_eligible = servo_enabled && !servo_threaded && zero_static_rate_ppm
+				&& !fast_forward && !presentation_drop_supported
+				&& GFX_getVsync() != VSYNC_OFF
+				&& SND_isActive() && !SND_isPrefilling();
+			if (!servo_eligible) {
+				if (zero_servo_adj && !servo_threaded) zero_servo_release(); // never write under a CORE producer
+				servo_frames = 0; servo_prev_wait = -1;
+			}
+			else if (++servo_frames >= 30) { // ~2Hz, the governor tick's cadence
+				servo_frames = 0;
+				SND_Stats ss; SND_getStats(&ss);
+				// wall ms the producer spent blocked on a full ring this window. >0 means the
+				// ring paced the loop (dup streak / overfill): hold the trim, do not sample.
+				long blocked = (servo_prev_wait < 0) ? 1 : ss.wait_ms - servo_prev_wait;
+				servo_prev_wait = ss.wait_ms;
+				if (ss.frame_count > 0) {
+					int occ = (int)((100L * ss.queue_frames) / ss.frame_count);
+					if (blocked <= 0) {
+						int adj = audioservo_step(zero_servo_adj, audioservo_target_ppm(occ));
+						// re-apply when the trim moved OR the static match underneath changed:
+						// Zero_applyRateMatch writes the bare static value, dropping our trim
+						if (adj != zero_servo_adj || zero_static_rate_ppm != zero_servo_static) {
+							static int servo_armed_logged = 0;
+							if (!servo_armed_logged) {
+								LOG_info("audio servo: armed (static %+dppm, setpoint %d%%, rail +-%dppm, smooth %d ticks)\n", zero_static_rate_ppm, AUDIOSERVO_SETPOINT, AUDIOSERVO_RAIL_PPM, AUDIOSERVO_SMOOTH);
+								servo_armed_logged = 1;
+							}
+							zero_servo_adj = adj; zero_servo_static = zero_static_rate_ppm;
+							SND_setRateAdjustPPM(zero_static_rate_ppm + adj);
+						}
+					}
+					static uint32_t servo_log_at = 0; static int servo_held = 0;
+					if (blocked > 0) servo_held++;
+					uint32_t sl_now = SDL_GetTicks();
+					if (!servo_log_at) servo_log_at = sl_now;
+					else if (sl_now - servo_log_at >= 60000) {
+						LOG_info("servo-stats: adj=%+dppm occ=%d%% held=%d/120 underruns=%ld\n", zero_servo_adj, occ, servo_held, ss.underruns);
+						servo_log_at = sl_now; servo_held = 0;
 					}
 				}
 			}

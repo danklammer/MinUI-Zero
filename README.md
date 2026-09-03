@@ -148,8 +148,17 @@ root and put your network in it as `SSID:password`. Same file on every device. A
 battery you did not agree to spend, and nothing here needs the network. Once the file exists, a
 **WiFi Toggle** tool appears in Tools showing the live connection (network name and IP) with
 one-press on/off; cards without the file keep a clean Tools menu.
-Do not want a Recently Played list? Put an empty `no-recents.txt` at the card root: the entry never
-appears and plays are no longer recorded. Delete the file to bring it back.
+**A more minimal menu.** Zero's menu is already sparse, but a few empty files at the card root
+strip it down further. Each works with or without a `.txt` extension, so it does not matter if your
+computer adds one, and deleting the file restores the default.
+
+- **`no-recents`** hides the Recently Played row and stops recording plays.
+- **`hide-tools`** hides the Tools folder. Unlike simple mode it keeps an escape hatch: hold
+  `L1 + R1` and press `SELECT` at the main menu to open Tools anyway.
+
+For a full lockdown instead of a declutter (handing the device to kids, say), use simple mode: an
+empty `enable-simple-mode` file in `/.userdata/shared/` hides Tools with no escape and swaps the
+in-game Options for Reset.
 
 **One card per device.** Upstream MinUI ships every platform in a single zip, so one card boots
 anything it supports. Zero builds and ships each platform separately, so **a card serves the device

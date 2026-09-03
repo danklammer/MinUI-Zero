@@ -18,6 +18,7 @@ void trimTrailingNewlines(char* line);
 void trimSortingMeta(char** str);
 
 int exists(char* path);
+int flagExists(char* base); // true if <base> or <base>.txt exists (card-root flag, either form)
 void touch(char* path);
 void putFile(char* path, char* contents);
 char* allocFile(char* path); // caller must free

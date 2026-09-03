@@ -24,6 +24,23 @@ if [ "$(date +%Y)" -lt 2025 ] && [ -f "$DATETIME_PATH" ]; then
 	hwclock -w -u 2>/dev/null # -u: kernel reads the RTC as UTC at boot (busybox has no --utc)
 fi
 
+# TIMEZONE. The TrimUI firmware defaults to Asia/Shanghai (UTC+8) via /etc/localtime; the RTC is
+# UTC. With no TZ of our own, a time set in the Clock tool reads back shifted by the vendor offset
+# — for the Americas that is ~12h, i.e. the AM<->PM flip users reported (Brick Pro, 2026-09-03).
+# Export TZ here so the menu AND the Clock tool (which inherit this env) agree, making what you set
+# what you see, stable across reboot regardless of when the vendor restores /tmp/localtime.
+# Drop a "timezone" file (or timezone.txt) at the card root: a zone name (America/New_York — 144
+# US zones ship in /usr/share/zoneinfo) or a POSIX string (EST5EDT). No file = UTC, a plain wall
+# clock you set once. (tg5040 only: this offset is a TrimUI-firmware default; other platforms
+# carry their own clock handling — verify before copying.)
+TZ_FILE="$SDCARD_PATH/timezone"
+[ -f "$TZ_FILE" ] || TZ_FILE="$SDCARD_PATH/timezone.txt"
+if [ -f "$TZ_FILE" ]; then
+	export TZ="$(head -1 "$TZ_FILE" | tr -d ' \t\r\n')"
+else
+	export TZ="UTC"
+fi
+
 mkdir -p "$BIOS_PATH"
 mkdir -p "$ROMS_PATH"
 mkdir -p "$SAVES_PATH"
@@ -123,6 +140,11 @@ elif [ "$TRIMUI_MODEL" = "Trimui Brick" ]; then
 	# Brick panel measured 2026-08-31 off its live fb0 scanout timings (D 51.002MHz -> V 60.235 Hz).
 	export MINARCH_PANEL_FPS=60.235
 fi
+# Audio ring occupancy servo: a +-0.5% trim on top of the static rate match that refills the
+# ring after a stall drains it (nothing else does). Only acts where a static match is live, so
+# the Smart Pro (unset above) is untouched. Miyoo and Anbernic do not export it until ear-checked
+# there (their launch.sh say why). ZERO_AUDIO_SERVO=0 kills it for an A/B.
+export ZERO_AUDIO_SERVO=1
 # Smart Pro stays UNSET on purpose: its fb0 reports 63.965 Hz but the SP scans the GLES layer,
 # not fb0, so that number is unverified for the actual panel. Measure vsync-derived before arming.
 # The Brick Pro reports "Trimui Brick Pro". An exact test for "Trimui Brick" left DEVICE empty and

@@ -149,6 +149,15 @@ void trimSortingMeta(char** str) { // eg. `001) `
 int exists(char* path) {
 	return access(path, F_OK)==0;
 }
+// Card-root opt-in/opt-out flags: accept the bare name OR a "<name>.txt" form, so the file works
+// whether the user's OS added an extension or not. Pass the bare base (upstream's convention,
+// e.g. "enable-simple-mode"); this also matches "<base>.txt".
+int flagExists(char* base) {
+	if (exists(base)) return 1;
+	char with_txt[512];
+	snprintf(with_txt, sizeof(with_txt), "%s.txt", base);
+	return exists(with_txt);
+}
 void touch(char* path) {
 	close(open(path, O_RDWR|O_CREAT, 0777));
 }

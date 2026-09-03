@@ -31,7 +31,10 @@
 #define AUTO_RESUME_SLOT 9
 
 #define FAUX_RECENT_PATH SDCARD_PATH "/Recently Played"
-#define NO_RECENTS_PATH SDCARD_PATH "/no-recents.txt" // card-root opt-out: hides Recently Played AND stops recording plays (r/trimui request, 2026-09-02)
+// Card-root flags — bare base names (upstream convention). Read with flagExists(), which also
+// accepts a "<name>.txt" form, so both "no-recents" and "no-recents.txt" work.
+#define NO_RECENTS_PATH SDCARD_PATH "/no-recents" // opt-out: hides Recently Played AND stops recording plays (r/trimui request, 2026-09-02)
+#define HIDE_TOOLS_PATH SDCARD_PATH "/hide-tools" // opt-out: hides Tools from the menu; unlike simple mode, a combo (L1+R1+SELECT at root) still opens it (2026-09-03)
 #define COLLECTIONS_PATH SDCARD_PATH "/Collections"
 
 #define LAST_PATH "/tmp/last.txt" // transient
