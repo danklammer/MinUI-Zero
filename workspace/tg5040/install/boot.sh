@@ -41,17 +41,6 @@ if [ -f "$STOCK_JSON" ]; then
 	       -e "s/\"ledswitch\":[[:space:]]*[0-9]*/\"ledswitch\":\t0/" "$STOCK_JSON" 2>/dev/null
 fi
 
-# Phantom I2C bus off. twi3 (i2c-3) is enabled in the vendor DTB with NO device on it, but the
-# Allwinner TWI driver leaves the controller emitting a continuous ~1000/s handled interrupt that
-# wakes CPU0 every ~1ms and blocks deep idle. MEASURED on a Brick Pro 2026-09-03: unbinding took
-# deep-idle (cpu-sleep) entry from ~0.2/s to ~34/s and cut shallow-WFI thrash 3x, IRQ 1006/s -> 0.
-# No i2c client ever binds to bus 3, so unbind it — guarded so a variant that actually uses twi3 is
-# left alone. (Same spirit as the radios/LEDs-off lines: drive an unused rail to zero.)
-if [ -e /sys/bus/platform/drivers/twi/unbind ] && [ -d /sys/devices/platform/soc/twi3 ] \
-   && ! ls /sys/bus/i2c/devices/ 2>/dev/null | grep -q '^3-'; then
-	echo twi3 > /sys/bus/platform/drivers/twi/unbind 2>/dev/null && echo "boot: twi3 phantom i2c unbound (idle-power)"
-fi
-
 # Hybrid CPU control: prefer schedutil (the governor sets a scaling_max_freq cap and the
 # kernel picks beneath it). Verify by read-back; if schedutil is unavailable, fall back to
 # the known-good userspace path at a NON-OC clock. Either way: never 2.0GHz (overclock).
