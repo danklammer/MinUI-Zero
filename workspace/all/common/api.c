@@ -1004,34 +1004,37 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 		int show_wifi = PLAT_isOnline(); // NOOOOO! not every frame!
 
 		int ww = SCALE1(PILL_SIZE-3);
-		ow = SCALE1(PILL_SIZE);
-		if (show_wifi) ow += ww;
 
-		// opt-in menu clock (Clock tool toggle): HH:MM inside the pill, left of the icons.
-		// flags stat'd per redraw — redraws are dirty-driven and rare, and this makes the
-		// Clock tool's toggle preview instantly.
+		// Opt-in menu clock (Clock tool toggle). ZERO-SHIFT layout: the clock is at the FAR RIGHT of
+		// the pill with monospaced digits, and WiFi is drawn LEFTMOST so toggling it grows the pill
+		// leftward, never touching the clock. Each digit sits in a fixed cell. The pill width tracks
+		// the hour's digit count, and because a wider hour grows the pill leftward by exactly one
+		// cell, the colon, minutes and AM/PM keep the SAME absolute position every minute AND across
+		// the 9->10 / 12->1 rollovers — so the part that ticks never moves. No leading blank cell, so
+		// the spacing stays tight.
 		int show_clock = exists(SHOW_CLOCK_PATH);
 		int clock_24h = exists(USERDATA_PATH "/show_24hour"); // the Clock tool's existing preference
-		SDL_Surface* clock_txt = NULL;
-		int cw = 0;
+		static int cellw=0, colonw=0, spacew=0, apw=0, glyphh=0; // monospace metrics, measured once
+		if (show_clock && !cellw) {
+			for (char d='0'; d<='9'; d++) { char s1[2]={d,0}; SDL_Surface* g=TTF_RenderUTF8_Blended(font.tiny,s1,COLOR_WHITE); if(g){ if(g->w>cellw)cellw=g->w; glyphh=g->h; SDL_FreeSurface(g);} }
+			SDL_Surface* c=TTF_RenderUTF8_Blended(font.tiny,":",COLOR_WHITE); if(c){colonw=c->w; SDL_FreeSurface(c);}
+			SDL_Surface* sp=TTF_RenderUTF8_Blended(font.tiny," ",COLOR_WHITE); if(sp){spacew=sp->w; SDL_FreeSurface(sp);}
+			SDL_Surface* am=TTF_RenderUTF8_Blended(font.tiny,"AM",COLOR_WHITE); if(am){apw=am->w; SDL_FreeSurface(am);}
+			SDL_Surface* pm=TTF_RenderUTF8_Blended(font.tiny,"PM",COLOR_WHITE); if(pm){ if(pm->w>apw)apw=pm->w; SDL_FreeSurface(pm);}
+		}
+		int hh=0, mm=0, is_pm=0, disp_h=0, hdig=2, cw=0;
 		if (show_clock) {
-			char hhmm[12];
 			time_t clock_time = time(NULL);
 			struct tm* clock_tm = localtime(&clock_time);
-			strftime(hhmm, sizeof(hhmm), clock_24h ? "%H:%M" : "%I:%M %p", clock_tm);
-			if (!clock_24h && hhmm[0]=='0') memmove(hhmm, hhmm+1, strlen(hhmm)); // 03:42 PM -> 3:42 PM
-			clock_txt = TTF_RenderUTF8_Blended(font.tiny, hhmm, COLOR_WHITE);
-			// FIXED slot width (widest string for the mode) so the pill never changes
-			// size as minutes tick — zero jumpiness, battery never moves.
-			static int clock_slot_w[2] = {0,0};
-			if (!clock_slot_w[clock_24h]) {
-				SDL_Surface* tmpl = TTF_RenderUTF8_Blended(font.tiny, clock_24h?"88:88":"88:88 PM", COLOR_WHITE);
-				if (tmpl) { clock_slot_w[clock_24h] = tmpl->w; SDL_FreeSurface(tmpl); }
-			}
-			if (clock_txt) cw = clock_slot_w[clock_24h] + SCALE1(6);
-			ow += cw;
+			hh = clock_tm->tm_hour; mm = clock_tm->tm_min; is_pm = hh>=12;
+			disp_h = clock_24h ? hh : (hh%12==0 ? 12 : hh%12);
+			hdig = (clock_24h || disp_h>=10) ? 2 : 1;
+			cw = hdig*cellw + colonw + 2*cellw;   // H(H):MM in fixed cells
+			if (!clock_24h) cw += spacew + apw;   // + " AM"/" PM"
+			cw += SCALE1(3) + SCALE1(8);          // left gap (tight) + right gap (room before the pill edge)
 		}
 
+		ow = (show_wifi ? ww : 0) + SCALE1(PILL_SIZE) + (show_clock ? cw : 0);
 		ox = dst->w - SCALE1(PADDING) - ow;
 		oy = SCALE1(PADDING);
 		GFX_blitPill(gfx.mode==MODE_MAIN ? ASSET_DARK_GRAY_PILL : ASSET_BLACK_PILL, dst, &(SDL_Rect){
@@ -1040,28 +1043,36 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, int show_setting) {
 			ow,
 			SCALE1(PILL_SIZE)
 		});
-		if (clock_txt) {
-			// right-align within the fixed slot: the ":MM" tail stays visually anchored
-			SDL_BlitSurface(clock_txt, NULL, dst, &(SDL_Rect){
-				ox + cw - SCALE1(3) - clock_txt->w,
-				oy + (SCALE1(PILL_SIZE) - clock_txt->h) / 2
-			});
-			SDL_FreeSurface(clock_txt);
-			ox += cw;
-		}
+
+		// WiFi first (leftmost) — its presence only changes the LEFT extent of the pill.
 		if (show_wifi) {
 			SDL_Rect rect = asset_rects[ASSET_WIFI];
-			int x = ox;
-			int y = oy;
-			x += (SCALE1(PILL_SIZE) - rect.w) / 2;
-			y += (SCALE1(PILL_SIZE) - rect.h) / 2;
-			
-			GFX_blitAsset(ASSET_WIFI, NULL, dst, &(SDL_Rect){x,y});
+			GFX_blitAsset(ASSET_WIFI, NULL, dst, &(SDL_Rect){
+				ox + (SCALE1(PILL_SIZE) - rect.w) / 2,
+				oy + (SCALE1(PILL_SIZE) - rect.h) / 2
+			});
 			ox += ww;
 		}
+		// Battery, then the clock at the far right (monospaced, tight left, room on the right).
 		GFX_blitBattery(dst, &(SDL_Rect){ox,oy});
+		ox += SCALE1(PILL_SIZE);
+		if (show_clock) {
+			int cx = ox + SCALE1(3);
+			int cy = oy + (SCALE1(PILL_SIZE) - glyphh) / 2;
+			char cb[3];
+			#define CLK_DIGIT(D) do { cb[0]='0'+(D); cb[1]=0; SDL_Surface* g=TTF_RenderUTF8_Blended(font.tiny,cb,COLOR_WHITE); if(g){ SDL_BlitSurface(g,NULL,dst,&(SDL_Rect){cx+(cellw-g->w)/2,cy}); SDL_FreeSurface(g);} cx+=cellw; } while(0)
+			#define CLK_TEXT(S,W) do { SDL_Surface* g=TTF_RenderUTF8_Blended(font.tiny,(S),COLOR_WHITE); if(g){ SDL_BlitSurface(g,NULL,dst,&(SDL_Rect){cx+((W)-g->w)/2,cy}); SDL_FreeSurface(g);} cx+=(W); } while(0)
+			if (hdig==2) CLK_DIGIT(disp_h/10);
+			CLK_DIGIT(disp_h%10);
+			CLK_TEXT(":", colonw);
+			CLK_DIGIT(mm/10);
+			CLK_DIGIT(mm%10);
+			if (!clock_24h) { cx += spacew; CLK_TEXT(is_pm?"PM":"AM", apw); }
+			#undef CLK_DIGIT
+			#undef CLK_TEXT
+		}
 	}
-	
+
 	return ow;
 }
 void GFX_blitHardwareHints(SDL_Surface* dst, int show_setting) {
