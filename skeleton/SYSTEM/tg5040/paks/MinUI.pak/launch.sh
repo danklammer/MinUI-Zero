@@ -24,6 +24,23 @@ if [ "$(date +%Y)" -lt 2025 ] && [ -f "$DATETIME_PATH" ]; then
 	hwclock -w -u 2>/dev/null # -u: kernel reads the RTC as UTC at boot (busybox has no --utc)
 fi
 
+# TIMEZONE. The TrimUI firmware defaults to Asia/Shanghai (UTC+8) via /etc/localtime; the RTC is
+# UTC. With no TZ of our own, a time set in the Clock tool reads back shifted by the vendor offset
+# — for the Americas that is ~12h, i.e. the AM<->PM flip users reported (Brick Pro, 2026-09-03).
+# Export TZ here so the menu AND the Clock tool (which inherit this env) agree, making what you set
+# what you see, stable across reboot regardless of when the vendor restores /tmp/localtime.
+# Drop a "timezone" file (or timezone.txt) at the card root: a zone name (America/New_York — 144
+# US zones ship in /usr/share/zoneinfo) or a POSIX string (EST5EDT). No file = UTC, a plain wall
+# clock you set once. (tg5040 only: this offset is a TrimUI-firmware default; other platforms
+# carry their own clock handling — verify before copying.)
+TZ_FILE="$SDCARD_PATH/timezone"
+[ -f "$TZ_FILE" ] || TZ_FILE="$SDCARD_PATH/timezone.txt"
+if [ -f "$TZ_FILE" ]; then
+	export TZ="$(head -1 "$TZ_FILE" | tr -d ' \t\r\n')"
+else
+	export TZ="UTC"
+fi
+
 mkdir -p "$BIOS_PATH"
 mkdir -p "$ROMS_PATH"
 mkdir -p "$SAVES_PATH"
