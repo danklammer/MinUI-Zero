@@ -153,6 +153,20 @@ if [ -f "$UPDATE_PATH" ]; then
 		# the archive, and left the OLD tg5040.sh and updater in place. Nothing visibly failed,
 		# which is what made it dangerous: the safety-critical bootstrap could never self-update.
 		cp -rf "$STAGE/.system" "$SDCARD_PATH/" && COPY_OK=1
+		# Refresh ONLY the install/update splash images in the live bootstrap from the staged
+		# payload. Safe by construction: a splash image is inert — a truncated copy just fails to
+		# display — unlike the updater binary and boot script above it, which we still never touch.
+		# This keeps the "MinUI Zero" branding current when a device's original bootstrap predates
+		# it. Overwrites existing images only; never creates files, so it cannot alter structure.
+		if [ -d "$STAGE/.tmp_update/$PLATFORM" ]; then
+			for _sp in "$STAGE/.tmp_update/$PLATFORM"/updating.png "$STAGE/.tmp_update/$PLATFORM"/installing.png \
+			           "$STAGE/.tmp_update/$PLATFORM"/*/updating.png "$STAGE/.tmp_update/$PLATFORM"/*/installing.png; do
+				[ -f "$_sp" ] || continue
+				_dst="$SDCARD_PATH/.tmp_update/$PLATFORM/${_sp#$STAGE/.tmp_update/$PLATFORM/}"
+				[ -f "$_dst" ] && cp -f "$_sp" "$_dst" 2>/dev/null
+			done
+			sync
+		fi
 		# .tmp_update IS DELIBERATELY NOT INSTALLED HERE. Copying it merges over the LIVE bootstrap,
 		# including the tg5040.sh that is executing right now, and `cp` truncates before writing: a
 		# power cut mid-copy leaves a truncated `updater` that the firmware hook still finds by
