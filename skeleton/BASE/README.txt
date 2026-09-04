@@ -1,7 +1,7 @@
 MinUI Zero is a performance-focused fork of MinUI for the TrimUI Brick, Brick Pro and Smart Pro. Runs cool, sleeps deep, lasts longer — same simple MinUI, tuned underneath, every change measured on real hardware.
 
 Source and releases:
-https://github.com/danklammer/MinUI-Zero
+https://github.com/Zero-Labs-CFW/MinUI-Zero
 (built on MinUI by Shaun Inman: https://github.com/shauninman/MinUI)
 
 ----------------------------------------

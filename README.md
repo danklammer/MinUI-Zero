@@ -97,7 +97,7 @@ tuned core already installed.
 
 ## Which download?
 
-[The latest release](https://github.com/danklammer/MinUI-Zero/releases/latest) carries four
+[The latest release](https://github.com/Zero-Labs-CFW/MinUI-Zero/releases/latest) carries four
 artifacts, and they are not interchangeable.
 
 | Device | Status | Download | Install |

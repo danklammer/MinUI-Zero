@@ -403,7 +403,7 @@ package: tidy check-payload
 		mkdir -p ./build/PAYLOAD/.system/LICENSES/unzip60 && \
 		cp ./workspace/tg5040/other/unzip60/LICENSE ./build/PAYLOAD/.system/LICENSES/unzip60/; \
 	fi
-	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/danklammer/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/PAYLOAD/.system/LICENSES/SOURCES.txt
+	printf 'Corresponding source\n====================\nMinUI Zero source: https://github.com/Zero-Labs-CFW/MinUI-Zero\nThe exact MinUI Zero commit is recorded in MinUI.zip/.system/version.txt. Emulator cores\nare built from the upstream repositories and exact commits pinned in\nworkspace/<platform>/cores/makefile at that commit; local modifications ship as patches in\nworkspace/<platform>/cores/patches/. Each core binary remains under its own license\n(texts in this folder).\n' > ./build/PAYLOAD/.system/LICENSES/SOURCES.txt
 	cd ./build/PAYLOAD && zip -r MinUI.zip .system .tmp_update Tools
 	mv ./build/PAYLOAD/MinUI.zip ./build/BASE
 	
